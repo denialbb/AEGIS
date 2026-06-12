@@ -22,9 +22,10 @@ If you need architectural context, read `docs/architecture_design.md`.
 - **Reviewer:** Code written by the agent is reviewed by Claude.
 - **Communication Directory:** Exchanged under the `.agents/shared/` directory.
   - `context/`: Stores contracts, architectural decisions, and open issues. Keep these files (`ARCHITECTURE.md`, `DECISIONS.md`, `OPEN_ISSUES.md`) continuously updated with the latest context.
-  - `queue/PENDING_REVIEW.md`: Used to queue completed code and branch details for review. The coding agent must specify: branch name, changed files, and self-reflection notes.
-  - `reviews/REVIEW_[timestamp].md`: Reviewer (Claude) writes here detailing blockers, major issues, and minor comments.
+  - `queue/PENDING_REVIEW.md`: Used to queue completed code and branch details for review. The coding agent MUST follow the [PENDING_REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/PENDING_REVIEW_TEMPLATE.md) format.
+  - `reviews/REVIEW_[timestamp].md`: Reviewer (Claude) writes here following the [REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/REVIEW_TEMPLATE.md) format detailing blockers, major issues, and minor comments.
 - **Grilling:** You will recommend the `/grill-me` slash command to the user to align on design and implementation choices when needed.
+
 
 # Git and Version Control Guidelines
 - **Branches:** Always create and work in feature branches for new developments or changes.
