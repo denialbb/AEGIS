@@ -1,0 +1,19 @@
+# Virtual environments
+.venv/
+bin/
+lib/
+lib64/
+pyvenv.cfg
+
+# Python caching & packaging
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.uv/
+
+# Local/IDE settings
+.vscode/
+.idea/
