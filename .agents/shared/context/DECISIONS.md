@@ -65,3 +65,48 @@ We execute all python code, tests, and static analysis inside the Arch WSL distr
 ### Rationale
 - Arch WSL provides a fast, standardized Linux environment.
 - `uv` is a blazingly fast, modern Python package manager that handles virtual environments and dependency resolution reliably.
+
+---
+
+## ADR-005: 3D Force Control Allocation for Gimbaled Engines
+
+### Context
+The vessel's main engines are gimbaled, meaning they can vector their thrust. The allocator needs to compute both the throttle settings and the 2-axis gimbal angles for all active engines to control both net force and net torque (attitude).
+
+### Decision
+We treat each engine's control input as a 3D thrust force vector $\mathbf{f}_i = [f_{x,i}, f_{y,i}, f_{z,i}]^T \in \mathbb{R}^3$. For $N$ engines, the control vector is $\mathbf{u} \in \mathbb{R}^{3N}$. The control effectiveness matrix $\mathbf{B}$ has shape $6 \times 3N$, where each engine's block is:
+$$\mathbf{B}_i = \begin{bmatrix} \mathbf{I}_{3\times 3} \\ [\mathbf{r}_i]_\times \end{bmatrix}$$
+We solve for $\mathbf{u}$ using `numpy.linalg.pinv` and then map the 3D force vector $\mathbf{f}_i$ for each engine back to physical throttle and gimbal angles:
+- Throttle: $T_i = \|\mathbf{f}_i\| / F_{max,i}$
+- Gimbal X: $\theta_{x,i} = \arcsin(-f_{y,i}/\|\mathbf{f}_i\|)$
+- Gimbal Y: $\theta_{y,i} = \arcsin(f_{x,i}/\|\mathbf{f}_i\|)$
+
+### Rationale
+This formulation keeps the mapping linear and allows us to use the standard pseudo-inverse control allocation algorithm directly, without needing non-linear optimization solvers.
+
+---
+
+## ADR-006: Target-Relative Local Cartesian Tangent Plane
+
+### Context
+Guidance calculations and trajectory tracking are mathematically simpler in a local flat-plane coordinate system compared to planetary spherical or body-centric Cartesian systems.
+
+### Decision
+We define the landing target on the surface as the origin $(0, 0, 0)$. Position and velocity vectors are represented in a local Cartesian tangent plane (e.g. North-East-Down or target-relative frame) fixed to the rotating surface of the celestial body.
+
+### Rationale
+Using a target-relative local frame simplifies the state estimator and control equations, as the target position is always constant at the origin.
+
+---
+
+## ADR-007: Local Gravity Vector Querying
+
+### Context
+Gravity changes as the vessel descends. The State Estimator needs to know the gravity vector to propagate acceleration correctly.
+
+### Decision
+We query the exact local gravity vector dynamically from the kRPC API based on the vessel's current position relative to the celestial body. We use this gravity vector in the state transition step of the Kalman Filter.
+
+### Rationale
+This ensures high accuracy without needing to model the complex celestial body physics or gravity fields locally in our code.
+

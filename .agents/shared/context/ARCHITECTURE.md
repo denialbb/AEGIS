@@ -108,15 +108,18 @@ class ControlAllocator:
     def __init__(self, engines: List[Engine]):
         self.engines: List[Engine] = engines
 
-    def allocate(self, desired_wrench: np.ndarray, active_engines: List[Engine]) -> np.ndarray:
+    def allocate(self, desired_wrench: np.ndarray, active_engines: List[Engine]) -> tuple[np.ndarray, np.ndarray]:
         """
         Solves the control allocation problem: W = B * u
-        where B is the control effectiveness matrix of shape (6, N)
-        and u is the thrust vector of shape (N,).
-        Uses pseudo-inverse numpy.linalg.pinv solver to find u, then maps to throttles.
-        Returns throttles array of shape (N,) bounded between 0.0 and 1.0.
+        where B is the control effectiveness matrix of shape (6, 3N)
+        and u is the 3D force vector for each engine of shape (3N,).
+        Uses pseudo-inverse numpy.linalg.pinv solver to find u, then maps to throttles and gimbal angles.
+        Returns:
+            throttles: array of shape (N,) bounded between 0.0 and 1.0.
+            gimbals: array of shape (N, 2) representing X/Y gimbal angles in radians.
         """
         pass
+
 ```
 
 ---
