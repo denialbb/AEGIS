@@ -64,15 +64,21 @@ class ControlAllocator:
             
             # Throttle
             throttle = float(f_mag / engine.max_thrust) if engine.max_thrust > 0 else 0.0
+            if throttle > 1.0:
+                logger.warning(f"Engine {engine.index} thrust saturated (requested: {f_mag:.2f}, max: {engine.max_thrust:.2f})")
             throttles[i] = float(np.clip(throttle, 0.0, 1.0))
             
             # Gimbals
             if f_mag > 1e-6:
                 n = f_vec / f_mag
+                # Use arccos for the angle to support [0, 180] range
+                dot_prod = np.clip(np.dot(engine.thrust_direction, n), -1.0, 1.0)
+                angle = np.arccos(dot_prod)
+                
                 c = np.cross(engine.thrust_direction, n)
                 s = np.linalg.norm(c)
+                
                 if s > 1e-6:
-                    angle = np.arcsin(np.clip(s, -1.0, 1.0))
                     rot_vec = (c / s) * angle
                     gimbals[i, 0] = rot_vec[0]
                     gimbals[i, 1] = rot_vec[1]
