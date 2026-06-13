@@ -1,9 +1,12 @@
 import json
 import os
 import csv
+import logging
 from datetime import datetime
 import types
 from typing import Dict, Any, Optional, TextIO
+
+logger = logging.getLogger(__name__)
 from .frame import TelemetryFrame
 
 class TelemetryWriter:
@@ -63,8 +66,9 @@ class TelemetryWriter:
             os.symlink(target, temp_link, target_is_directory=True)
             # Atomic replace
             os.replace(temp_link, latest_path)
-        except OSError:
+        except OSError as e:
             # Fallback if os.replace fails over symlinks or we have limited permissions
+            logger.warning(f"Atomic symlink replace failed: {e}. Falling back to standard replace.")
             if os.path.exists(latest_path) or os.path.islink(latest_path):
                 try:
                     if os.path.isdir(latest_path) and not os.path.islink(latest_path):
@@ -72,12 +76,12 @@ class TelemetryWriter:
                         shutil.rmtree(latest_path)
                     else:
                         os.unlink(latest_path)
-                except OSError:
-                    pass
+                except OSError as e2:
+                    logger.warning(f"Failed to remove existing latest symlink: {e2}")
             try:
                 os.symlink(target, latest_path, target_is_directory=True)
-            except OSError:
-                pass # Can't symlink, ignore or maybe it's running in environment without symlink support
+            except OSError as e3:
+                logger.warning(f"Failed to create standard symlink: {e3}")
 
     def _init_files(self) -> None:
         """
@@ -117,9 +121,11 @@ class TelemetryWriter:
         Flushes and closes the files.
         """
         if self.telemetry_file is not None:
+            self.telemetry_file.flush()
             self.telemetry_file.close()
             self.telemetry_file = None
         if self.events_file is not None:
+            self.events_file.flush()
             self.events_file.close()
             self.events_file = None
 
