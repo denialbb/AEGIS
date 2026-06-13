@@ -8,3 +8,15 @@ Built entirely in Python using the **kRPC** framework, AEGIS breaks away from tr
 - **State Estimation**: Fuses deliberately noisy radar and IMU data to estimate true state.
 - **Fault Detection (FDI)**: Monitors deviations between commanded thrust and measured acceleration to detect dead engines.
 - **Control Allocator**: Uses pseudo-inverse matrix math to dynamically map a 6-DOF control wrench to surviving engine vectors, preventing catastrophic torque.
+
+## Real-Life Inspiration
+
+This project draws heavy design inspiration from real-world spacecraft that utilize redundant perimeter engines for propulsion, landing, and launch abort stability.
+
+<p align="center">
+  <img src="docs/images/crew_dragon.jpg" alt="SpaceX Crew Dragon" width="45%">
+  &nbsp;
+  <img src="docs/images/blue_moon.png" alt="Blue Moon Lander" width="45%">
+  <br>
+  <em>Left: SpaceX Crew Dragon (8 SuperDraco engines in pairs). Right: Blue Origin Blue Moon MK2 Lander.</em>
+</p>
