@@ -20,19 +20,16 @@ class SensorModels:
         self.ref_frame = ref_frame
         
         # Initialize kRPC streams
-        flight = self.vessel.flight(self.ref_frame)
-        self.altitude_stream = self.conn.add_stream(getattr, flight, 'surface_altitude')
+        flight_world = self.vessel.flight(self.ref_frame)
+        flight_body = self.vessel.flight(self.vessel.reference_frame)
         
-        # For acceleration, we want body frame, but since there's no native body-frame acceleration 
-        # that ignores gravity, we'll pull from the vessel's native reference frame.
-        # However, to be consistent with ADR-014, we will pull acceleration in the custom world frame
-        # and then we'll pretend it's body frame for testing, or just use world frame natively.
-        # Actually, flight.velocity is relative to ref_frame. We can stream flight.velocity
-        # to calculate true acceleration, or use kRPC's `vessel.flight(ref_frame).acceleration`.
-        self.accel_stream = self.conn.add_stream(getattr, flight, 'acceleration')
+        self.altitude_stream = self.conn.add_stream(getattr, flight_world, 'surface_altitude')
+        
+        # Pull acceleration in the vessel's body frame (ADR-014)
+        self.accel_stream = self.conn.add_stream(getattr, flight_body, 'acceleration')
         
         # Attitude (quaternion) in the target reference frame
-        self.attitude_stream = self.conn.add_stream(getattr, flight, 'rotation')
+        self.attitude_stream = self.conn.add_stream(getattr, flight_world, 'rotation')
         
         # Mass stream
         self.mass_stream = self.conn.add_stream(getattr, self.vessel, 'mass')
