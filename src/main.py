@@ -6,6 +6,8 @@ from src.common.engine import Engine
 from src.estimation.estimator import StateEstimator
 from src.fdi.fdi import FaultDetectionIsolation
 from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
+from src.telemetry.frame import TelemetryFrame
+from src.telemetry.writer import TelemetryWriter
 
 class MissionDirector:
     def __init__(self, conn: Any):
@@ -29,6 +31,12 @@ class MissionDirector:
         self.engines: List[Engine] = [] 
         self.allocator: ControlAllocator = ControlAllocator(self.engines)
         
+        self.writer: TelemetryWriter = TelemetryWriter({
+            "num_engines": max(len(self.engines), 1),
+            "seed": 42
+        })
+        self.last_tick_time: float = 0.0
+        
         # State persistence for FDI
         self.expected_throttles: np.ndarray = np.array([])
         self.expected_accel: np.ndarray = np.zeros(3)
@@ -44,15 +52,27 @@ class MissionDirector:
         
         while self.state != "HARD_ABORT":
             start_time = time.time()
+            if self.last_tick_time > 0:
+                actual_dt = start_time - self.last_tick_time
+                if actual_dt > 3 * dt:
+                    self.writer.log_event({"type": "DT_SPIKE", "actual_dt": actual_dt, "expected_dt": dt})
+                    skip_predict = True
+                else:
+                    skip_predict = False
+            else:
+                skip_predict = False
+            self.last_tick_time = start_time
             
             # 1. Poll Telemetry
             # In a complete implementation, streams via self.conn would be read here
             noisy_alt: float = 0.0
-            noisy_accel: np.ndarray = np.zeros(3)
+            noisy_accel_body: np.ndarray = np.zeros(3)
+            attitude: np.ndarray = np.array([1.0, 0.0, 0.0, 0.0])
             mass: float = 1.0
             
             # 2. Update Estimator
-            self.estimator.predict(noisy_accel, dt)
+            if not skip_predict:
+                self.estimator.predict(noisy_accel_body, attitude, dt)
             state_vector = self.estimator.update(noisy_alt)
             
             # 3. Run FDI
@@ -61,20 +81,23 @@ class MissionDirector:
             if len(self.expected_throttles) == 0 and len(active_engines) > 0:
                 self.expected_throttles = np.zeros(len(active_engines))
                 
-            fault_detected = self.fdi.detect_fault(self.expected_accel, noisy_accel)
+            fault_detected = self.fdi.detect_fault(self.expected_accel, noisy_accel_body)
             if fault_detected and len(active_engines) > 0:
                 failed_indices = self.fdi.isolate_fault(
-                    active_engines, self.expected_throttles, noisy_accel, mass
+                    active_engines, self.expected_throttles, noisy_accel_body, mass
                 )
                 
                 # ISS-004: Handle multiple simultaneous failures
                 if len(failed_indices) >= 2:
                     print(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
+                    self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "MULTIPLE_FAILURES"})
                     self.state = "HARD_ABORT"
                 
                 for e in self.engines:
                     if e.index in failed_indices:
-                        e.active = False
+                        if e.active:
+                            self.writer.log_event({"type": "FAULT_DETECTED", "engine_index": e.index})
+                            e.active = False
                 
                 # Re-evaluate active engines
                 active_engines = [e for e in self.engines if e.active]
@@ -111,8 +134,23 @@ class MissionDirector:
                     self.expected_accel = np.zeros(3) 
                 except AllocationDegenerateError as e:
                     print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
+                    self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "DEGENERATE_ALLOCATION"})
                     self.state = "HARD_ABORT"
                 
+            # 5.5. Log Telemetry
+            throttles = self.expected_throttles if len(self.expected_throttles) > 0 else np.zeros(max(len(self.engines), 1))
+            gimbals = np.zeros((max(len(self.engines), 1), 2))
+            
+            frame = TelemetryFrame(
+                timestamp=start_time,
+                altitude=noisy_alt,
+                velocity=np.zeros(3),
+                noisy_accel=noisy_accel_body,
+                throttles=throttles,
+                gimbals=gimbals
+            )
+            self.writer.log_tick(frame)
+
             # 6. Timing Enforcement
             elapsed = time.time() - start_time
             sleep_time = dt - elapsed
@@ -121,3 +159,6 @@ class MissionDirector:
                 
             # Break in this skeleton to avoid infinite loop when tested directly
             break
+        
+        # Cleanup when loop ends
+        self.writer.close()

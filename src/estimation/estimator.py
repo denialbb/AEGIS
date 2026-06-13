@@ -21,10 +21,16 @@ class StateEstimator:
         self.kf.H = np.zeros((1, 6))
         self.kf.H[0, 2] = 1.0
         
-    def predict(self, noisy_accel: np.ndarray, dt: float):
+    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float) -> None:
         """
         Predicts the next state using the measured acceleration as the control input.
+        noisy_accel_body: Accelerometer reading in vessel body frame.
+        attitude: Vessel attitude required to rotate acceleration to world frame.
         """
+        # TODO: Implement actual quaternion rotation using `attitude`.
+        # For now, we assume body frame is aligned with world frame.
+        noisy_accel_world = noisy_accel_body.copy()
+        
         # Update dynamic state transition matrix F
         self.kf.F = np.eye(6)
         self.kf.F[0, 3] = dt
@@ -36,8 +42,8 @@ class StateEstimator:
         B[0:3, 0:3] = 0.5 * (dt ** 2) * np.eye(3)
         B[3:6, 0:3] = dt * np.eye(3)
         
-        # Predict step using noisy_accel as the control input
-        self.kf.predict(u=noisy_accel, B=B)
+        # Predict step using noisy_accel_world as the control input
+        self.kf.predict(u=noisy_accel_world, B=B)
         
     def update(self, noisy_alt: float) -> np.ndarray:
         """
