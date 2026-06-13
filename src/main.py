@@ -205,10 +205,13 @@ class MissionDirector:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AEGIS Mission Director")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--log-to-file", action="store_true", help="Log application strings to file")
     args = parser.parse_args()
     
     if args.debug:
         config.DEBUG_LOGGING = True
+    if args.log_to_file:
+        config.LOG_TO_FILE = True
 
     setup_logging()
     
