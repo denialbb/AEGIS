@@ -326,3 +326,30 @@ Set condition number threshold to `1e4`. If `cond(B) > 1e4`, `AllocationDegenera
 
 **Review Notes**
 Resolves Claude's finding B2 regarding degenerate allocation logic.
+
+---
+
+### ADR-011 — Simulate wind disturbance via IMU acceleration injection
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Joint
+- **Module(s):** FDI (Gremlin) / State Estimator
+
+**Context**
+We need to test the control allocator's ability to reject environmental disturbances like wind shear. Stock KSP does not natively simulate wind, and while Ferram Aerospace Research (FAR) does, kRPC lacks native API wrappers to explicitly read FAR's aerodynamic data.
+
+**Options Considered**
+1. Write a custom C# kRPC plugin to read FAR wind/stall data — High effort, ties the architecture specifically to FAR.
+2. Inject a velocity drift bias — Kinematically tests the controller, but does not accurately represent how wind physically acts as an external force (drag).
+3. Inject a lateral acceleration bias into the IMU telemetry stream — Simulates unmodeled aerodynamic drag natively within the State Estimator's existing physics model.
+
+**Decision**
+Simulate wind by intercepting the `noisy_accel` telemetry stream in the Gremlin module and injecting a lateral acceleration bias before passing it to the State Estimator. The Kalman filter will naturally integrate this drift, and the control allocator will attempt to reject it, agnostic of whether the disturbance comes from FAR or the simulated Gremlin.
+
+**Consequences**
+- ✅ Validates disturbance rejection capabilities organically without requiring KSP mods.
+- ✅ Keeps the guidance architecture completely agnostic to the underlying aerodynamic model (Stock vs. FAR).
+- ⚠️ Cannot test wind-induced aerodynamic stall natively (unless FAR is actually installed and the physical craft stalls).
+
+**Review Notes**
+None yet.
