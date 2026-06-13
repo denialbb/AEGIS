@@ -3,6 +3,7 @@ import os
 import krpc
 import logging
 import numpy as np
+import argparse
 from typing import Any, List
 
 import src.config as config
@@ -202,6 +203,13 @@ class MissionDirector:
         self.writer.close()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AEGIS Mission Director")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
+    
+    if args.debug:
+        config.DEBUG_LOGGING = True
+
     setup_logging()
     
     # WSL2 Connection Topology (ADR-015)
