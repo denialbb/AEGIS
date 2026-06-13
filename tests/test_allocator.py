@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import logging
 from src.common.engine import Engine
-from src.guidance.allocator import ControlAllocator
+from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
 
 def test_allocator_nominal():
     # 4 engines placed symmetrically
@@ -31,10 +31,12 @@ def test_allocator_nominal():
     np.testing.assert_allclose(gimbals, np.zeros((4, 2)), atol=1e-5)
 
 def test_allocator_torque():
-    # 2 engines on X axis
+    # 4 engines placed symmetrically (so it is full rank)
     engines = [
-        Engine(0, np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0),
-        Engine(1, np.array([-1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0)
+        Engine(0, np.array([1.0, 0.0, -1.0]), np.array([0.0, 0.0, 1.0]), 100.0),
+        Engine(1, np.array([-1.0, 0.0, -1.0]), np.array([0.0, 0.0, 1.0]), 100.0),
+        Engine(2, np.array([0.0, 1.0, -1.0]), np.array([0.0, 0.0, 1.0]), 100.0),
+        Engine(3, np.array([0.0, -1.0, -1.0]), np.array([0.0, 0.0, 1.0]), 100.0)
     ]
     
     allocator = ControlAllocator(engines)
@@ -54,9 +56,9 @@ def test_allocator_torque():
     # Let's verify if the B * u = wrench.
     # We can reconstruct u from throttles and gimbals? Not perfectly without knowing the reverse mapping.
     
-    assert throttles.shape == (2,)
+    assert throttles.shape == (4,)
 
-def test_allocator_rank_deficient(caplog):
+def test_allocator_rank_deficient():
     # Single engine at origin -> rank deficient (can't produce torques)
     engines = [
         Engine(0, np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0)
@@ -64,12 +66,10 @@ def test_allocator_rank_deficient(caplog):
     allocator = ControlAllocator(engines)
     wrench = np.array([0.0, 0.0, 100.0, 10.0, 0.0, 0.0])
     
-    with caplog.at_level(logging.WARNING):
-        throttles, gimbals = allocator.allocate(wrench, engines)
+    with pytest.raises(AllocationDegenerateError) as excinfo:
+        allocator.allocate(wrench, engines)
         
-    assert throttles.shape == (1,)
-    assert gimbals.shape == (1, 2)
-    assert "rank-deficient" in caplog.text
+    assert "rank-deficient" in str(excinfo.value)
 
 def test_allocator_empty():
     allocator = ControlAllocator([])

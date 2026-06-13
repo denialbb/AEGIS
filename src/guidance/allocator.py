@@ -5,6 +5,9 @@ from src.common.engine import Engine
 
 logger = logging.getLogger(__name__)
 
+class AllocationDegenerateError(Exception):
+    pass
+
 class ControlAllocator:
     def __init__(self, engines: List[Engine]):
         self.engines: List[Engine] = engines
@@ -18,6 +21,8 @@ class ControlAllocator:
         Returns:
             throttles: array of shape (N,) bounded between 0.0 and 1.0.
             gimbals: array of shape (N, 2) representing X/Y gimbal angles in radians.
+        Raises:
+            AllocationDegenerateError: If the condition number of B exceeds the defined threshold (1e4).
         """
         N = len(active_engines)
         if N == 0:
@@ -37,10 +42,15 @@ class ControlAllocator:
             ])
             B[3:6, 3 * i : 3 * i + 3] = rx
 
-        # ISS-002: Check for rank deficiency
+        # ISS-002: Check for rank deficiency using condition number
         rank = np.linalg.matrix_rank(B)
         if rank < 6:
-            logger.warning("Control effectiveness matrix is rank-deficient (rank %d < 6). ISS-002", rank)
+            raise AllocationDegenerateError(f"B rank-deficient: rank={rank} < 6, active_engines={len(active_engines)}")
+            
+        cond = np.linalg.cond(B)
+        logger.debug(f"Allocator B matrix cond: {cond}")
+        if cond > 1e4:
+            raise AllocationDegenerateError(f"B ill-conditioned: cond={cond:.2f}, active_engines={len(active_engines)}")
 
         # Solve for u using pseudo-inverse
         u = np.linalg.pinv(B) @ desired_wrench
