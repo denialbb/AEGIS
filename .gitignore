@@ -17,3 +17,10 @@ __pycache__/
 # Local/IDE settings
 .vscode/
 .idea/
+
+# Agent/Review cache & artifacts
+.lock
+.agents/CLAUDE_CONTEXT.md
+.agents/shared/reviews/
+.agents/shared/temp/
+
