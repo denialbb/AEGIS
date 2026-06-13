@@ -20,6 +20,8 @@ class FaultDetectionIsolation:
         """
         diff = expected_accel - measured_accel
         deviation = np.linalg.norm(diff)
+        if deviation > self.threshold:
+            logger.warning(f"[FDI] Fault detected! Expected: {expected_accel}, Measured: {measured_accel}, Diff: {diff}, Deviation: {deviation} > {self.threshold}")
         return bool(deviation > self.threshold)
 
     def isolate_fault(self, active_engines: List[Engine], expected_throttles: np.ndarray, 
