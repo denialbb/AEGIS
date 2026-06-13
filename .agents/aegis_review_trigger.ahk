@@ -17,6 +17,11 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 
+; Per-Monitor DPI awareness — without this, AHK can misjudge window
+; positions/sizes on multi-monitor setups where displays use different
+; scaling factors, causing clicks to land on the wrong monitor or edge.
+DllCall("SetThreadDpiAwarenessContext", "ptr", -4, "ptr")
+
 
 ; ── CONFIGURATION ───────────────────────────────────────────
 
@@ -127,13 +132,26 @@ TriggerReview() {
         return
     }
 
-    ; ── 5. Open a new project chat ──────────────────────────
+    ; ── 5. Click center of window to clear any stray text field focus ────
+    ; If the caret is in a text input, Tab won't navigate correctly.
+    ; We click relative to the active window's CLIENT AREA (not absolute
+    ; screen coordinates) — this avoids issues on dual-monitor setups where
+    ; differing DPI scaling or monitor placement can throw off screen math
+    ; and send the click to the wrong monitor or off-screen.
+    WinGetClientPos(, , &width, &height, claudeHwnd)
+    prevCoordMode := A_CoordModeMouse
+    CoordMode("Mouse", "Client")
+    MouseClick("left", width // 2, height // 2)
+    CoordMode("Mouse", prevCoordMode)
+    Sleep(200)
+
+    ; ── 6. Open a new project chat ──────────────────────────
     ; Tab moves focus to the new-chat button; Enter activates it.
     ; Ctrl+N opens a new chat outside the project — don't use it.
     Send("{Tab}{Enter}")
     Sleep(500)
 
-    ; ── 6. Build prompt and paste ───────────────────────────
+    ; ── 7. Build prompt and paste ───────────────────────────
     prompt := BuildPrompt(templateContent, pendingContent)
 
     A_Clipboard := ""
@@ -145,7 +163,7 @@ TriggerReview() {
 
     Send("^v")
 
-    ; ── 7. Confirm ──────────────────────────────────────────
+    ; ── 8. Confirm ──────────────────────────────────────────
     TrayTip("Review prompt loaded.`nPress Enter to send.", "AEGIS", 1)
     ; Intentionally NOT auto-sending — human stays in the loop
 }
