@@ -1,6 +1,6 @@
 ; ============================================================
 ;  AEGIS Review Trigger — AutoHotkey v2
-;  Bridges the other agent's output to a Claude review session.
+;  Bridges the other agent's output to a Claude desktop app.
 ;
 ;  TWO MODES (both active simultaneously):
 ;    1. File Watcher  — polls for REVIEW_REQUESTED.flag every N seconds
@@ -9,8 +9,8 @@
 ;
 ;  SETUP:
 ;    1. Set SHARED_DIR to your actual shared folder path
-;    2. Set CLAUDE_URL if using a specific project URL
-;    3. Run this script (it sits in the tray silently)
+;    2. Run this script (it sits in the tray silently)
+;    3. If the app isn't found, run it once manually so AHK can see it
 ; ============================================================
 
 #Requires AutoHotkey v2.0
@@ -20,11 +20,15 @@ SetWorkingDir A_ScriptDir
 
 ; ── CONFIGURATION ───────────────────────────────────────────
 
-SHARED_DIR    := "C:\Projects\AEGIS\.agents\shared\"
-PENDING_FILE  := SHARED_DIR . "queue\PENDING_REVIEW.md"
-FLAG_FILE     := SHARED_DIR . "queue\REVIEW_REQUESTED.flag"
-POLL_INTERVAL := 5000   ; milliseconds between file watcher checks
-CLAUDE_URL    := "https://claude.ai/new"               ; or your project URL
+SHARED_DIR     := "C:\Projects\AEGIS\.agents\shared\"
+PENDING_FILE   := SHARED_DIR . "queue\PENDING_REVIEW.md"
+TEMPLATE_FILE  := SHARED_DIR . "reviews\REVIEW_template.md"
+FLAG_FILE      := SHARED_DIR . "queue\REVIEW_REQUESTED.flag"
+POLL_INTERVAL  := 10000  ; milliseconds between file watcher checks
+
+; Claude desktop app identifiers — try exe first, fall back to title
+CLAUDE_EXE    := "claude.exe"
+CLAUDE_TITLE  := "Claude"                              ; partial window title match
 
 
 ; ── SYSTEM TRAY SETUP ───────────────────────────────────────
@@ -64,9 +68,9 @@ WatchForFlag() {
 ; ── CORE FUNCTION ────────────────────────────────────────────
 
 TriggerReview() {
-    global PENDING_FILE, CLAUDE_URL
+    global PENDING_FILE, TEMPLATE_FILE, CLAUDE_EXE, CLAUDE_TITLE
 
-    ; Validate the pending review file exists
+    ; ── 1. Validate the pending review file ─────────────────
     if !FileExist(PENDING_FILE) {
         MsgBox(
             "PENDING_REVIEW.md not found.`n`nExpected at:`n" . PENDING_FILE,
@@ -76,7 +80,6 @@ TriggerReview() {
         return
     }
 
-    ; Read the file
     pendingContent := FileRead(PENDING_FILE, "UTF-8")
 
     if StrLen(Trim(pendingContent)) < 50 {
@@ -88,10 +91,51 @@ TriggerReview() {
         return
     }
 
-    ; Build the prompt
-    prompt := BuildPrompt(pendingContent)
+    ; ── 2. Load the review template ─────────────────────────
+    if !FileExist(TEMPLATE_FILE) {
+        MsgBox(
+            "REVIEW_template.md not found.`n`nExpected at:`n" . TEMPLATE_FILE,
+            "AEGIS — Missing Template",
+            "Icon!"
+        )
+        return
+    }
 
-    ; Put it on the clipboard
+    templateContent := FileRead(TEMPLATE_FILE, "UTF-8")
+
+    ; ── 3. Find the Claude desktop window ───────────────────
+    claudeHwnd := WinExist("ahk_exe " . CLAUDE_EXE)
+    if !claudeHwnd
+        claudeHwnd := WinExist(CLAUDE_TITLE . " ahk_class Chrome_WidgetWin_1")
+    if !claudeHwnd
+        claudeHwnd := WinExist(CLAUDE_TITLE)
+
+    if !claudeHwnd {
+        MsgBox(
+            "Claude desktop app not found.`n`nMake sure Claude is open and visible before triggering a review.",
+            "AEGIS — Claude Not Found",
+            "Icon!"
+        )
+        return
+    }
+
+    ; ── 4. Bring Claude to the foreground ───────────────────
+    WinRestore(claudeHwnd)
+    WinActivate(claudeHwnd)
+    if !WinWaitActive(claudeHwnd, , 3) {
+        MsgBox("Could not focus the Claude window.", "AEGIS — Error", "Icon!")
+        return
+    }
+
+    ; ── 5. Open a new project chat ──────────────────────────
+    ; Tab moves focus to the new-chat button; Enter activates it.
+    ; Ctrl+N opens a new chat outside the project — don't use it.
+    Send("{Tab}{Enter}")
+    Sleep(500)
+
+    ; ── 6. Build prompt and paste ───────────────────────────
+    prompt := BuildPrompt(templateContent, pendingContent)
+
     A_Clipboard := ""
     A_Clipboard := prompt
     if !ClipWait(3) {
@@ -99,44 +143,41 @@ TriggerReview() {
         return
     }
 
-    ; Open Claude in the default browser
-    Run(CLAUDE_URL)
-
-    ; Wait for the page and input box to be ready
-    ; Adjust Sleep duration if your machine is slower/faster
-    Sleep(4000)
-
-    ; Paste into the chat input
     Send("^v")
 
-    ; Brief confirmation in tray
-    TrayTip("Review prompt loaded into Claude.`nPress Enter to send.", "AEGIS", 1)
-    ; Note: intentionally NOT auto-sending — human stays in the loop
+    ; ── 7. Confirm ──────────────────────────────────────────
+    TrayTip("Review prompt loaded.`nPress Enter to send.", "AEGIS", 1)
+    ; Intentionally NOT auto-sending — human stays in the loop
 }
 
 
 ; ── PROMPT BUILDER ───────────────────────────────────────────
 
-BuildPrompt(pendingContent) {
-    return "
+BuildPrompt(templateContent, pendingContent) {
+    header := "
     (
-    ## AEGIS CODE REVIEW REQUEST
+## AEGIS CODE REVIEW REQUEST
 
-    Please do the following:
-    1. Read the PENDING_REVIEW.md content below carefully.
-    2. Read the referenced changed files from the shared directory / project context.
-    3. Produce a structured REVIEW_[timestamp].md using the established review template.
-    4. Flag all BLOCKERS, MAJORS, and MINORS with the severity conventions we use.
-    5. Fill in the module-specific check tables honestly.
+A submission is ready for your review. Execute the following:
+1. Read the submission (Section B) carefully, including all self-identified concerns.
+2. Read the referenced changed files from the project context.
+3. Produce a filled review document using the template in Section A below.
+4. Save it as REVIEW_[YYYY-MM-DD_HHMM].md in the shared reviews folder.
 
-    You have access to the project files. Focus on:
-    - Mathematical correctness (Kalman filter, pseudo-inverse, FDI thresholds)
-    - Type safety and mypy compliance
-    - State machine transition validity
-    - Module boundary integrity (decoupling)
-    - Numerical edge cases (singular matrices, all engines dead, single survivor)
+---
 
-    ---
+## SECTION A — OUTPUT TEMPLATE
 
-    )" . pendingContent
+    )"
+
+    bridge := "
+    (
+
+---
+
+## SECTION B — SUBMISSION
+
+    )"
+
+    return header . templateContent . bridge . pendingContent
 }
