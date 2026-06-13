@@ -148,6 +148,7 @@ State machine that manages nominal mission phases and handles contingencies.
 - **Single Engine Failure:** FDI flags, active engines reduced. Allocator remaps wrench.
 - **Degenerate Allocation:** Control Allocator raises `AllocationDegenerateError`. MD immediately transitions to `HARD_ABORT`.
 - **Multiple Simultaneous Failures:** FDI returns 2+ failed engines. MD immediately transitions to `HARD_ABORT`.
+- **DT_SPIKE / KSP Pause:** If `dt > 3 * expected_dt`, the MD skips the Kalman filter predict step to avoid divergence and logs a `DT_SPIKE` event.
 
 ### Interface
 ```python
@@ -161,12 +162,45 @@ class MissionDirector:
         self.estimator: StateEstimator = ...
         self.fdi: FaultDetectionIsolation = ...
         self.allocator: ControlAllocator = ...
+        self.writer: TelemetryWriter = ...  # Owns the logging infrastructure
 
     def run_loop(self):
         """
         Executes the main loop at 10Hz to 50Hz, polling telemetry,
         updating the estimator, running the FDI, computing control wrench,
         allocating thrust, and transitioning states.
+        """
+        pass
+```
+
+---
+
+## 6. Telemetry Logger (`src/telemetry/`)
+
+High-performance, non-blocking telemetry and event logging infrastructure to provide the primary debug surface. Owned exclusively by the Mission Director (ADR-013).
+
+### TelemetryFrame
+A typed dataclass (`src/telemetry/frame.py`) containing the complete system state snapshot for a single 20ms physics tick. Flattens nested arrays into CSV columns.
+
+### Interface
+```python
+class TelemetryWriter:
+    def __init__(self, run_config: dict):
+        """
+        Creates a timestamped run directory and updates the `logs/latest` symlink.
+        Serializes `run_config` to `run_config.json`.
+        """
+        pass
+
+    def log_tick(self, frame: TelemetryFrame):
+        """
+        Flattens the frame and appends it to the heavily-buffered `telemetry.csv`.
+        """
+        pass
+
+    def log_event(self, event: dict):
+        """
+        Appends a discrete, structured event to `events.jsonl` (e.g., STATE_TRANSITION, FAULT_DETECTED).
         """
         pass
 ```

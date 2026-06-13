@@ -353,3 +353,58 @@ Simulate wind by intercepting the `noisy_accel` telemetry stream in the Gremlin 
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-012 — Two-Tier Test Harness (Unit Tests + Kinematic Mock)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Claude (Reviewer)
+- **Module(s):** Cross-cutting (Testbed)
+
+**Context**
+To iterate quickly without running full Kerbal Space Program (KSP) scenarios, we need an offline simulation/test harness (ISS-007). A proposal was made to build a full 6-DOF physics engine using `scipy.integrate.solve_ivp` to synthesize perfect KSP flight data and inject noise.
+
+**Options Considered**
+1. Full 6-DOF Analytical Physics Engine (scipy) — Synthesizes perfect trajectories and re-injects noise. Massive overkill, introduces a "second-system trap" that requires KSP to validate itself before validating AEGIS. Mismatched noise statistics would corrupt Kalman filter and FDI calibration.
+2. Two-Tier Test Harness (Unit tests + Kinematic mock) — Tier 1: Pure `pytest` unit tests for module-level correctness. Tier 2: A simple 3-line Newtonian kinematic mock (`a = thrust_sum / mass - g + noise; v += a * dt; x += v * dt`) for integration loop testing.
+
+**Decision**
+Two-Tier Test Harness. We explicitly reject building a full physics engine. We will rely on pure unit tests with synthetic inputs for mathematical verification, and a lightweight kinematic mock for loop integration testing. The mock must use the exact same noise wrapper as the live system.
+
+**Consequences**
+- ✅ Prevents maintaining a complex second system (the physics engine).
+- ✅ Ensures test noise statistics precisely match production noise statistics.
+- ✅ Massively reduces the time required to build the test harness.
+- ⚠️ The offline kinematic mock will not capture KSP-specific transient dynamics (like gimbal slew rates or variable gravity), meaning final parameter tuning must still occur against live KSP runs.
+
+**Review Notes**
+Addresses the architectural feedback from Claude's review of the `proposal/6dof-scipy-physics-harness` proposal.
+
+---
+
+### ADR-013 — Dual-File Telemetry Logging Architecture
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Claude & Joint
+- **Module(s):** Cross-cutting (Telemetry)
+
+**Context**
+Debugging live KSP runs is difficult because the console output is too fast and interactive debugging breaks the 50Hz control loop constraint. We need a telemetry logging system that can serve as the primary post-mortem debugging surface without blocking the control loop.
+
+**Options Considered**
+1. Single CSV Log — High resolution, but extremely difficult to parse for specific events (e.g., fault moments) since it generates ~180,000 rows per hour.
+2. Dual-File Strategy (CSV + JSONL) — A dense `telemetry.csv` captures every physics tick for deep analysis, while `events.jsonl` captures only discrete state changes or faults.
+3. Module-Level Logging — Each module writes its own logs. Violates ADR-003 by coupling pure math modules to I/O logic.
+
+**Decision**
+Dual-File Strategy. The `MissionDirector` is the sole owner of the `TelemetryWriter` and passes a fully assembled `TelemetryFrame` to it every tick. File I/O is heavily buffered (1MB) to prevent loop blocking. Logs are written to a timestamped folder with a `logs/latest` symlink for easy predictable access.
+
+**Consequences**
+- ✅ Preserves the 20ms physics tick budget by preventing synchronous file writes.
+- ✅ Creates a highly readable "what happened" timeline via the events log.
+- ✅ Keeps core modules pure and decoupled from I/O.
+- ⚠️ The `MissionDirector` has to assemble data from all modules, increasing its orchestration burden.
+
+**Review Notes**
+None yet.

@@ -1,11 +1,18 @@
 import krpc
 import time
+import os
 
 
 def main():
-    print("Connecting to KSP...")
+    # To connect from WSL2:
+    # 1. In KSP kRPC settings, change the Address to 'Any' or '0.0.0.0'.
+    # 2. Leave protocol as 'Protobuf over TCP'.
+    # 3. Set the KRPC_ADDRESS env var to the Windows host IP when running.
+    # Example: export KRPC_ADDRESS=$(ip -4 route show default | awk '{print $3}')
+    address = os.environ.get("KRPC_ADDRESS", "127.0.0.1")
+    print(f"Connecting to KSP at {address}...")
     # Establishes the TCP connection. Fails if server is not running.
-    conn = krpc.connect(name="G-FOLD Prototype")
+    conn = krpc.connect(name="G-FOLD Prototype", address=address)
 
     vessel = conn.space_center.active_vessel
     print(f"Connected to: {vessel.name}")
