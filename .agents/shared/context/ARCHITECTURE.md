@@ -46,9 +46,11 @@ class StateEstimator:
         """
         pass
 
-    def predict(self, noisy_accel: np.ndarray, dt: float):
+    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float):
         """
         Predicts the next state using the measured acceleration as the control input (Option A).
+        noisy_accel_body: Accelerometer reading in vessel body frame.
+        attitude: Vessel attitude (e.g., quaternion) required to rotate acceleration to world frame.
         """
         pass
 

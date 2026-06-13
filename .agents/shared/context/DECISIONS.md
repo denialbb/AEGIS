@@ -408,3 +408,31 @@ Dual-File Strategy. The `MissionDirector` is the sole owner of the `TelemetryWri
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-014 — Fold Small-Angle Attitude Noise into Accelerometer Noise Budget
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Joint
+- **Module(s):** State Estimator, Cross-cutting
+
+**Context**
+The State Estimator requires the vessel's attitude to rotate body-frame acceleration from the IMU into the world frame. Real sensors have noise, so attitude telemetry should theoretically be noisy. However, applying noise to the attitude creates a non-linear rotation matrix. The linear Discrete-Time Kalman Filter (chosen in ADR-007) cannot handle non-linear transformations, which would strictly require upgrading to an Extended Kalman Filter (EKF).
+
+**Options Considered**
+1. Perfect Attitude (No Noise) — Unrealistic, breaks project simulation philosophy.
+2. Upgrade to Extended Kalman Filter (EKF) — Accurate, but introduces significant mathematical complexity (Jacobians) and testing burden to manage a 13-state filter.
+3. Small-Angle Approximation — Assume attitude error is small during controlled flight. Use the un-noised attitude to rotate the acceleration into the world frame, and artificially inflate the accelerometer noise parameter ($\sigma_{accel}$) to absorb the mathematical error introduced by the small rotation error.
+
+**Decision**
+Option 3: Small-Angle Approximation. We will standardize the noise wrapper to output **body-frame acceleration**. The Mission Director or Estimator will rotate this vector into the world frame using the raw, un-noised attitude telemetry, and the Kalman Filter will use an inflated accelerometer noise variance to account for the attitude uncertainty.
+
+**Consequences**
+- ✅ Maintains the simplicity and speed of the linear Discrete-Time Kalman Filter (ADR-007).
+- ✅ Drastically reduces development and testing time compared to an EKF.
+- ⚠️ Assumes attitude error remains small ($\le 2-5^\circ$). If the vessel tumbles, the approximation breaks down (though if this occurs during powered descent, the mission is likely already lost).
+- ⚠️ The reference frame for telemetry is explicitly defined: `noisy_accel` is body-frame.
+
+**Review Notes**
+Resolves the architecture gap exposed by Claude regarding attitude noise in the linear Kalman filter.

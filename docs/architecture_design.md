@@ -26,7 +26,7 @@ The architecture is strictly decoupled into four primary domains to ensure robus
 ### A. The Mission Director (Hierarchical State Machine)
 The overarching logic controller. It manages nominal mission phases and handles contingency branching based on the severity and timing of a detected fault.
 
-*   **States:** `Deorbit_Burn`, `Hypersonic_Coast`, `Powered_Descent`, `Hover_Targeting`, `Terminal_Descent`.
+*   **States:** `DEORBIT_BURN`, `HYPERSONIC_COAST`, `POWERED_DESCENT`, `HOVER_TARGETING`, `TERMINAL_DESCENT`, and `HARD_ABORT`.
 *   **Contingency Logic Example:** 
     *   *Fault during `Powered_Descent`:* The Director commands the Guidance module to recalculate burn time or shift the landing target to a closer safe zone.
     *   *Fault during `Terminal_Descent` (< 50m):* The Director triggers a "Hard Abort" contingency—ignoring precision targeting and commanding the Control Allocator to maximize vertical thrust on surviving engines regardless of lateral drift.
@@ -34,7 +34,8 @@ The overarching logic controller. It manages nominal mission phases and handles 
 ### B. State Estimation Module (Navigation)
 KSP provides perfect data (`vessel.flight().surface_altitude`), which we will purposefully obscure.
 *   **Noise Wrapper:** kRPC telemetry streams will be wrapped in a function that injects continuous Gaussian noise into the radar altimeter and accelerometer readings.
-*   **The Filter:** A Discrete-Time Kalman Filter (or Extended Kalman Filter) that fuses the noisy acceleration data with the noisy altitude data to produce a clean, probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z, Mass]$.
+*   **The Filter:** A linear Discrete-Time Kalman Filter that fuses noisy acceleration data with noisy altitude data to produce a clean, probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z]$. (Note: Vessel mass is treated as a clean, external telemetry parameter, not estimated).
+*   **Attitude Handling:** To keep the filter fast and linear, we use a small-angle approximation: attitude telemetry is treated as perfect when rotating body-frame acceleration to the world frame, and the accelerometer noise variance is artificially inflated to absorb the physical attitude uncertainty.
 
 ### C. Fault Detection & Isolation Module (FDI)
 The system's diagnostic nervous system.
@@ -47,12 +48,19 @@ The core engineering solution to asymmetric thrust.
 *   **The Solution:** The guidance algorithm does not command individual engines. Instead, it commands a desired 6-DOF "Wrench" (Forces $F_x, F_y, F_z$ and Torques $\tau_x, \tau_y, \tau_z$).
 *   **The Mapper:** The Allocator uses a pseudo-inverse matrix solver (`numpy.linalg.pinv`) to map the desired Wrench to the *surviving* engines. It will automatically throttle down engines opposite the failure to kill the torque, while throttling up adjacent engines to maintain the required vertical stopping force.
 
+### E. Telemetry Logger (Debugging Infrastructure)
+*   **The Problem:** The KSP physics loop runs at 50Hz. Interactive debugging or slow console printing breaks this real-time constraint.
+*   **The Solution:** A dual-file logging strategy. A high-density CSV logs the complete system state at every tick, while a JSONL file records discrete state changes and faults. I/O is heavily buffered to ensure the control loop never blocks.
+
 ---
 
-## 4. Testbed Requirements
+## 4. Testbed Requirements & Simulation Strategy
 
-To successfully develop and test this system, a specific testbed vessel must be constructed in KSP:
+To rapidly develop the system without constantly running KSP, we employ a **Two-Tier Test Harness**:
+1.  **Kinematic Mock:** A lightweight offline Newtonian physics loop (e.g., `a = F/m - g`) that allows us to run thousands of simulated landing profiles and tune the Kalman Filter in seconds.
+2.  **Live KSP Validation:** Final tuning and verification run against the actual game engine using kRPC.
 
-1.  **Engine Cluster:** The vessel requires a redundant cluster of independently controllable engines (e.g., a central sustainer engine surrounded by 4 or 8 radial engines).
-2.  **RCS Authority:** Robust RCS or heavy reaction wheels to provide baseline attitude control during the split-second it takes the Allocator to re-balance the main engines.
-3.  **The Gremlin:** We will write a lightweight background script (either in kOS or a separate Python thread) that acts as the "Gremlin"—randomly selecting an engine part module and forcing its `thrustLimit` to 0 or shutting it down entirely to trigger the FDI module during live tests.
+For live testing, the KSP testbed vessel requires:
+1.  **Engine Cluster:** A redundant cluster of independently controllable engines (e.g., a central sustainer surrounded by 4 or 8 radial engines).
+2.  **RCS Authority:** Robust RCS or reaction wheels for baseline attitude control while the Allocator re-balances the main engines.
+3.  **The Gremlin:** A background script that actively sabotages the flight. It will randomly kill engine modules to trigger the FDI, and inject lateral acceleration biases into the IMU telemetry stream to simulate unmodeled environmental disturbances (like wind shear).
