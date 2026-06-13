@@ -206,3 +206,15 @@ class TelemetryWriter:
         """
         pass
 ```
+
+---
+
+## 7. Physical Execution Topology
+
+KSP and the kRPC server run on the Windows host. AEGIS runs in the Arch WSL2 environment. Because WSL2 operates within a Hyper-V VM with its own virtual network adapter, AEGIS cannot reach KSP via `localhost` (127.0.0.1) by default unless Windows 11 `localhostforwarding` is explicitly enabled in `.wslconfig`.
+
+To guarantee connection reliability, the kRPC client must resolve the Windows host IP dynamically (typically found in `/etc/resolv.conf` under the `nameserver` entry) rather than hardcoding `localhost`.
+
+### Interface Requirements
+- The Python process must explicitly read the WSL host IP at startup.
+- All high-frequency telemetry uses `conn.add_stream()` to push data via the kRPC stream port (50001) rather than pulling via RPC calls (50000).

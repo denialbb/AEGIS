@@ -436,3 +436,29 @@ Option 3: Small-Angle Approximation. We will standardize the noise wrapper to ou
 
 **Review Notes**
 Resolves the architecture gap exposed by Claude regarding attitude noise in the linear Kalman filter.
+
+---
+
+### ADR-015 — WSL2 to KSP Connection Topology
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Human & Agent
+- **Module(s):** Cross-cutting
+
+**Context**
+AEGIS runs in an Arch WSL2 environment, which operates inside a Hyper-V VM with its own virtual network adapter. KSP and the kRPC server run on the Windows host. Connecting to `localhost` (127.0.0.1) from within WSL2 reaches the VM's loopback interface, not the Windows host, causing kRPC connection timeouts unless Windows 11 `localhostforwarding` is explicitly enabled (which is not guaranteed).
+
+**Options Considered**
+1. Rely on `.wslconfig` `localhostforwarding=true` — Simple in code, but requires manual Windows configuration and relies on Windows 11 features that can be brittle across versions.
+2. Dynamically resolve Windows Host IP — The Python process reads the host IP from `/etc/resolv.conf` (the `nameserver` entry) and connects to that IP. Works universally across WSL2 setups without manual `.wslconfig` changes.
+
+**Decision**
+Option 2: Dynamically resolve Windows Host IP. The kRPC connection setup code must dynamically determine the host IP rather than hardcoding `localhost`.
+
+**Consequences**
+- ✅ Guarantees connection reliability out-of-the-box for any WSL2 user.
+- ✅ Prevents silent failure modes where the agent hangs on `krpc.connect()`.
+- ⚠️ Adds slight complexity to the initial connection bootstrapping logic.
+
+**Review Notes**
+None yet.
