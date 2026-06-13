@@ -7,6 +7,7 @@ class FaultDetectionIsolation:
         """
         threshold: Deviation in m/s^2 above which a fault is declared.
         """
+        # ISS-001: placeholder — calibrate against measured KF output noise once ISS-003 is resolved.
         self.threshold: float = threshold
 
     def detect_fault(self, expected_accel: np.ndarray, measured_accel: np.ndarray) -> bool:
@@ -25,6 +26,7 @@ class FaultDetectionIsolation:
         expected_throttles: array of throttle values [0.0, 1.0] commanded in the previous step, shape (N,)
         Returns a list of engine indices that have suffered a fault.
         """
+        # ISS-006: mass is sourced from clean kRPC telemetry (vessel.mass), not the State Estimator. If mass is ever noised or rate-limited, this expected_accel calculation will produce spurious fault flags.
         if not active_engines:
             return []
             
@@ -39,21 +41,28 @@ class FaultDetectionIsolation:
             return []
 
         missing_force = expected_force - (measured_accel * mass)
+        force_tolerance = self.threshold * mass
         
-        failed_engines = []
         min_error = float('inf')
-        best_candidate = -1
+        best_combo: List[int] = []
         
-        for i, engine in enumerate(active_engines):
-            expected_force_i = engine.thrust_direction * engine.max_thrust * expected_throttles[i]
-            # Only consider engines that were actually commanded to produce thrust
-            if expected_throttles[i] > 0.01:
-                error = float(np.linalg.norm(missing_force - expected_force_i))
+        import itertools
+        
+        # Test all combinations of active engines (from 1 to N failures)
+        for num_failed in range(1, len(active_engines) + 1):
+            for combo in itertools.combinations(enumerate(active_engines), num_failed):
+                combo_force = np.zeros(3)
+                for i, engine in combo:
+                    combo_force += engine.thrust_direction * engine.max_thrust * expected_throttles[i]
+                    
+                error = float(np.linalg.norm(missing_force - combo_force))
                 if error < min_error:
                     min_error = error
-                    best_candidate = engine.index
+                    best_combo = [engine.index for i, engine in combo]
                     
-        if best_candidate != -1:
-            failed_engines.append(best_candidate)
+        # If the best matching combination is within our tolerance, return it
+        if min_error < force_tolerance * 2.0: # Giving some leeway for double failures
+            return best_combo
             
-        return failed_engines
+        # Fallback: if we can't cleanly isolate, return the best guess anyway
+        return best_combo

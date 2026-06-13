@@ -53,3 +53,27 @@ def test_isolate_fault():
     
     faults = fdi.isolate_fault(active_engines, expected_throttles, measured_accel_e0_fail, mass)
     assert faults == [0]
+
+def test_isolate_multiple_faults():
+    fdi = FaultDetectionIsolation(threshold=0.5)
+    
+    e0 = Engine(index=0, position=np.array([ 1.0, 0.0,  0.0]), thrust_direction=np.array([ 0.1, 0.99, 0.0]), max_thrust=100.0)
+    e1 = Engine(index=1, position=np.array([-1.0, 0.0,  0.0]), thrust_direction=np.array([-0.1, 0.99, 0.0]), max_thrust=100.0)
+    e2 = Engine(index=2, position=np.array([ 0.0, 0.0,  1.0]), thrust_direction=np.array([ 0.0, 0.99, 0.1]), max_thrust=100.0)
+    e3 = Engine(index=3, position=np.array([ 0.0, 0.0, -1.0]), thrust_direction=np.array([ 0.0, 0.99,-0.1]), max_thrust=100.0)
+    
+    e0.thrust_direction /= np.linalg.norm(e0.thrust_direction)
+    e1.thrust_direction /= np.linalg.norm(e1.thrust_direction)
+    e2.thrust_direction /= np.linalg.norm(e2.thrust_direction)
+    e3.thrust_direction /= np.linalg.norm(e3.thrust_direction)
+    
+    active_engines = [e0, e1, e2, e3]
+    mass = 10.0
+    expected_throttles = np.array([1.0, 1.0, 1.0, 1.0])
+    
+    # Engines 1 and 2 fail simultaneously
+    measured_force_e1_e2_fail = (e0.thrust_direction + e3.thrust_direction) * 100.0
+    measured_accel_e1_e2_fail = measured_force_e1_e2_fail / mass
+    
+    faults = fdi.isolate_fault(active_engines, expected_throttles, measured_accel_e1_e2_fail, mass)
+    assert set(faults) == {1, 2}
