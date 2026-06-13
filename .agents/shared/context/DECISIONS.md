@@ -1,112 +1,301 @@
-# Architecture Decision Records (ADRs)
-
-This document tracks the key architectural decisions made for the AEGIS system, including the rationale, alternatives considered, and implications.
-
----
-
-## ADR-001: kRPC Integration with Python
-
-### Context
-Kerbal Space Program's native VM runs KerboScript (kOS). However, implementing linear algebra solvers (such as pseudo-inverses for Control Allocation) and complex state estimators (Kalman Filters) is extremely challenging in kOS due to the lack of library support, lack of type systems, and CPU cycle limits per physics tick.
-
-### Decision
-We use the **kRPC** mod to expose a TCP socket and control the vessel using a local Python script running inside WSL (`Arch` distribution).
-
-### Rationale
-- Python offers mature scientific libraries (`numpy`, `scipy`, `filterpy`) that make complex control and estimation implementation straightforward.
-- A localhost TCP stream can update at 50Hz (20ms/tick) with latency under 2ms, leaving plenty of headroom.
-- Python supports static type hints which can be checked using `mypy` to prevent dynamic runtime type errors.
+# DECISIONS.md — Architecture Decision Record Log
+> One entry per non-obvious design decision. Written at the time the decision is made.
+> The goal: when Claude flags something in a review, this file answers "yes, we know — here's why."
+> Entries are never deleted. Superseded decisions are marked as such and linked to their replacement.
 
 ---
 
-## ADR-002: Discrete-Time Kalman Filter for State Estimation
+## How to Write an Entry
 
-### Context
-KSP provides perfect state information (exact position, velocity, and acceleration vectors). To simulate a real aerospace environment, we must deliberately obscure this telemetry and reconstruct the state.
+Copy the template block below. Fill every field — especially **Options Considered** and **Consequences**.
+A decision with no considered alternatives isn't a decision, it's an assumption.
 
-### Decision
-We will wrap kRPC streams in a noise-generating function that adds Gaussian white noise to telemetry (e.g. radar altitude, accelerometer). We will use a Discrete-Time Kalman Filter to reconstruct the state vector:
-$$\mathbf{x} = \begin{bmatrix} X & Y & Z & V_x & V_y & V_z & Mass \end{bmatrix}^T$$
-
-### Rationale
-- The Kalman Filter provides an optimal estimator under linear systems and Gaussian noise.
-- Since descent is approximately linear or locally linear over short intervals, a linear KF or EKF provides high fidelity without the computational overhead of particle filters.
+**Statuses:**
+- `ACCEPTED` — Active, in force.
+- `PROPOSED` — Under discussion, not yet implemented.
+- `SUPERSEDED` — Replaced by a later decision. Link to successor.
+- `DEPRECATED` — Removed from the system. Record why.
 
 ---
 
-## ADR-003: Pseudo-Inverse Control Allocation (Wrench Mapping)
+## Template
 
-### Context
-When an engine fails, it creates an asymmetric thrust vector, generating a destabilizing torque. Direct mapping of throttle commands from a standard autopilot would spin the vessel out of control.
+```
+### ADR-XXX — [Short imperative title, e.g. "Use Kalman Filter over moving average"]
+- **Status:** PROPOSED | ACCEPTED | SUPERSEDED by ADR-XXX | DEPRECATED
+- **Date:** YYYY-MM-DD
+- **Author:** [Human / Other Agent / Joint]
+- **Module(s):** [State Estimator / FDI / Control Allocator / Mission Director / Cross-cutting]
 
-### Decision
-We command a desired 6-DOF Wrench:
-$$\mathbf{W} = \begin{bmatrix} F_x & F_y & F_z & \tau_x & \tau_y & \tau_z \end{bmatrix}^T$$
-And use a control effectiveness matrix $\mathbf{B}$ to map the individual engine thrusts $\mathbf{u}$ to the wrench:
-$$\mathbf{W} = \mathbf{B} \mathbf{u}$$
-Since we have redundant engines, we solve for $\mathbf{u}$ using the Moore-Penrose pseudo-inverse of $\mathbf{B}$:
-$$\mathbf{u} = \mathbf{B}^\dagger \mathbf{W}$$
-where $\mathbf{B}^\dagger = \mathbf{B}^T (\mathbf{B} \mathbf{B}^T)^{-1}$ is computed via `numpy.linalg.pinv`.
+**Context**
+What problem or question forced this decision? What constraints were in play?
 
-### Rationale
-- Pseudo-inverse control allocation naturally handles redundant actuators.
-- When an engine fails, the FDI flags it as inactive. We remove the corresponding column from $\mathbf{B}$ and recompute the pseudo-inverse. The allocator automatically redistributes the thrust to surviving engines, balancing torque to prevent spins.
+**Options Considered**
+1. Option A — brief description and key tradeoff
+2. Option B — brief description and key tradeoff
+3. Option C — brief description and key tradeoff (if applicable)
+
+**Decision**
+Which option was chosen and the core reason in 1–2 sentences.
+
+**Consequences**
+- ✅ What this makes easier or better.
+- ✅ What this makes easier or better.
+- ⚠️ What this makes harder, introduces risk, or defers to later.
+- ⚠️ What this makes harder, introduces risk, or defers to later.
+
+**Review Notes**
+Any concerns flagged during code review that are accepted as known tradeoffs.
+Leave blank until a review touches this decision.
+```
+
+---
+---
+
+## Decision Log
 
 ---
 
-## ADR-004: Arch WSL Execution Environment with `uv`
+### ADR-001 — Use kRPC + Python over native kOS for all guidance logic
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Human & Claude
+- **Module(s):** Cross-cutting
 
-### Context
-To run the code, we need a consistent development and execution environment. 
+**Context**
+The mission requires Kalman filtering, pseudo-inverse matrix solving, and a complex hierarchical state machine. KerboScript (kOS) has no linear algebra libraries and its VM is unsuitable for the mathematical weight of this system.
 
-### Decision
-We execute all python code, tests, and static analysis inside the Arch WSL distribution using `uv` to manage dependencies.
+**Options Considered**
+1. Native kOS — Zero external dependencies, runs inside KSP. No matrix libraries; implementing numpy-equivalent math from scratch is impractical and unmaintainable.
+2. kRPC + Python — Streams telemetry over TCP/IP to a local Python process. Full access to numpy, filterpy, scipy. Adds a network dependency.
+3. kRPC + C# — Compiled, type-safe, fast. No prototyping ecosystem for Kalman filters; overkill for a research project.
 
-### Rationale
-- Arch WSL provides a fast, standardized Linux environment.
-- `uv` is a blazingly fast, modern Python package manager that handles virtual environments and dependency resolution reliably.
+**Decision**
+kRPC + Python. The math ecosystem (numpy, filterpy) is the decisive factor. Localhost TCP latency is well within KSP's 20ms physics tick.
 
----
+**Consequences**
+- ✅ Trivial implementation of Kalman filter, pseudo-inverse solver, and state machine.
+- ⚠️ Python is interpreted; runtime TypeErrors are fatal during engine-out events. Mitigated by strict type-hinting and mypy enforcement.
+- ⚠️ Adds dependency on kRPC mod and a running Python process. System cannot operate standalone inside KSP.
 
-## ADR-005: 3D Force Control Allocation for Gimbaled Engines
-
-### Context
-The vessel's main engines are gimbaled, meaning they can vector their thrust. The allocator needs to compute both the throttle settings and the 2-axis gimbal angles for all active engines to control both net force and net torque (attitude).
-
-### Decision
-We treat each engine's control input as a 3D thrust force vector $\mathbf{f}_i = [f_{x,i}, f_{y,i}, f_{z,i}]^T \in \mathbb{R}^3$. For $N$ engines, the control vector is $\mathbf{u} \in \mathbb{R}^{3N}$. The control effectiveness matrix $\mathbf{B}$ has shape $6 \times 3N$, where each engine's block is:
-$$\mathbf{B}_i = \begin{bmatrix} \mathbf{I}_{3\times 3} \\ [\mathbf{r}_i]_\times \end{bmatrix}$$
-We solve for $\mathbf{u}$ using `numpy.linalg.pinv` and then map the 3D force vector $\mathbf{f}_i$ for each engine back to physical throttle and gimbal angles:
-- Throttle: $T_i = \|\mathbf{f}_i\| / F_{max,i}$
-- Gimbal X: $\theta_{x,i} = \arcsin(-f_{y,i}/\|\mathbf{f}_i\|)$
-- Gimbal Y: $\theta_{y,i} = \arcsin(f_{x,i}/\|\mathbf{f}_i\|)$
-
-### Rationale
-This formulation keeps the mapping linear and allows us to use the standard pseudo-inverse control allocation algorithm directly, without needing non-linear optimization solvers.
+**Review Notes**
+None yet.
 
 ---
 
-## ADR-006: Target-Relative Local Cartesian Tangent Plane
+### ADR-002 — Enforce strict type-hinting and mypy across all modules
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Claude
+- **Module(s):** Cross-cutting
 
-### Context
-Guidance calculations and trajectory tracking are mathematically simpler in a local flat-plane coordinate system compared to planetary spherical or body-centric Cartesian systems.
+**Context**
+Python's dynamic typing is a liability for a safety-critical state machine. A silent type mismatch in the Control Allocator during an engine-out event produces wrong thrust commands with no exception raised.
 
-### Decision
-We define the landing target on the surface as the origin $(0, 0, 0)$. Position and velocity vectors are represented in a local Cartesian tangent plane (e.g. North-East-Down or target-relative frame) fixed to the rotating surface of the celestial body.
+**Options Considered**
+1. No type enforcement — fastest to write, highest runtime risk.
+2. Type hints only (no checker) — documents intent but catches nothing automatically.
+3. Type hints + mypy in CI — catches mismatches statically before any code runs.
 
-### Rationale
-Using a target-relative local frame simplifies the state estimator and control equations, as the target position is always constant at the origin.
+**Decision**
+Type hints + mypy. All public functions must be fully annotated. `np.ndarray` shapes must be documented in docstrings. mypy runs as a pre-commit gate.
+
+**Consequences**
+- ✅ Type errors caught at development time, not during a live descent burn.
+- ✅ Annotations serve as machine-readable interface contracts between modules.
+- ⚠️ numpy typing with mypy is notoriously verbose. Some annotations will feel bureaucratic.
+- ⚠️ Slows initial development velocity slightly.
+
+**Review Notes**
+None yet.
 
 ---
 
-## ADR-007: Local Gravity Vector Querying
+### ADR-003 — Decouple system into four strictly bounded modules
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Claude
+- **Module(s):** Cross-cutting
 
-### Context
+**Context**
+Fault detection, state estimation, guidance, and mission logic interact heavily. Without explicit boundaries, changes in one domain silently break another.
+
+**Options Considered**
+1. Monolithic script — Simple to prototype, impossible to test in isolation or reason about during a fault.
+2. Loosely coupled modules — Shared global state, ad-hoc interfaces. Fast but brittle.
+3. Strictly decoupled modules with explicit interface contracts — Each module exposes a defined API; no direct cross-module data access.
+
+**Decision**
+Strict decoupling into: Mission Director, State Estimator, FDI, Control Allocator. Each module owns its domain. Data flows through defined interfaces only.
+
+**Consequences**
+- ✅ Each module can be tested and mocked independently.
+- ✅ A fault in one module cannot silently corrupt another's state.
+- ✅ Enables the review workflow — PRs touch one module at a time.
+- ⚠️ More boilerplate at module boundaries.
+- ⚠️ Interface design must be right upfront; changing it later touches multiple modules.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-004 — FDI uses expected vs measured acceleration delta, not thrust sensor
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Claude
+- **Module(s):** FDI
+
+**Context**
+KSP does not expose a reliable per-engine thrust sensor. The FDI must detect engine failure without direct thrust telemetry.
+
+**Options Considered**
+1. Per-engine thrust sensor polling — Ideal, but not reliably available via kRPC for all engine types.
+2. Expected vs measured acceleration delta — FDI computes predicted acceleration from commanded throttle + known mass, compares to State Estimator's measured acceleration. Deviation beyond noise floor flags a fault.
+3. Angular rate anomaly detection — Detects the torque induced by asymmetric thrust. Slower to react; cannot isolate which engine failed.
+
+**Decision**
+Expected vs measured acceleration delta, using the State Estimator's clean output as the measured signal. Noise floor threshold must be calibrated against the Kalman filter's output variance.
+
+**Consequences**
+- ✅ Works with any engine type without direct sensor access.
+- ✅ Leverages State Estimator output — already noise-filtered.
+- ⚠️ Threshold calibration is critical. Too tight → false positives. Too loose → late detection. Must be validated empirically per vessel configuration.
+- ⚠️ Cannot detect partial thrust loss below the noise floor. A very gradual degradation may go undetected until large.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-005 — Control Allocator uses pseudo-inverse wrench mapping
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Joint
+- **Module(s):** Control Allocator
+
+**Context**
+When an off-center engine fails, naively throttling up surviving engines induces torque that spins the vessel. A simple priority scheme cannot simultaneously satisfy force and torque constraints. Additionally, the vessel's main engines are gimbaled, meaning they can vector their thrust.
+
+**Options Considered**
+1. Priority throttle — Throttle up the engine nearest the failed one. Fast, simple. Cannot zero the induced torque; will spin the vessel.
+2. Manual torque cancellation rules — Hardcoded logic per engine layout. Brittle; breaks if the vessel configuration changes.
+3. Pseudo-inverse wrench mapping — Guidance commands a 6-DOF wrench. Allocator maps it to 3D thrust force vector for each engine.
+
+**Decision**
+Pseudo-inverse wrench mapping treating each engine's control input as a 3D thrust force vector. We solve for $\mathbf{u}$ using `numpy.linalg.pinv` and then map the 3D force vector back to physical throttle and gimbal angles.
+
+**Consequences**
+- ✅ Correctly handles any engine failure pattern without hardcoded rules.
+- ✅ Automatically satisfies both force and torque constraints.
+- ✅ Allows standard pseudo-inverse algorithm without non-linear optimization solvers.
+- ⚠️ If too many engines are lost, B becomes rank-deficient. The pseudo-inverse will still return a solution but it may be physically unrealisable. Must detect and report this condition.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-006 — Arch WSL Execution Environment with `uv`
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Agent
+- **Module(s):** Cross-cutting
+
+**Context**
+To run the code, we need a consistent development and execution environment.
+
+**Options Considered**
+1. Windows Native Python — Potential issues with some C-based dependencies or path lengths.
+2. Arch WSL with pip — Standard, but slower environment setup.
+3. Arch WSL with `uv` — Blazingly fast, modern package manager that handles venvs reliably.
+
+**Decision**
+Execute all python code, tests, and static analysis inside the Arch WSL distribution using `uv`.
+
+**Consequences**
+- ✅ Fast, standardized Linux environment.
+- ✅ Reliable dependency resolution.
+- ⚠️ Requires users to run WSL.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-007 — Discrete-Time Kalman Filter for State Estimation
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Agent
+- **Module(s):** State Estimator
+
+**Context**
+KSP provides perfect state information. To simulate a real aerospace environment, we must deliberately obscure this telemetry and reconstruct the state from noisy inputs.
+
+**Options Considered**
+1. Moving Average Filter — Too laggy and cannot handle variable noise well.
+2. Particle Filter — Computationally expensive.
+3. Discrete-Time Kalman Filter — Optimal estimator under linear systems and Gaussian noise.
+
+**Decision**
+Wrap kRPC streams in a noise-generating function and use a Discrete-Time Kalman Filter to reconstruct the state vector $[X, Y, Z, V_x, V_y, V_z]$.
+
+**Consequences**
+- ✅ High fidelity tracking with no lag.
+- ✅ Computationally efficient.
+- ⚠️ Requires accurate tuning of Q and R covariance matrices.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-008 — Target-Relative Local Cartesian Tangent Plane
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Agent
+- **Module(s):** Mission Director, Control Allocator
+
+**Context**
+Guidance calculations and trajectory tracking are mathematically complex in planetary spherical or body-centric Cartesian systems.
+
+**Options Considered**
+1. Planetary Spherical — Complex math for local flat paths.
+2. Body-centric Cartesian — Target coordinates change as planet rotates.
+3. Target-Relative Local Cartesian Tangent Plane — Target is origin, fixed to surface.
+
+**Decision**
+Define the landing target on the surface as the origin $(0, 0, 0)$. Position and velocity vectors are represented in a local Cartesian tangent plane.
+
+**Consequences**
+- ✅ Simplifies state estimator and control equations.
+- ⚠️ Plane assumption breaks down at high altitudes or large ground distances.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-009 — Local Gravity Vector Querying
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Agent
+- **Module(s):** State Estimator
+
+**Context**
 Gravity changes as the vessel descends. The State Estimator needs to know the gravity vector to propagate acceleration correctly.
 
-### Decision
-We query the exact local gravity vector dynamically from the kRPC API based on the vessel's current position relative to the celestial body. We use this gravity vector in the state transition step of the Kalman Filter.
+**Options Considered**
+1. Constant gravity assumption — Inaccurate over large altitude changes.
+2. Local gravity model implementation — Complex and redundant.
+3. Query exact local gravity dynamically from kRPC API.
 
-### Rationale
-This ensures high accuracy without needing to model the complex celestial body physics or gravity fields locally in our code.
+**Decision**
+Query the exact local gravity vector dynamically from the kRPC API.
 
+**Consequences**
+- ✅ High accuracy without modeling complex celestial body physics.
+- ⚠️ Adds dependency on telemetry for physical constants.
+
+**Review Notes**
+None yet.
