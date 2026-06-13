@@ -80,5 +80,5 @@ To properly test the system's resilience, we use a lightweight background script
 ## 6. Documentation
 
 For a deeper dive into the architectural design and the specifics of the AEGIS Test Vehicle (ATV), refer to the following documents:
-- [Architecture Design](file:///c:/Projects/AEGIS/docs/architecture_design.md)
-- [Vessel Design](file:///c:/Projects/AEGIS/docs/vessel_design.md)
+- [Architecture Design](docs/architecture_design.md)
+- [Vessel Design](docs/vessel_design.md)
