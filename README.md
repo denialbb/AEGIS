@@ -12,10 +12,13 @@ The objective is to build an autonomous mission architecture that deliberately b
 
 To effectively test the control allocation algorithms, AEGIS expects a redundant, multi-engine vehicle layout. This design mimics real-world spacecraft that rely on differential throttling and gimbaling to maintain control after engine failures.
 
-![SpaceX Crew Dragon](/c:/Projects/AEGIS/docs/images/crew_dragon.jpg)
-*SpaceX Crew Dragon with its 8x SuperDraco engine layout.*
+![SpaceX Crew Dragon](docs/images/crew_dragon.jpg)
+*SpaceX Crew Dragon.*
 
-![Blue Moon Lander](/c:/Projects/AEGIS/docs/images/blue_moon.png)
+![SpaceX Crew Dragon Engines](docs/images/crew_dragon_engines.jpg)
+*Close-up of the SpaceX Crew Dragon's SuperDraco engine layout.*
+
+![Blue Moon Lander](docs/images/blue_moon.png)
 *Blue Origin Blue Moon MK2 Lunar Lander concept.*
 
 ## 3. System Architecture
