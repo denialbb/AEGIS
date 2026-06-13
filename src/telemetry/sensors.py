@@ -28,8 +28,11 @@ class SensorModels:
         
         self.altitude_stream = self.conn.add_stream(getattr, flight_world, 'surface_altitude')
         
-        # Pull acceleration in the vessel's body frame (ADR-014)
-        self.accel_stream = self.conn.add_stream(getattr, flight_body, 'acceleration')
+        # KSP doesn't provide a direct acceleration stream, so we stream velocity and UT to differentiate
+        self.velocity_stream = self.conn.add_stream(getattr, flight_world, 'velocity')
+        self.ut_stream = self.conn.add_stream(getattr, self.conn.space_center, 'ut')
+        self.last_vel = None
+        self.last_ut = None
         
         # Attitude (quaternion) in the target reference frame
         self.attitude_stream = self.conn.add_stream(getattr, flight_world, 'rotation')
@@ -57,7 +60,21 @@ class SensorModels:
         """
         # Read perfect data
         perfect_alt = self.altitude_stream()
-        perfect_accel = np.array(self.accel_stream())
+        
+        ut = self.ut_stream()
+        vel = np.array(self.velocity_stream())
+        
+        if self.last_vel is None:
+            perfect_accel = np.zeros(3)
+        else:
+            dt = ut - self.last_ut
+            if dt > 0:
+                perfect_accel = (vel - self.last_vel) / dt
+            else:
+                perfect_accel = np.zeros(3)
+                
+        self.last_vel = vel
+        self.last_ut = ut
         attitude = np.array(self.attitude_stream())
         mass = self.mass_stream()
         

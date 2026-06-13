@@ -48,7 +48,8 @@ class MissionDirector:
                 pos = np.array(part.position(vessel.reference_frame))
                 thrust_dir = np.array([0.0, 1.0, 0.0]) # Simplified thrust vector
                 e = Engine(index=i, position=pos, thrust_direction=thrust_dir, max_thrust=part.engine.max_thrust)
-                e.active = part.engine.active
+                part.engine.active = True
+                e.active = True
                 self.engines.append(e)
         logger.info(f"Discovered {len(self.engines)} Aegis engines.")
 
