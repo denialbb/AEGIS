@@ -462,3 +462,43 @@ Option 2: Dynamically resolve Windows Host IP. The kRPC connection setup code mu
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-016 — Engine Discovery via kOS/kRPC Tags
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Joint
+- **Module(s):** Mission Director
+
+**Context**
+To allocate thrust, the Control Allocator needs to know which engines it is allowed to control. Simply querying all engines or active stages risks accidentally controlling separation motors or RCS thrusters. 
+
+**Decision**
+We will strictly use kRPC's `vessel.parts.with_tag("AegisEngine")` to discover controllable engines. 
+
+**Consequences**
+- ✅ Guarantees safety against hijacking unrelated solid rocket motors or RCS thrusters.
+- ⚠️ **Future RCS Support:** Currently, this explicitly ignores RCS thrusters. When future updates add RCS support to the Control Allocator, we will need to query `vessel.parts.with_tag("AegisRCS")` from `vessel.parts.rcs` and include them in the allocation matrix.
+
+**Review Notes**
+Requested specifically by the user.
+
+---
+
+### ADR-017 — Custom Landing Pad Reference Frame
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Agent
+- **Module(s):** Cross-cutting (Math)
+
+**Context**
+Using a generic planetary surface frame places the origin $(0,0,0)$ at the center of the celestial body. This results in huge orbital state vectors ($600,000$ meters) which degrade floating-point precision inside the Kalman Filter and needlessly complicate guidance targeting.
+
+**Decision**
+Create a custom, planet-fixed reference frame centered exactly on the target landing pad's latitude and longitude, using KSP's `ReferenceFrame.create_relative`.
+
+**Consequences**
+- ✅ Drastically simplifies math. The target position is always exactly $(0,0,0)$.
+- ✅ Improves Kalman Filter numerical stability by bounding position values.
+- ⚠️ Requires knowing the exact landing coordinates at startup. We will hardcode default coordinates (e.g., KSC Launchpad) for now.
