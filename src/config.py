@@ -19,3 +19,6 @@ SIGMA_ACCEL = 0.5   # m/s^2
 
 # Fault Detection & Isolation
 FDI_THRESHOLD = 0.5
+
+# Simulation Determinism
+RANDOM_SEED = 42

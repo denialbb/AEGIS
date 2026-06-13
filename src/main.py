@@ -64,7 +64,7 @@ class MissionDirector:
         
         self.writer: TelemetryWriter = TelemetryWriter({
             "num_engines": max(len(self.engines), 1),
-            "seed": 42
+            "seed": config.RANDOM_SEED
         })
         self.last_tick_time: float = 0.0
         

@@ -37,6 +37,9 @@ class SensorModels:
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT
         self.sigma_accel = config.SIGMA_ACCEL
+        
+        # Isolated RNG for determinism
+        self.rng = np.random.default_rng(config.RANDOM_SEED)
 
     def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float]:
         """
@@ -54,7 +57,7 @@ class SensorModels:
         mass = self.mass_stream()
         
         # Inject Gaussian Noise
-        noisy_alt = float(perfect_alt + np.random.normal(0, self.sigma_alt))
-        noisy_accel = perfect_accel + np.random.normal(0, self.sigma_accel, size=3)
+        noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
+        noisy_accel = perfect_accel + self.rng.normal(0, self.sigma_accel, size=3)
         
         return noisy_alt, noisy_accel, attitude, float(mass)
