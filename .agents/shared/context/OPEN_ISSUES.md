@@ -220,3 +220,23 @@ Python over TCP socket communication with kRPC might suffer from jitter or packe
 
 **Resolution**
 <!-- Fill in when resolved -->
+
+---
+
+### ISS-009 — Log File Rotation not implemented
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-14
+- **Module(s):** Core Logging
+- **Related ADR:** None
+- **Related Review:** REVIEW_20260614_012742
+
+**Description**
+Currently, log files just append indefinitely. This can lead to excessive disk usage over time if not managed. 
+
+**Acceptance Criteria**
+- Implement a `RotatingFileHandler` from python's `logging.handlers`.
+- Set an appropriate max bytes and backup count limit for log rotation.
+
+**Resolution**
+<!-- Fill in when resolved -->

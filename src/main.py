@@ -146,20 +146,23 @@ class MissionDirector:
             # 4. State Machine & Control Wrench Computation
             desired_wrench = np.zeros(6)
             
+            # Use estimated altitude instead of raw telemetry for transitions
+            est_alt = state_vector[2]
+            
             # Simple state transition for demonstration
-            if self.state == "DEORBIT_BURN" and noisy_alt < 10000:
+            if self.state == "DEORBIT_BURN" and est_alt < 10000:
                 logger.info("Transitioning from DEORBIT_BURN to HYPERSONIC_COAST")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HYPERSONIC_COAST"})
                 self.state = "HYPERSONIC_COAST"
-            elif self.state == "HYPERSONIC_COAST" and noisy_alt < 2000:
+            elif self.state == "HYPERSONIC_COAST" and est_alt < 2000:
                 logger.info("Transitioning from HYPERSONIC_COAST to POWERED_DESCENT")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "POWERED_DESCENT"})
                 self.state = "POWERED_DESCENT"
-            elif self.state == "POWERED_DESCENT" and noisy_alt < 500:
+            elif self.state == "POWERED_DESCENT" and est_alt < 500:
                 logger.info("Transitioning from POWERED_DESCENT to HOVER_TARGETING")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HOVER_TARGETING"})
                 self.state = "HOVER_TARGETING"
-            elif self.state == "HOVER_TARGETING" and noisy_alt < 50:
+            elif self.state == "HOVER_TARGETING" and est_alt < 50:
                 logger.info("Transitioning from HOVER_TARGETING to TERMINAL_DESCENT")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "TERMINAL_DESCENT"})
                 self.state = "TERMINAL_DESCENT"
@@ -172,7 +175,7 @@ class MissionDirector:
                     throttles, gimbals = self.allocator.allocate(desired_wrench, active_engines)
                     self.expected_throttles = throttles
                     
-                    # Mock expected acceleration update based on new throttles
+                    # TODO(ISS-008): Compute actual expected acceleration using thrust allocation and mass.
                     self.expected_accel = np.zeros(3) 
                 except AllocationDegenerateError as e:
                     print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
