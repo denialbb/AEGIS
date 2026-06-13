@@ -22,9 +22,10 @@ def test_estimator_update():
     
     noisy_alt = 10.0
     noisy_accel = np.array([0.0, 0.0, 9.81])
+    dummy_attitude = np.array([1.0, 0.0, 0.0, 0.0])
     dt = 0.1
     
-    estimator.predict(noisy_accel, dt)
+    estimator.predict(noisy_accel, dummy_attitude, dt)
     updated_state = estimator.update(noisy_alt)
     
     # Check shape
@@ -52,8 +53,9 @@ def test_estimator_synthetic_fall():
         noisy_accel = np.array([0.0, 0.0, -9.81]) 
         # Z should decrease by v*dt + 0.5*a*dt^2 roughly
         noisy_alt = estimator.get_state()[2] + estimator.get_state()[5]*dt + 0.5*(-9.81)*dt**2
-        
-        estimator.predict(noisy_accel, dt)
+        dummy_attitude = np.array([1.0, 0.0, 0.0, 0.0])
+
+        estimator.predict(noisy_accel, dummy_attitude, dt)
         estimator.update(noisy_alt)
         
     state = estimator.get_state()
@@ -90,8 +92,9 @@ def test_estimator_noisy_update():
         
         noisy_accel = np.array([0.0, 0.0, np.random.normal(0, 0.1)]) # Small accel noise
         noisy_alt = true_z + np.random.normal(0, sigma_alt) # Altimeter noise
-        
-        estimator.predict(noisy_accel, dt)
+        dummy_attitude = np.array([1.0, 0.0, 0.0, 0.0])
+
+        estimator.predict(noisy_accel, dummy_attitude, dt)
         estimator.update(noisy_alt)
         
         estimated_z = estimator.get_state()[2]

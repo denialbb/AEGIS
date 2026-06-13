@@ -22,3 +22,8 @@ FDI_THRESHOLD = 0.5
 
 # Simulation Determinism
 RANDOM_SEED = 42
+
+# Application Logging
+DEBUG_LOGGING = False
+LOG_TO_FILE = False
+LOG_FILE_PATH = "logs/aegis.log"

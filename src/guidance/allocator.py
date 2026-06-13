@@ -45,11 +45,13 @@ class ControlAllocator:
         # ISS-002: Check for rank deficiency using condition number
         rank = np.linalg.matrix_rank(B)
         if rank < 6:
-            raise AllocationDegenerateError(f"B rank-deficient: rank={rank} < 6, active_engines={len(active_engines)}")
+            logger.error("B matrix does not have full row rank (rank < 6).")
+            raise AllocationDegenerateError("B matrix does not have full row rank (rank < 6).")
             
         cond = np.linalg.cond(B)
         logger.debug(f"Allocator B matrix cond: {cond}")
         if cond > 1e4:
+            logger.error(f"[Allocator] Degenerate allocation! Condition number: {cond:.2f} > 1e4")
             raise AllocationDegenerateError(f"B ill-conditioned: cond={cond:.2f}, active_engines={len(active_engines)}")
 
         # Solve for u using pseudo-inverse

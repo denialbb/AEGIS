@@ -42,6 +42,8 @@ class TelemetryWriter:
         self.csv_writer: Optional[csv.DictWriter] = None
 
         self._init_files()
+        
+        logger.info(f"Telemetry logging initialized at {self.run_dir_path}")
 
     def _setup_symlink(self) -> None:
         """

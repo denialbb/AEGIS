@@ -1,6 +1,9 @@
 import numpy as np
+import logging
 from typing import Tuple, Any
 import src.config as config
+
+logger = logging.getLogger(__name__)
 
 class SensorModels:
     """
@@ -40,6 +43,8 @@ class SensorModels:
         
         # Isolated RNG for determinism
         self.rng = np.random.default_rng(config.RANDOM_SEED)
+        
+        logger.info(f"Initialized SensorModels with sigma_alt={self.sigma_alt}, sigma_accel={self.sigma_accel}")
 
     def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float]:
         """

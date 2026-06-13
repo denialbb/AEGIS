@@ -48,9 +48,10 @@ The core engineering solution to asymmetric thrust.
 *   **The Solution:** The guidance algorithm does not command individual engines. Instead, it commands a desired 6-DOF "Wrench" (Forces $F_x, F_y, F_z$ and Torques $\tau_x, \tau_y, \tau_z$).
 *   **The Mapper:** The Allocator uses a pseudo-inverse matrix solver (`numpy.linalg.pinv`) to map the desired Wrench to the *surviving* engines. It will automatically throttle down engines opposite the failure to kill the torque, while throttling up adjacent engines to maintain the required vertical stopping force.
 
-### E. Telemetry Logger (Debugging Infrastructure)
+### E. Telemetry & Application Logger (Debugging Infrastructure)
 *   **The Problem:** The KSP physics loop runs at 50Hz. Interactive debugging or slow console printing breaks this real-time constraint.
-*   **The Solution:** A dual-file logging strategy. A high-density CSV logs the complete system state at every tick, while a JSONL file records discrete state changes and faults. I/O is heavily buffered to ensure the control loop never blocks.
+*   **The Telemetry Solution:** A dual-file logging strategy. A high-density CSV logs the complete system state at every tick, while a JSONL file records discrete state changes and faults. I/O is heavily buffered to ensure the control loop never blocks.
+*   **The Application Logging Solution:** Standard `print()` statements are replaced by a global `logging` configuration (`src/common/logger.py`) that strictly avoids the 50Hz inner loop. It outputs runtime information (startup, state transitions, isolated faults) to the console and/or file, toggled via `DEBUG_LOGGING` and `LOG_TO_FILE` in `config.py`.
 
 ---
 

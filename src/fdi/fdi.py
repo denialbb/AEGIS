@@ -1,6 +1,9 @@
 import numpy as np
-from typing import List
+import logging
+from typing import List, Dict, Any
 from src.common.engine import Engine
+
+logger = logging.getLogger(__name__)
 
 class FaultDetectionIsolation:
     def __init__(self, threshold: float = 0.5):
@@ -62,6 +65,7 @@ class FaultDetectionIsolation:
                     
         # If the best matching combination is within our tolerance, return it
         if min_error < force_tolerance * 2.0: # Giving some leeway for double failures
+            logger.warning(f"[FDI] Engines {best_combo} isolated due to fault detection.")
             return best_combo
             
         # Fallback: if we can't cleanly isolate, return the best guess anyway

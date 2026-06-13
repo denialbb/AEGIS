@@ -1,5 +1,8 @@
 import numpy as np
-from filterpy.kalman import KalmanFilter  # type: ignore
+import logging
+from filterpy.kalman import KalmanFilter
+
+logger = logging.getLogger(__name__)  # type: ignore
 
 class StateEstimator:
     def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise: np.ndarray):
@@ -20,7 +23,9 @@ class StateEstimator:
         # We map altitude to the Z coordinate (index 2).
         self.kf.H = np.zeros((1, 6))
         self.kf.H[0, 2] = 1.0
-        
+                
+        logger.info("Initialized StateEstimator (Kalman Filter)")
+
     def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float) -> None:
         """
         Predicts the next state using the measured acceleration as the control input.

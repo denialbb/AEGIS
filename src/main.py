@@ -1,11 +1,15 @@
 import time
 import os
 import krpc
+import logging
 import numpy as np
 from typing import Any, List
 
 import src.config as config
+from src.common.logger import setup_logging
 from src.common.engine import Engine
+
+logger = logging.getLogger(__name__)
 from src.estimation.estimator import StateEstimator
 from src.fdi.fdi import FaultDetectionIsolation
 from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
@@ -46,6 +50,7 @@ class MissionDirector:
                 e = Engine(index=i, position=pos, thrust_direction=thrust_dir, max_thrust=part.engine.max_thrust)
                 e.active = part.engine.active
                 self.engines.append(e)
+        logger.info(f"Discovered {len(self.engines)} Aegis engines.")
 
         self.allocator: ControlAllocator = ControlAllocator(self.engines)
         
@@ -116,7 +121,7 @@ class MissionDirector:
                 
                 # ISS-004: Handle multiple simultaneous failures
                 if len(failed_indices) >= 2:
-                    print(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
+                    logger.error(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
                     self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "MULTIPLE_FAILURES"})
                     self.state = "HARD_ABORT"
                 
@@ -132,23 +137,31 @@ class MissionDirector:
             if not active_engines and len(self.engines) > 0:
                 # If we had engines and they all failed, trigger abort
                 self.state = "HARD_ABORT"
-                print("CRITICAL: All engines failed. HARD ABORT triggered.")
+                logger.error("CRITICAL: All engines failed. HARD ABORT triggered.")
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "ENGINE_FAILURE"})
                 break
             
             # 4. State Machine & Control Wrench Computation
             desired_wrench = np.zeros(6)
             
-            if self.state == "DEORBIT_BURN":
-                pass
-            elif self.state == "HYPERSONIC_COAST":
-                pass
-            elif self.state == "POWERED_DESCENT":
-                pass
-            elif self.state == "HOVER_TARGETING":
-                pass
-            elif self.state == "TERMINAL_DESCENT":
-                pass
-            else:
+            # Simple state transition for demonstration
+            if self.state == "DEORBIT_BURN" and noisy_alt < 10000:
+                logger.info("Transitioning from DEORBIT_BURN to HYPERSONIC_COAST")
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HYPERSONIC_COAST"})
+                self.state = "HYPERSONIC_COAST"
+            elif self.state == "HYPERSONIC_COAST" and noisy_alt < 2000:
+                logger.info("Transitioning from HYPERSONIC_COAST to POWERED_DESCENT")
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "POWERED_DESCENT"})
+                self.state = "POWERED_DESCENT"
+            elif self.state == "POWERED_DESCENT" and noisy_alt < 500:
+                logger.info("Transitioning from POWERED_DESCENT to HOVER_TARGETING")
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HOVER_TARGETING"})
+                self.state = "HOVER_TARGETING"
+            elif self.state == "HOVER_TARGETING" and noisy_alt < 50:
+                logger.info("Transitioning from HOVER_TARGETING to TERMINAL_DESCENT")
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "TERMINAL_DESCENT"})
+                self.state = "TERMINAL_DESCENT"
+            elif self.state not in ["DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
                 self.state = "HARD_ABORT"
                 
             # 5. Allocate Thrust
@@ -188,13 +201,15 @@ class MissionDirector:
         self.writer.close()
 
 if __name__ == "__main__":
+    setup_logging()
+    
     # WSL2 Connection Topology (ADR-015)
     address = os.environ.get("KRPC_ADDRESS", config.KRPC_DEFAULT_ADDRESS)
-    print(f"Connecting to KSP at {address}...")
+    logger.info(f"Connecting to KSP at {address}...")
     try:
         conn = krpc.connect(name=config.KRPC_CLIENT_NAME, address=address)
-        print("Connected. Starting Mission Director...")
+        logger.info("Connected. Starting Mission Director...")
         director = MissionDirector(conn)
         director.run_loop()
     except ConnectionError:
-        print(f"Failed to connect to KSP at {address}. Ensure the server is running and KRPC_ADDRESS is set.")
+        logger.error(f"Failed to connect to KSP at {address}. Ensure the server is running and KRPC_ADDRESS is set.")

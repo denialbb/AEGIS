@@ -68,8 +68,8 @@ def test_allocator_rank_deficient():
     
     with pytest.raises(AllocationDegenerateError) as excinfo:
         allocator.allocate(wrench, engines)
-        
-    assert "rank-deficient" in str(excinfo.value)
+
+    assert "rank < 6" in str(excinfo.value)
 
 def test_allocator_empty():
     allocator = ControlAllocator([])
