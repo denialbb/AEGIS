@@ -27,10 +27,11 @@ class Engine:
 Fuses noisy telemetry into a clean state vector.
 
 ### State Vector
-$$\mathbf{x} = \begin{bmatrix} x & y & z & v_x & v_y & v_z & m \end{bmatrix}^T$$
+$$\mathbf{x} = \begin{bmatrix} x & y & z & v_x & v_y & v_z \end{bmatrix}^T$$
 - Position $[x, y, z]$ (relative to landing target or reference frame)
 - Velocity $[v_x, v_y, v_z]$
-- Mass $[m]$
+
+Note: Mass is treated as an external clean telemetry parameter, not estimated in the filter state.
 
 ### Interface
 ```python
@@ -38,23 +39,28 @@ class StateEstimator:
     def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise: np.ndarray):
         """
         Initializes the Discrete-Time Kalman Filter.
-        initial_state: shape (7,)
-        initial_covariance: shape (7, 7)
-        process_noise: shape (7, 7)
-        measurement_noise: shape (4, 4) (fuses 3D acceleration + 1D altitude)
+        initial_state: shape (6,)
+        initial_covariance: shape (6, 6)
+        process_noise: shape (6, 6)
+        measurement_noise: shape (1, 1) (altitude measurement variance)
         """
         pass
 
-    def update(self, noisy_alt: float, noisy_accel: np.ndarray, dt: float) -> np.ndarray:
+    def predict(self, noisy_accel: np.ndarray, dt: float):
         """
-        Fuses noisy altimeter and accelerometer data to update the state estimate.
-        Returns the updated state vector.
+        Predicts the next state using the measured acceleration as the control input (Option A).
+        """
+        pass
+
+    def update(self, noisy_alt: float):
+        """
+        Fuses noisy altimeter data to correct the Z-axis state.
         """
         pass
 
     def get_state(self) -> np.ndarray:
         """
-        Returns the current estimated state vector of shape (7,).
+        Returns the current estimated state vector of shape (6,).
         """
         pass
 ```
@@ -117,6 +123,8 @@ class ControlAllocator:
         Returns:
             throttles: array of shape (N,) bounded between 0.0 and 1.0.
             gimbals: array of shape (N, 2) representing X/Y gimbal angles in radians.
+        Raises:
+            AllocationDegenerateError: If the condition number of B exceeds the defined threshold.
         """
         pass
 
@@ -135,6 +143,11 @@ State machine that manages nominal mission phases and handles contingencies.
 - `HOVER_TARGETING`
 - `TERMINAL_DESCENT`
 - `HARD_ABORT`
+
+### Contingencies
+- **Single Engine Failure:** FDI flags, active engines reduced. Allocator remaps wrench.
+- **Degenerate Allocation:** Control Allocator raises `AllocationDegenerateError`. MD immediately transitions to `HARD_ABORT`.
+- **Multiple Simultaneous Failures:** FDI returns 2+ failed engines. MD immediately transitions to `HARD_ABORT`.
 
 ### Interface
 ```python

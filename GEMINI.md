@@ -21,9 +21,9 @@ If you need architectural context, read `docs/architecture_design.md`.
 # Multi-Agent Setup & Review Process
 - **Reviewer:** Code written by the agent is reviewed by Claude.
 - **Communication Directory:** Exchanged under the `.agents/shared/` directory.
-  - `context/`: Stores contracts, architectural decisions, and open issues. Keep these files (`ARCHITECTURE.md`, `DECISIONS.md`, `OPEN_ISSUES.md`) continuously updated with the latest context.
-  - `queue/PENDING_REVIEW.md`: Used to queue completed code and branch details for review. The coding agent MUST follow the [PENDING_REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/PENDING_REVIEW_TEMPLATE.md) format.
-  - `reviews/REVIEW_[timestamp].md`: Reviewer (Claude) writes here following the [REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/REVIEW_TEMPLATE.md) format detailing blockers, major issues, and minor comments.
+  - `.agents/shared/context/`: Stores contracts, architectural decisions, and open issues. Keep these files (`ARCHITECTURE.md`, `DECISIONS.md`, `OPEN_ISSUES.md`) continuously updated with the latest context.
+  - `.agents/shared/queue/PENDING_REVIEW.md`: Used to queue completed code and branch details for review. The coding agent MUST follow the [PENDING_REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/PENDING_REVIEW_TEMPLATE.md) format.
+  - `.agents/shared/reviews/REVIEW_[timestamp].md`: Reviewer (Claude) writes here following the [REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/REVIEW_TEMPLATE.md) format detailing blockers, major issues, and minor comments.
 - **Grilling:** You will recommend the `/grill-me` slash command to the user to align on design and implementation choices when needed.
 
 

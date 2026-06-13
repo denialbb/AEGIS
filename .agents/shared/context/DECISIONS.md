@@ -239,10 +239,11 @@ KSP provides perfect state information. To simulate a real aerospace environment
 
 **Decision**
 Wrap kRPC streams in a noise-generating function and use a Discrete-Time Kalman Filter to reconstruct the state vector $[X, Y, Z, V_x, V_y, V_z]$.
+*Option A* is used for accelerometer fusion: The accelerometer reading drives the prediction step as $u = noisy\_accel$, and the altimeter is the sole measurement in the update step ($z = noisy\_alt$).
 
 **Consequences**
 - ✅ High fidelity tracking with no lag.
-- ✅ Computationally efficient.
+- ✅ Computationally efficient. Keeps math linear (no EKF needed).
 - ⚠️ Requires accurate tuning of Q and R covariance matrices.
 
 **Review Notes**
@@ -299,3 +300,29 @@ Query the exact local gravity vector dynamically from the kRPC API.
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-010 — Rank-Deficiency Condition Number Threshold (`1e4`)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Human & Agent
+- **Module(s):** Control Allocator
+
+**Context**
+When an engine fails, the control allocator matrix $B$ may become rank-deficient, meaning the pseudo-inverse solver returns mathematically valid but physically impossible throttle commands. We need a numerical threshold to flag this state.
+
+**Options Considered**
+1. Default `numpy.linalg.matrix_rank` tolerance — Relies on floating-point precision, disconnected from physical engine layouts.
+2. Hardcoded value of `1e4` — Catches severe ill-conditioning and near-singular matrices before physically absurd commands are issued.
+
+**Decision**
+Set condition number threshold to `1e4`. If `cond(B) > 1e4`, `AllocationDegenerateError` is raised.
+
+**Consequences**
+- ✅ Prevents the vessel from blindly trusting broken allocator logic.
+- ✅ Safely routes to HARD_ABORT in the Mission Director.
+- ⚠️ `1e4` may be slightly conservative or loose depending on final thrust-to-weight ratios; may need future empirical adjustment.
+
+**Review Notes**
+Resolves Claude's finding B2 regarding degenerate allocation logic.
