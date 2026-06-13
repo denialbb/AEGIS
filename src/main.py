@@ -5,7 +5,7 @@ from typing import Any, List
 from src.common.engine import Engine
 from src.estimation.estimator import StateEstimator
 from src.fdi.fdi import FaultDetectionIsolation
-from src.guidance.allocator import ControlAllocator
+from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
 
 class MissionDirector:
     def __init__(self, conn: Any):
@@ -16,10 +16,10 @@ class MissionDirector:
         self.state: str = "DEORBIT_BURN"
         
         # Initialize submodules
-        initial_state = np.zeros(7)
-        initial_covariance = np.eye(7)
-        process_noise = np.eye(7)
-        measurement_noise = np.eye(4)
+        initial_state = np.zeros(6)
+        initial_covariance = np.eye(6)
+        process_noise = np.eye(6)
+        measurement_noise = np.eye(1)
         
         self.estimator: StateEstimator = StateEstimator(
             initial_state, initial_covariance, process_noise, measurement_noise
@@ -52,7 +52,8 @@ class MissionDirector:
             mass: float = 1.0
             
             # 2. Update Estimator
-            state_vector = self.estimator.update(noisy_alt, noisy_accel, dt)
+            self.estimator.predict(noisy_accel, dt)
+            state_vector = self.estimator.update(noisy_alt)
             
             # 3. Run FDI
             active_engines = [e for e in self.engines if e.active]
@@ -65,6 +66,12 @@ class MissionDirector:
                 failed_indices = self.fdi.isolate_fault(
                     active_engines, self.expected_throttles, noisy_accel, mass
                 )
+                
+                # ISS-004: Handle multiple simultaneous failures
+                if len(failed_indices) >= 2:
+                    print(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
+                    self.state = "HARD_ABORT"
+                
                 for e in self.engines:
                     if e.index in failed_indices:
                         e.active = False
@@ -96,11 +103,15 @@ class MissionDirector:
                 
             # 5. Allocate Thrust
             if active_engines and self.state != "HARD_ABORT":
-                throttles, gimbals = self.allocator.allocate(desired_wrench, active_engines)
-                self.expected_throttles = throttles
-                
-                # Mock expected acceleration update based on new throttles
-                self.expected_accel = np.zeros(3) 
+                try:
+                    throttles, gimbals = self.allocator.allocate(desired_wrench, active_engines)
+                    self.expected_throttles = throttles
+                    
+                    # Mock expected acceleration update based on new throttles
+                    self.expected_accel = np.zeros(3) 
+                except AllocationDegenerateError as e:
+                    print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
+                    self.state = "HARD_ABORT"
                 
             # 6. Timing Enforcement
             elapsed = time.time() - start_time
