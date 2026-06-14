@@ -2,7 +2,7 @@ import numpy as np
 import logging
 from typing import Tuple, Any
 import src.config as config
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as R  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -12,16 +12,18 @@ class SensorModels:
     This separates the perfect simulation data from the estimator, satisfying the noise-driven
     simulation philosophy.
     """
-    def __init__(self, conn: Any, vessel: Any, ref_frame: Any):
+    def __init__(self, conn: Any, vessel: Any, ref_frame: Any, up_vector: np.ndarray):
         """
         Initializes high-frequency data streams.
         conn: kRPC connection object
         vessel: active vessel object
         ref_frame: the custom landing pad reference frame
+        up_vector: (3,) normalized vector pointing away from the center of the celestial body in the reference frame
         """
         self.conn = conn
         self.vessel = vessel
         self.ref_frame = ref_frame
+        self.up_vector = up_vector
         
         # Initialize kRPC streams
         flight_world = self.vessel.flight(self.ref_frame)
@@ -38,8 +40,14 @@ class SensorModels:
         # Attitude (quaternion) in the target reference frame
         self.attitude_stream = self.conn.add_stream(getattr, flight_world, 'rotation')
         
+        # Aerodynamic force in the target reference frame
+        self.aero_stream = self.conn.add_stream(getattr, flight_world, 'aerodynamic_force')
+        
         # Mass stream
         self.mass_stream = self.conn.add_stream(getattr, self.vessel, 'mass')
+        
+        # Situation stream
+        self.situation_stream = self.conn.add_stream(getattr, self.vessel, 'situation')
         
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT
@@ -50,7 +58,7 @@ class SensorModels:
         
         logger.info(f"Initialized SensorModels with sigma_alt={self.sigma_alt}, sigma_accel={self.sigma_accel}")
 
-    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float]:
+    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str]:
         """
         Samples the streams and applies zero-mean Gaussian noise.
         Returns:
@@ -58,6 +66,8 @@ class SensorModels:
             noisy_accel (np.ndarray shape (3,))
             attitude (np.ndarray shape (4,))
             mass (float)
+            aero_force_body (np.ndarray shape (3,))
+            situation (str)
         """
         # Read perfect data
         perfect_alt = self.altitude_stream()
@@ -78,10 +88,12 @@ class SensorModels:
         self.last_ut = ut
         attitude = np.array(self.attitude_stream())
         mass = self.mass_stream()
+        aero_world = np.array(self.aero_stream())
+        situation = self.situation_stream().name
         
         # KSP coordinate acceleration includes gravity when landed, but is g when falling.
         # Proper acceleration (what an IMU measures and what engines produce) requires counteracting the gravity vector.
-        gravity_world = np.array([0.0, 0.0, -9.81])  # Simplified constant gravity
+        gravity_world = -self.up_vector * 9.81  # Simplified constant gravity aligned with up_vector
         perfect_proper_accel = perfect_accel - gravity_world
 
         # Rotate world proper acceleration to body frame
@@ -93,4 +105,7 @@ class SensorModels:
         noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
         noisy_accel = perfect_accel_body + self.rng.normal(0, self.sigma_accel, size=3)
         
-        return noisy_alt, noisy_accel, attitude, float(mass)
+        # Rotate aero force to body frame
+        aero_body = rot.inv().apply(aero_world)
+        
+        return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation

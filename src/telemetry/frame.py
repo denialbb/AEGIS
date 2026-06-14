@@ -21,6 +21,7 @@ class TelemetryFrame:
     velocity: np.ndarray
     noisy_accel: np.ndarray
     throttles: np.ndarray
+    fuel_state: np.ndarray
     gimbals: np.ndarray
     skip_predict: bool = False
 
@@ -50,6 +51,11 @@ class TelemetryFrame:
         for i in range(num_engines):
             flat_data[f"throttle_{i}"] = float(self.throttles[i])
             
+        # Flatten fuel_state (N,)
+        if hasattr(self, 'fuel_state') and self.fuel_state is not None:
+            for i in range(num_engines):
+                flat_data[f"has_fuel_{i}"] = int(self.fuel_state[i])
+            
         # Flatten gimbals (N, 2) -> N engines, 2 axes (pitch, yaw typically)
         if self.gimbals.ndim == 2:
             num_gimbal_engines = self.gimbals.shape[0]
@@ -76,6 +82,7 @@ class TelemetryFrame:
         ]
         for i in range(num_engines):
             headers.append(f"throttle_{i}")
+            headers.append(f"has_fuel_{i}")
         for i in range(num_engines):
             headers.append(f"gimbal_{i}_0")
             headers.append(f"gimbal_{i}_1")

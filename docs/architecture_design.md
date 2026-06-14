@@ -37,6 +37,7 @@ KSP provides perfect data (`vessel.flight().surface_altitude`), which we will pu
 *   **Noise Wrapper:** kRPC telemetry streams will be wrapped in a function that injects continuous Gaussian noise into the radar altimeter and accelerometer readings.
 *   **The Filter:** A linear Discrete-Time Kalman Filter that fuses noisy acceleration data with noisy altitude data to produce a clean, probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z]$. (Note: Vessel mass is treated as a clean, external telemetry parameter, not estimated).
 *   **Attitude Handling:** To keep the filter fast and linear, we use a small-angle approximation: attitude telemetry is treated as perfect when rotating body-frame acceleration to the world frame, and the accelerometer noise variance is artificially inflated to absorb the physical attitude uncertainty.
+*   **Coordinate System and Gravity:** KSP's custom Reference Frames do not naturally rotate to remain "Z-Up" relative to the planet's surface. To compensate, the system computes a normalized `up_vector` from the pad's surface position. This vector is used to correctly subtract the constant gravitational acceleration from the IMU telemetry and to map the true vertical altitude/velocity components for the State Machine target assignments.
 
 ### C. Fault Detection & Isolation Module (FDI)
 The system's diagnostic nervous system.

@@ -109,9 +109,16 @@ class GuidanceController:
         # ---------------------------------------------------------
         # 3. ATTITUDE CONTROL (Body Frame)
         # ---------------------------------------------------------
-        # We want the vessel's Y-axis (nose) to align with the world `up_vector`.
-        # Map the world up_vector into the body frame:
-        target_up_body = rot.inv().apply(up_vector)
+        # We want the vessel's Y-axis (nose) to align with the commanded acceleration vector.
+        # This naturally tilts the rocket to translate laterally.
+        a_cmd_norm = np.linalg.norm(a_cmd_world)
+        if a_cmd_norm > 1e-6:
+            target_up_world = a_cmd_world / a_cmd_norm
+        else:
+            target_up_world = up_vector
+            
+        # Map the world target up vector into the body frame:
+        target_up_body = rot.inv().apply(target_up_world)
         
         # The cross product between our current forward axis [0, 1, 0] and the target 
         # up vector gives the rotation axis and magnitude required to align them.

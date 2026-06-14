@@ -199,6 +199,14 @@ class MissionDirector:
                 self.estimator.predict(noisy_accel_body, attitude, dt)
             state_vector = self.estimator.update(noisy_alt)
             
+            # 2.5 Check fuel state
+            for e in self.engines:
+                if e.active and e.part and e.part.engine:
+                    if not e.part.engine.has_fuel:
+                        self.writer.log_event({"type": "FUEL_EXHAUSTION", "engine_index": e.index})
+                        logger.error(f"Engine {e.index} ran out of fuel!")
+                        e.active = False
+            
             # 3. Run FDI (Only during guided flight phases)
             active_engines = [e for e in self.engines if e.active]
             
@@ -363,6 +371,15 @@ class MissionDirector:
                         # main throttle and responds strictly to the thrust_limit we command.
                         if not e.part.engine.independent_throttle:
                             e.part.engine.independent_throttle = True
+                        # ADR-023: Independent throttle uncouples from main vessel throttle.
+                        # It defaults to 0.0, so we MUST explicitly force it to 1.0 before modulating thrust_limit.
+                        e.part.engine.throttle = 1.0
+                        
+                        # Enable Gimbal Trim mod if present
+                        for module in e.part.modules:
+                            if module.name == "ModuleGimbalTrim":
+                                if "Toggle Trim" in module.events and "Gimbal X" not in module.fields:
+                                    module.trigger_event("Toggle Trim")
                         
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,
@@ -386,6 +403,7 @@ class MissionDirector:
                     alpha = 0.95
                     expected_force = np.zeros(3)
                     new_expected_throttles = []
+                    current_gimbals = np.zeros((max(len(self.engines), 1), 2))
                     
                     for i, engine in enumerate(active_engines):
                         # Update engine's internal EMA state
@@ -394,13 +412,29 @@ class MissionDirector:
                         
                         expected_force += engine.thrust_direction * engine.max_thrust * engine.expected_throttle
                         
+                        gimbal_x_rad = gimbals[i, 0]
+                        gimbal_y_rad = gimbals[i, 1]
+                        current_gimbals[engine.index, 0] = gimbal_x_rad
+                        current_gimbals[engine.index, 1] = gimbal_y_rad
+                        
                         # Apply thrust limit directly to kRPC part (critical actuation step)
                         if engine.part and engine.part.engine:
                             # Send the INSTANTANEOUS commanded throttle to the physical engine.
                             # KSP will physically spool the engine. We do not want to send the 
                             # EMA 'expected_throttle' here, or it artificially double-spools!
                             engine.part.engine.thrust_limit = float(throttles[i])
+                            
+                            # Apply independent gimbal trimming via the mod
+                            for module in engine.part.modules:
+                                if module.name == "ModuleGimbalTrim":
+                                    if "Gimbal X" in module.fields:
+                                        # Allocator outputs radians. Module takes degrees. Limit to +/- 5 degrees.
+                                        g_x = np.clip(np.degrees(gimbal_x_rad), -5.0, 5.0)
+                                        g_y = np.clip(np.degrees(gimbal_y_rad), -5.0, 5.0)
+                                        module.set_field_float("Gimbal X", float(g_x))
+                                        module.set_field_float("Gimbal Y", float(g_y))
                     
+                    self.current_gimbals = current_gimbals
                     self.expected_throttles = np.array(new_expected_throttles)
                     
                     # Expected acceleration is total force (thrust + aerodynamic) divided by mass
@@ -412,7 +446,12 @@ class MissionDirector:
                 
             # 5.5. Log Telemetry
             throttles = self.expected_throttles if len(self.expected_throttles) > 0 else np.zeros(max(len(self.engines), 1))
-            gimbals = np.zeros((max(len(self.engines), 1), 2))
+            gimbals = self.current_gimbals if hasattr(self, 'current_gimbals') else np.zeros((max(len(self.engines), 1), 2))
+            
+            fuel_state = np.zeros(max(len(self.engines), 1))
+            for eng in self.engines:
+                if eng.part and eng.part.engine:
+                    fuel_state[eng.index] = 1.0 if eng.part.engine.has_fuel else 0.0
             
             frame = TelemetryFrame(
                 timestamp=start_time,
@@ -420,6 +459,7 @@ class MissionDirector:
                 velocity=state_vector[3:],  # ISS-011 fix: was np.zeros(3), hid the KF velocity estimate
                 noisy_accel=noisy_accel_body,
                 throttles=throttles,
+                fuel_state=fuel_state,
                 gimbals=gimbals,
                 skip_predict=skip_predict  # ISS-010: Log skip_predict state for debugging
             )
