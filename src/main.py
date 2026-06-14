@@ -168,7 +168,7 @@ class MissionDirector:
         target_hz = config.TARGET_HZ
         dt = 1.0 / target_hz
         
-        while self.state != "HARD_ABORT":
+        while self.state not in ["HARD_ABORT", "LANDED"]:
             start_time = time.time()
             # Timing and Frame Drop Handling
             # KSP physics runs at 50Hz (20ms). If the game lags or pauses, 'actual_dt' spikes.
@@ -307,7 +307,11 @@ class MissionDirector:
                 logger.info("Transitioning from HOVER_TARGETING to TERMINAL_DESCENT")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "TERMINAL_DESCENT"})
                 self.state = "TERMINAL_DESCENT"
-            elif self.state not in ["STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
+            elif self.state == "TERMINAL_DESCENT" and situation in ("landed", "splashed"):
+                logger.info("Touchdown detected. Transitioning to LANDED")
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "LANDED"})
+                self.state = "LANDED"
+            elif self.state not in ["STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT", "LANDED"]:
                 self.state = "HARD_ABORT"
                 
             # Define instantaneous target kinematic state based on the current mission phase.
