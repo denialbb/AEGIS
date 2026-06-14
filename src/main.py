@@ -381,7 +381,10 @@ class MissionDirector:
                         
                         # Apply thrust limit directly to kRPC part (critical actuation step)
                         if engine.part and engine.part.engine:
-                            engine.part.engine.thrust_limit = float(engine.expected_throttle)
+                            # Send the INSTANTANEOUS commanded throttle to the physical engine.
+                            # KSP will physically spool the engine. We do not want to send the 
+                            # EMA 'expected_throttle' here, or it artificially double-spools!
+                            engine.part.engine.thrust_limit = float(throttles[i])
                     
                     self.expected_throttles = np.array(new_expected_throttles)
                     
