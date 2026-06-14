@@ -43,16 +43,18 @@ class PerAxisESO:
     """
 
     def __init__(self,
-                 dt: float = 0.02,
-                 beta_01: float = 15.0,
-                 beta_02: float = 75.0,
-                 beta_03: float = 125.0,
-                 alpha_1: float = 0.5,
-                 alpha_2: float = 0.25,
-                 delta: float = 0.1,
-                 b0: float = 1.0):
+                  dt: float = 0.02,
+                  beta_01: float = 15.0,
+                  beta_02: float = 75.0,
+                  beta_03: float = 125.0,
+                  alpha_1: float = 0.5,
+                  alpha_2: float = 0.25,
+                  delta: float = 0.1,
+                  b0: float = 1.0):
         if delta <= 0.0:
             raise ValueError(f"PerAxisESO requires delta > 0, got {delta}")
+        if b0 == 0.0:
+            raise ValueError(f"PerAxisESO requires b0 != 0, got {b0}")
         if dt <= 0.0:
             dt = 1e-6
 
@@ -198,14 +200,15 @@ class CTMCalculator:
         )
         return tau_inertia + tau_gyro
 
-    def expected_angular_accel(self, expected_torque: np.ndarray) -> np.ndarray:
+    def expected_angular_accel(self, expected_torque: np.ndarray, angular_velocity: np.ndarray) -> np.ndarray:
         """
         Convert expected torque to expected angular acceleration.
 
-        alpha_expected = J^{-1} @ tau_expected
+        alpha_expected = J^{-1} @ (tau_expected - omega x J @ omega)
 
         Args:
             expected_torque: (3,) Expected torque from engines (N-m).
+            angular_velocity: (3,) Body-frame angular velocity (rad/s).
 
         Returns:
             alpha_expected: (3,) Expected angular acceleration (rad/s^2).
@@ -215,7 +218,16 @@ class CTMCalculator:
                 f"expected_torque must have shape (3,), "
                 f"got {expected_torque.shape}"
             )
-        return self._inv_inertia @ expected_torque
+        if angular_velocity.shape != (3,):
+            raise ValueError(
+                f"angular_velocity must have shape (3,), "
+                f"got {angular_velocity.shape}"
+            )
+        
+        # Calculate gyroscopic term: omega x J @ omega
+        gyroscopic = np.cross(angular_velocity, self.inertia_tensor @ angular_velocity)
+        # Expected acceleration: J^{-1} @ (tau_expected - gyroscopic)
+        return self._inv_inertia @ (expected_torque - gyroscopic)
 
 
 class ADRCController:
@@ -267,12 +279,12 @@ class ADRCController:
         for params in eso_params:
             self.eso.append(PerAxisESO(
                 dt=self.dt,
-                beta_01=params.get('beta_01', 100.0),
-                beta_02=params.get('beta_02', 300.0),
-                beta_03=params.get('beta_03', 1000.0),
+                beta_01=params.get('beta_01', 15.0),
+                beta_02=params.get('beta_02', 75.0),
+                beta_03=params.get('beta_03', 125.0),
                 alpha_1=params.get('alpha_1', 0.5),
                 alpha_2=params.get('alpha_2', 0.25),
-                delta=params.get('delta', 0.01),
+                delta=params.get('delta', 0.1),
                 b0=params.get('b0', 1.0),
             ))
 

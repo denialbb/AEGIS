@@ -84,6 +84,8 @@ class NNFeedforward:
         h1 = _relu(state @ self.W1 + self.b1)
         h2 = _relu(h1 @ self.W2 + self.b2)
         out = h2 @ self.W3 + self.b3
+        # Handle NaN and inf values before clipping
+        out = np.nan_to_num(out, nan=0.0, posinf=self.clamp, neginf=-self.clamp)
         return np.clip(out, -self.clamp, self.clamp)
 
     def _pack(self) -> np.ndarray:
@@ -219,13 +221,14 @@ def generate_training_data(
     y_list: list[np.ndarray] = []
     profiles: list[dict[str, float]] = []
 
-    for _ in range(n_trajectories):
+    for traj_idx in range(n_trajectories):
         err = np.zeros(3, dtype=float)
         omega = np.zeros(3, dtype=float)
         adrc.reset()
 
         dist_mag = rng.uniform(10.0, 100.0, 3)
-        dist_axis = rng.choice([0, 1, 2])
+        # Deterministically cycle through axes to ensure all axes are covered
+        dist_axis = traj_idx % 3  # Cycle through 0, 1, 2 for each trajectory
         dist_start = rng.randint(n_steps // 4, n_steps // 2)
 
         def disturbance(i: int) -> np.ndarray:
