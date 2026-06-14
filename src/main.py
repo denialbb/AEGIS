@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from src.estimation.estimator import StateEstimator
 from src.fdi.fdi import FaultDetectionIsolation
 from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
+from src.guidance.controller import GuidanceController
 from src.telemetry.frame import TelemetryFrame
 from src.telemetry.writer import TelemetryWriter
 from src.telemetry.sensors import SensorModels
@@ -68,6 +69,15 @@ class MissionDirector:
             initial_state, initial_covariance, process_noise, measurement_noise
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(threshold=config.FDI_THRESHOLD)
+        
+        # Initialize Guidance Controller with default gains and gravity
+        self.guidance: GuidanceController = GuidanceController(
+            kp_pos=np.array([1.0, 1.0, 1.0]),
+            kd_vel=np.array([1.0, 1.0, 1.0]),
+            kp_att=np.array([10.0, 10.0, 10.0]),
+            kd_att=np.array([5.0, 5.0, 5.0]),
+            gravity=np.array([0.0, 0.0, -9.81])  # Default to Earth/Kerbin surface gravity
+        )
         
         self.writer: TelemetryWriter = TelemetryWriter({
             "num_engines": max(len(self.engines), 1),
@@ -144,10 +154,10 @@ class MissionDirector:
                 break
             
             # 4. State Machine & Control Wrench Computation
-            desired_wrench = np.zeros(6)
-            
             # Use estimated altitude instead of raw telemetry for transitions
             est_alt = state_vector[2]
+            
+            target_state = np.zeros(6) # [x, y, z, vx, vy, vz]
             
             # Simple state transition for demonstration
             if self.state == "DEORBIT_BURN" and est_alt < 10000:
@@ -168,6 +178,23 @@ class MissionDirector:
                 self.state = "TERMINAL_DESCENT"
             elif self.state not in ["DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
                 self.state = "HARD_ABORT"
+                
+            # Define target state based on phase
+            if self.state == "TERMINAL_DESCENT":
+                target_state[5] = -2.0 # Descend at 2 m/s
+            elif self.state == "HOVER_TARGETING":
+                target_state[2] = 50.0 # Maintain altitude at 50m
+                
+            if self.state != "HARD_ABORT":
+                desired_wrench = self.guidance.compute_wrench(
+                    current_state=state_vector,
+                    current_attitude=attitude,
+                    mass=mass,
+                    target_state=target_state,
+                    dt=dt
+                )
+            else:
+                desired_wrench = np.zeros(6)
                 
             # 5. Allocate Thrust
             if active_engines and self.state != "HARD_ABORT":

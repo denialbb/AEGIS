@@ -502,3 +502,86 @@ Create a custom, planet-fixed reference frame centered exactly on the target lan
 - ✅ Drastically simplifies math. The target position is always exactly $(0,0,0)$.
 - ✅ Improves Kalman Filter numerical stability by bounding position values.
 - ⚠️ Requires knowing the exact landing coordinates at startup. We will hardcode default coordinates (e.g., KSC Launchpad) for now.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-018 — Proportional-Derivative (PD) Translation Control
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Guidance
+
+**Context**
+The Guidance module needs to compute a desired 3D force vector to track the desired trajectory during powered descent.
+
+**Options Considered**
+1. Proportional-Derivative (PD) Controller — Tracks position and velocity errors.
+2. Apollo E-Guidance — Time-optimal but assumes constant gravity and no atmosphere.
+3. Model Predictive Control (MPC) — Perfect constraint handling but computationally heavy.
+
+**Decision**
+Option 1: Proportional-Derivative (PD) Controller. Simple, robust, and computationally cheap. We retain the possibility of implementing Apollo E-Guidance in the future for atmospheric-free landings.
+
+**Consequences**
+- ✅ Easy to tune and guarantee execution within the 20ms physics tick budget.
+- ✅ Highly robust to unexpected disturbances like engine-out torque.
+- ⚠️ Not strictly fuel-optimal compared to E-Guidance or MPC.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-019 — Quaternion-based PD Attitude Control
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Guidance
+
+**Context**
+The Guidance module needs to compute desired torques ($\tau_x, \tau_y, \tau_z$) to track the desired orientation and feed the 6-DOF wrench to the Control Allocator.
+
+**Options Considered**
+1. Quaternion-based PD controller — Avoids gimbal lock, standard spacecraft control.
+2. Euler-angle PID controller — Easy to conceptualize, susceptible to gimbal lock near 90 degrees pitch.
+3. Offload to KSP SAS — Allocator couldn't use main engines to counter torque.
+
+**Decision**
+Option 1: Quaternion-based PD controller. Ensures stability in all orientations without gimbal lock.
+
+**Consequences**
+- ✅ Mathematically robust across the entire attitude sphere.
+- ✅ Fully integrated with the Control Allocator's wrench inputs.
+- ⚠️ Quaternions are less intuitive to debug via raw numerical logs.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-020 — Stateless Target Generation (Mission Director Driven)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Mission Director, Guidance
+
+**Context**
+Trajectory tracking requires a moving target state (e.g. glide slope). This logic could live in the Guidance module or the Mission Director.
+
+**Options Considered**
+1. Mission Director passes instantaneous `target_state` on every tick.
+2. Guidance module holds an internal state machine to track the descent profile.
+
+**Decision**
+Option 1: Mission Director passes instantaneous `target_state` directly to Guidance on every tick (`guidance.compute_wrench(current_state, target_state)`).
+
+**Consequences**
+- ✅ Strictly decouples logic. Mission Director owns "what to do", Guidance owns "how to do it".
+- ✅ Guidance module remains purely a stateless mathematical function, simplifying unit testing.
+- ⚠️ Mission Director's `run_loop` becomes slightly more complex as it must interpolate the target position.
+
+**Review Notes**
+None yet.
