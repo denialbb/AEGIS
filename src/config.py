@@ -25,7 +25,7 @@ SIGMA_ALT = 2.0     # meters
 SIGMA_ACCEL = 0.5   # m/s^2
 
 # Fault Detection & Isolation
-FDI_THRESHOLD = 3.0
+FDI_THRESHOLD = 10.0
 
 # Simulation Determinism
 RANDOM_SEED = 42
