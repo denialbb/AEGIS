@@ -771,7 +771,7 @@ None yet.
 ---
 
 ### ADR-027 — ESO/ADRC Ownership and Guidance/Estimator Boundary
-- **Status:** DEFERRED
+- **Status:** ACCEPTED
 - **Date:** 2026-06-14
 - **Author:** Claude (Chief Code Reviewer)
 - **Module(s):** Guidance, State Estimator
@@ -779,19 +779,16 @@ None yet.
 **Context**
 The NN-ADRC plan proposed placing the Extended State Observer (ESO) in the State Estimator. The design advisory (NN_ADRC_DESIGN_ADVISORY.md §3.1) identified this as a cross-domain coupling that reopens ADR-003/ADR-014.
 
-**Options Considered**
-1. ESO in State Estimator — Requires Estimator to know `b0` (a control-effectiveness parameter) and previous commanded wrench. Cross-domain coupling.
-2. ESO in Guidance module (`controller.py` or new `adrc.py`) — Fed by existing KF output. Keeps Estimator scoped to ADR-007/014.
-
 **Decision**
-Deferred until Phase 2 of the NN-ADRC roadmap. ESO will live in Guidance. Option 2 is the agreed direction.
+ESO lives in Guidance (`src/guidance/adrc.py`), fed by existing KF output. State Estimator remains scoped to ADR-007/014. Option 2 — confirmed by Phase 2 implementation.
 
 **Consequences**
 - ☑️ State Estimator remains scoped to ADR-007/014.
-- ⚠️ ESO implementation depends on Phase 1 (inertia tensor, quaternion upgrade) completing first.
+- ☑️ Phase 2 implementation confirmed Option 2 is sound.
+- ⚠️ ESO tuning (β, δ) depends on ISS-001 (FDI threshold) and ISS-003 (Q/R tuning) closing first.
 
 **Review Notes**
-Recommended by NN_ADRC_DESIGN_ADVISORY.md §3.1.
+Recommended by NN_ADRC_DESIGN_ADVISORY.md §3.1. Phase 2 (`adrc.py`) implementation confirmed.
 
 ---
 

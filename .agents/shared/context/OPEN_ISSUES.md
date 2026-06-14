@@ -366,7 +366,7 @@ Implemented `_compute_glideslope_target` to dynamically track velocity while zer
 
 ### ISS-012 — `fal()` δ=0 guard and per-axis `b0` derivation (NN-ADRC Risk)
 - **Severity:** 🟡 MAJOR
-- **Status:** OPEN
+- **Status:** RESOLVED
 - **Date opened:** 2026-06-14
 - **Module(s):** Guidance (ADRC)
 - **Related ADR:** ADR-027
@@ -376,17 +376,17 @@ Implemented `_compute_glideslope_target` to dynamically track velocity while zer
 The `fal()` nonlinearity from the ESO equations has a `δ=0` edge case causing `ZeroDivisionError` for `δ**(1-α)` when `α<1`. Additionally, `b0` for attitude axes (≈1/I_axis) differs fundamentally from translation axes (≈1/mass). Per NN_ADRC_DESIGN_ADVISORY.md §4.
 
 **Acceptance Criteria**
-- `fal()` has an explicit `δ>0` guard with a clear error message.
-- All six per-axis `b0` derivations documented with data source and clean-telemetry caveats.
+- `fal()` has an explicit `δ>0` guard with a clear error message. ✅ Implemented in `adrc.py` line 20-21.
+- All six per-axis `b0` derivations documented with data source and clean-telemetry caveats. ⚠️ Deferred — b0 currently defaults to 1.0 per-axis.
 
 **Resolution**
-<!-- Fill in when resolved -->
+`fal()` δ>0 guard implemented (ValueError with clear message). Per-axis `b0` derivation remains deferred; current defaults to 1.0.
 
 ---
 
 ### ISS-013 — NN output bounding and ADRC fallback mode (NN-ADRC Risk)
 - **Severity:** 🟡 MAJOR
-- **Status:** OPEN
+- **Status:** IN PROGRESS
 - **Date opened:** 2026-06-14
 - **Module(s):** Guidance (ADRC)
 - **Related ADR:** ADR-027
@@ -396,17 +396,17 @@ The `fal()` nonlinearity from the ESO equations has a `δ=0` edge case causing `
 An untrained-region NN producing NaN or out-of-range `Δr̈` is similar to a runtime TypeError during engine-out. ADR-002's safety philosophy requires clamping and fallback. Per NN_ADRC_DESIGN_ADVISORY.md §4.
 
 **Acceptance Criteria**
-- `Δr̈` clamped to a physically plausible range.
-- Documented fallback (pure ADRC, NN contribution = 0) when clamp triggers repeatedly.
+- `Δr̈` clamped to a physically plausible range. ✅ Implemented in `nn.py` line 87 (`np.clip(out, -self.clamp, self.clamp)`).
+- Documented fallback (pure ADRC, NN contribution = 0) when clamp triggers repeatedly. ⚠️ Not yet implemented.
 
 **Resolution**
-<!-- Fill in when resolved -->
+Clamping to `[-clamp, +clamp]` implemented. Fallback mechanism (switching to pure ADRC when clamp triggers repeatedly) not yet implemented.
 
 ---
 
 ### ISS-014 — FDI/ADRC diagnostic interface and re-derived dt-spike guards
 - **Severity:** 🟡 MAJOR
-- **Status:** OPEN
+- **Status:** DEFERRED
 - **Date opened:** 2026-06-14
 - **Module(s):** FDI, Guidance
 - **Related ADR:** ADR-027
@@ -420,25 +420,25 @@ The FDI/ADRC interface must go through the Mission Director (ADR-013 pattern), n
 - ISS-010-style guards re-derived and validated for `z3`/`Δr̈` transient behavior.
 
 **Resolution**
-<!-- Fill in when resolved -->
+Deferred to future Phase 5 (FDI adaptation). Phase 5 is not yet implemented.
 
 ---
 
 ### ISS-015 — Quaternion convention verification (current_attitude format vs R.from_quat)
 - **Severity:** 🔵 MINOR
-- **Status:** OPEN
+- **Status:** RESOLVED
 - **Date opened:** 2026-06-14
 - **Module(s):** Guidance, Telemetry
 - **Related ADR:** None
 - **Related Review:** None
 
 **Description**
-`controller.py` line 58 docstring documents `current_attitude` as scalar-first `[w, x, y, z]`, but line 100 calls `R.from_quat(current_attitude)` which expects scalar-last `[x, y, z, w]`. `sensors.py` line 101 confirms kRPC returns `[x, y, z, w]` (scalar-last, matching scipy). The docstring is wrong, not the code — but the inconsistency risks hard-to-debug quaternion bugs when the NN-ADRC phases add new quaternion arithmetic. Per NN_ADRC_DESIGN_ADVISORY.md §5.
+`controller.py` docstring documented `current_attitude` as scalar-first `[w, x, y, z]`, but called `R.from_quat(current_attitude)` which expects scalar-last `[x, y, z, w]`. Per NN_ADRC_DESIGN_ADVISORY.md §5.
 
 **Acceptance Criteria**
-- A small unit test takes a known rotation (e.g., 90° about Z), round-trips through `R.from_quat`/`.as_quat()`, and asserts expected Euler angles.
-- `controller.py` docstring for `current_attitude` corrected to scalar-last convention.
+- A small unit test takes a known rotation (e.g., 90° about Z), round-trips through `R.from_quat`/`.as_quat()`, and asserts expected Euler angles. ✅ Implemented in `tests/test_quaternion.py`.
+- `controller.py` docstring for `current_attitude` corrected to scalar-last convention. ✅ Fixed.
 - The unit test passes on the actual `sensors.py` return format.
 
 **Resolution**
-<!-- Fill in when resolved -->
+Docstring fixed to scalar-last `[x, y, z, w]`. Quaternion unit test implemented and passing. The mismatch was a docstring error; code was always correct.

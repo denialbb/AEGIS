@@ -44,12 +44,12 @@ class PerAxisESO:
 
     def __init__(self,
                  dt: float = 0.02,
-                 beta_01: float = 100.0,
-                 beta_02: float = 300.0,
-                 beta_03: float = 1000.0,
+                 beta_01: float = 15.0,
+                 beta_02: float = 75.0,
+                 beta_03: float = 125.0,
                  alpha_1: float = 0.5,
                  alpha_2: float = 0.25,
-                 delta: float = 0.01,
+                 delta: float = 0.1,
                  b0: float = 1.0):
         if delta <= 0.0:
             raise ValueError(f"PerAxisESO requires delta > 0, got {delta}")
@@ -255,8 +255,8 @@ class ADRCController:
 
         if eso_params is None:
             eso_params = [
-                dict(beta_01=100.0, beta_02=300.0, beta_03=1000.0,
-                     alpha_1=0.5, alpha_2=0.25, delta=0.01, b0=1.0)
+                dict(beta_01=15.0, beta_02=75.0, beta_03=125.0,
+                     alpha_1=0.5, alpha_2=0.25, delta=0.1, b0=1.0)
                 for _ in range(3)
             ]
 
