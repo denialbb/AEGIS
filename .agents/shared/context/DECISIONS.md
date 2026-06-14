@@ -668,3 +668,37 @@ Option 2: Whenever `independent_throttle` is enabled, explicitly force `engine.t
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-024 — Engine Gimbal Trim Mod Integration for Asymmetric Control
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Agent
+- **Module(s):** Control Allocator, Mission Director
+
+**Context**
+By default, KSP's stock kRPC interface only allows global flight commands (pitch, yaw, roll) that KSP internally mixes and applies to all engines. It does not provide an API to control the gimbal angles of individual engines independently. To fully utilize 6-DOF control allocation (which requires differential gimbal deflection to generate torque/forces for yaw, pitch, and roll without relying solely on RCS or reaction wheels), we need a way to actuate each engine's gimbal deflection individually.
+
+**Options Considered**
+1. **Rely on stock reaction wheels and RCS** for attitude torque, and only use engines for differential throttling.
+   - *Pros:* Simple, requires no external mods.
+   - *Cons:* Reaction wheels lack authority for larger vessels, RCS fuel is limited, and this doesn't leverage the engines' active gimbal capability.
+2. **Use the Gimbal Trim mod (`ModuleGimbalTrim`)** to command individual gimbals.
+   - *Pros:* Exposes independent `Gimbal X` and `Gimbal Y` fields per engine. Allows the Control Allocator to specify precise, independent gimbal deflection angles (in radians, mapped/clipped to \(\pm 5^\circ\) limit) for each engine part.
+   - *Cons:* Requires the Gimbal Trim mod installed in KSP; adds RPC overhead during the control loop.
+
+**Decision**
+Option 2: We use the Gimbal Trim mod (`ModuleGimbalTrim`).
+- When initializing/configuring the engines in the control loop, if `ModuleGimbalTrim` is present on a part, we trigger its `"Toggle Trim"` event to enable manual control override.
+- During the control loop, we query the Control Allocator for optimal gimbal angles (radians), convert them to degrees, clip them to the physical limits (\(\pm 5^\circ\)), and write them directly to the `"Gimbal X"` and `"Gimbal Y"` float fields of the `ModuleGimbalTrim` module on each active engine.
+
+**Consequences**
+- ✅ Active 6-DOF allocation is achieved using both differential throttling and differential gimbaling.
+- ✅ Substantially improves attitude authority, especially under asymmetric engine failure states.
+- ⚠️ Adds dependency on the Gimbal Trim KSP mod.
+- ⚠️ Increases the number of RPC calls per engine per control tick (two field writes per engine).
+
+**Review Notes**
+None yet.
+
