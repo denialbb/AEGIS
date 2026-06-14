@@ -125,39 +125,40 @@ class MissionDirector:
                 self.estimator.predict(noisy_accel_body, attitude, dt)
             state_vector = self.estimator.update(noisy_alt)
             
-            # 3. Run FDI
+            # 3. Run FDI (Only during guided flight phases)
             active_engines = [e for e in self.engines if e.active]
             
-            if len(self.expected_throttles) == 0 and len(active_engines) > 0:
-                self.expected_throttles = np.zeros(len(active_engines))
-                
-            fault_detected = self.fdi.detect_fault(self.expected_accel, noisy_accel_body)
-            if fault_detected and len(active_engines) > 0:
-                failed_indices = self.fdi.isolate_fault(
-                    active_engines, self.expected_throttles, noisy_accel_body, mass
-                )
-                
-                # ISS-004: Handle multiple simultaneous failures
-                if len(failed_indices) >= 2:
-                    logger.error(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
-                    self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "MULTIPLE_FAILURES"})
+            if self.state in ["POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
+                if len(self.expected_throttles) == 0 and len(active_engines) > 0:
+                    self.expected_throttles = np.zeros(len(active_engines))
+                    
+                fault_detected = self.fdi.detect_fault(self.expected_accel, noisy_accel_body)
+                if fault_detected and len(active_engines) > 0:
+                    failed_indices = self.fdi.isolate_fault(
+                        active_engines, self.expected_throttles, noisy_accel_body, mass
+                    )
+                    
+                    # ISS-004: Handle multiple simultaneous failures
+                    if len(failed_indices) >= 2:
+                        logger.error(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
+                        self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "MULTIPLE_FAILURES"})
+                        self.state = "HARD_ABORT"
+                    
+                    for e in self.engines:
+                        if e.index in failed_indices:
+                            if e.active:
+                                self.writer.log_event({"type": "FAULT_DETECTED", "engine_index": e.index})
+                                e.active = False
+                    
+                    # Re-evaluate active engines
+                    active_engines = [e for e in self.engines if e.active]
+                    
+                if not active_engines and len(self.engines) > 0:
+                    # If we had engines and they all failed, trigger abort
                     self.state = "HARD_ABORT"
-                
-                for e in self.engines:
-                    if e.index in failed_indices:
-                        if e.active:
-                            self.writer.log_event({"type": "FAULT_DETECTED", "engine_index": e.index})
-                            e.active = False
-                
-                # Re-evaluate active engines
-                active_engines = [e for e in self.engines if e.active]
-                
-            if not active_engines and len(self.engines) > 0:
-                # If we had engines and they all failed, trigger abort
-                self.state = "HARD_ABORT"
-                logger.error("CRITICAL: All engines failed. HARD ABORT triggered.")
-                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "ENGINE_FAILURE"})
-                break
+                    logger.error("CRITICAL: All engines failed. HARD ABORT triggered.")
+                    self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "ENGINE_FAILURE"})
+                    break
             
             # 4. State Machine & Control Wrench Computation
             # Use estimated altitude instead of raw telemetry for transitions

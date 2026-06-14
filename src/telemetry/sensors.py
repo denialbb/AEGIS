@@ -2,6 +2,7 @@ import numpy as np
 import logging
 from typing import Tuple, Any
 import src.config as config
+from scipy.spatial.transform import Rotation as R
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,13 @@ class SensorModels:
         attitude = np.array(self.attitude_stream())
         mass = self.mass_stream()
         
+        # Rotate world acceleration to body frame
+        # attitude is [x, y, z, w] quaternion from kRPC (which matches scipy)
+        rot = R.from_quat(attitude)
+        perfect_accel_body = rot.inv().apply(perfect_accel)
+        
         # Inject Gaussian Noise
         noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
-        noisy_accel = perfect_accel + self.rng.normal(0, self.sigma_accel, size=3)
+        noisy_accel = perfect_accel_body + self.rng.normal(0, self.sigma_accel, size=3)
         
         return noisy_alt, noisy_accel, attitude, float(mass)
