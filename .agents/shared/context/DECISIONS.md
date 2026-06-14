@@ -614,3 +614,31 @@ Option 1: Mission Director passes instantaneous `target_state` directly to Guida
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-022 — Dynamic Glide-Slope Target Generation
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Mission Director, Guidance
+
+**Context**
+During powered descent, static waypoint targets set far below the current altitude caused massive position-error terms in the PD controller. This resulted in the Control Allocator receiving commands for downward thrust, which it correctly rejected by cutting engines to 0. The vessel would free-fall until position error decreased enough to demand upward thrust, often too late.
+
+**Options Considered**
+1. Static waypoints — Leads to actuator saturation and free-fall.
+2. Glide-slope target generation — The vertical position target is set to the current altitude (zeroing vertical position error), while the velocity target is set to a descent rate proportional to altitude.
+3. Path integral control — Too complex for the current setup.
+
+**Decision**
+Option 2: Glide-slope target generation. `main.py` explicitly zeroes vertical position error by setting target altitude to current altitude, and commands an altitude-proportional descent rate (`GLIDESLOPE_K_ALT * alt_above_floor`).
+
+**Consequences**
+- ✅ Actuator saturation is eliminated; thrust remains continuously bounded.
+- ✅ Produces a smooth deceleration profile.
+- ⚠️ The controller no longer attempts to "catch up" to a specific altitude if it falls behind, strictly following the velocity profile.
+- ⚠️ Requires empirical tuning of `GLIDESLOPE_K_ALT` against actual TWR.
+
+**Review Notes**
+Resolves ISS-011.

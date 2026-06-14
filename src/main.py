@@ -41,24 +41,34 @@ class MissionDirector:
             position=body.surface_position(target_lat, target_lon, body.reference_frame)
         )
         
+        # The pad's position in the celestial body's reference frame
+        pad_pos = np.array(body.surface_position(target_lat, target_lon, body.reference_frame))
+        # The up vector points away from the center of the celestial body
+        self.up_vector = pad_pos / np.linalg.norm(pad_pos)
+        
         self.engines: List[Engine] = []
         
         # Discover controllable engines (ADR-016)
         # TODO: Future RCS support: When updating allocator for RCS, query with_tag("AegisRCS") from vessel.parts.rcs
         tagged_parts = vessel.parts.with_tag("AegisEngine")
+        if not tagged_parts:
+            logger.warning("No parts tagged 'AegisEngine' found. Falling back to all vessel engines.")
+            # Map kRPC Engine objects back to their parent Part objects
+            tagged_parts = [engine.part for engine in vessel.parts.engines]
+            
         for i, part in enumerate(tagged_parts):
             if part.engine is not None:
                 pos = np.array(part.position(vessel.reference_frame))
                 thrust_dir = np.array([0.0, 1.0, 0.0]) # Simplified thrust vector
-                e = Engine(index=i, position=pos, thrust_direction=thrust_dir, max_thrust=part.engine.max_thrust)
-                part.engine.active = True
+                e = Engine(index=i, position=pos, thrust_direction=thrust_dir, max_thrust=part.engine.max_thrust, part=part)
+                part.engine.thrust_limit = 1.0 # Reset thrust limit to 100% in case a previous run set it to 0
                 e.active = True
                 self.engines.append(e)
         logger.info(f"Discovered {len(self.engines)} Aegis engines.")
 
         self.allocator: ControlAllocator = ControlAllocator(self.engines)
         
-        self.sensors = SensorModels(self.conn, vessel, self.ref_frame)
+        self.sensors = SensorModels(self.conn, vessel, self.ref_frame, self.up_vector)
         
         # Initialize submodules
         initial_state = np.zeros(6)
@@ -67,17 +77,17 @@ class MissionDirector:
         measurement_noise = np.eye(1)
         
         self.estimator: StateEstimator = StateEstimator(
-            initial_state, initial_covariance, process_noise, measurement_noise
+            initial_state, initial_covariance, process_noise, measurement_noise, self.up_vector
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(threshold=config.FDI_THRESHOLD)
         
-        # Initialize Guidance Controller with gains from config and default gravity
+        # Initialize Guidance Controller with gains from config and proper gravity vector
         self.guidance: GuidanceController = GuidanceController(
             kp_pos=np.array(config.GUIDANCE_KP_POS),
             kd_vel=np.array(config.GUIDANCE_KD_VEL),
             kp_att=np.array(config.GUIDANCE_KP_ATT),
             kd_att=np.array(config.GUIDANCE_KD_ATT),
-            gravity=np.array(config.GRAVITY)
+            gravity=-self.up_vector * 9.81
         )
         
         self.writer: TelemetryWriter = TelemetryWriter({
@@ -89,6 +99,63 @@ class MissionDirector:
         # State persistence for FDI
         self.expected_throttles: np.ndarray = np.array([])
         self.expected_accel: np.ndarray = np.zeros(3)
+        
+        # Ensure the activation action group is toggled OFF when starting
+        self.vessel.control.set_action_group(config.ACTIVATION_ACTION_GROUP, False)
+
+    def _compute_glideslope_target(
+        self,
+        state_vector: np.ndarray,
+        floor_alt: float,
+        max_descent_rate: float,
+        k_alt_gain: float,
+    ) -> np.ndarray:
+        """
+        Generates an instantaneous target_state for vertical descent guidance
+        (ISS-011 fix).
+
+        Rather than commanding a fixed waypoint far below the vehicle's current
+        position -- which produces position-error terms in the PD law far
+        beyond any realizable acceleration, and gets clipped to zero thrust by
+        the allocator (ISS-011) -- this:
+
+          1. Sets the vertical position target to the vehicle's CURRENT
+             altitude, so vertical pos_err is always ~0. (Lateral position
+             target remains the pad center, origin, so lateral drift is still
+             corrected.)
+          2. Sets the velocity target to an altitude-proportional descent rate
+             that shrinks to 0 as the vehicle approaches floor_alt, capped at
+             max_descent_rate.
+
+        The PD law's velocity-error term then dominates a_cmd, producing a
+        continuous, bounded deceleration profile instead of an emergent
+        coast-then-cliff behavior.
+
+        Args:
+            state_vector: (6,) current estimated [x, y, z, vx, vy, vz]
+            floor_alt: altitude [m] this phase is descending toward (the
+                altitude at which desired descent rate should reach ~0)
+            max_descent_rate: cap on commanded descent speed [m/s] (positive)
+            k_alt_gain: proportional gain [1/s] mapping altitude-above-floor
+                to desired descent speed
+
+        Returns:
+            target_state: (6,) [x, y, z, vx, vy, vz]
+        """
+        est_pos = state_vector[:3]
+        est_alt = float(np.dot(est_pos, self.up_vector))
+
+        target_state = np.zeros(6)
+
+        # Vertical pos target == current altitude -> zero vertical pos_err.
+        # Lateral pos target == origin (pad center) -> still corrects drift.
+        target_state[:3] = est_alt * self.up_vector
+
+        alt_above_floor = max(est_alt - floor_alt, 0.0)
+        desired_speed = min(max_descent_rate, k_alt_gain * alt_above_floor)
+        target_state[3:] = -self.up_vector * desired_speed
+
+        return target_state
 
     def run_loop(self) -> None:
         """
@@ -119,10 +186,10 @@ class MissionDirector:
             self.last_tick_time = start_time
             
             # 1. Poll Telemetry
-            noisy_alt, noisy_accel_body, attitude, mass = self.sensors.poll()
+            noisy_alt, noisy_accel_body, attitude, mass, aero_body, situation = self.sensors.poll()
             
             # Ensure vessel main throttle is at 100% so our individual engine limits work
-            if self.state not in ["STANDBY", "ASCENT_COAST", "HARD_ABORT"]:
+            if self.state not in ["STANDBY", "ASCENT_COAST", "HARD_ABORT", "LANDED"]:
                 self.vessel.control.throttle = 1.0
             
             # 2. Update Estimator
@@ -141,7 +208,13 @@ class MissionDirector:
                 # When skip_predict=True, expected_accel may be stale/invalid. Computing fault
                 # detection against invalid data causes false positives (e.g., gravity during free-fall
                 # looks like multiple engine failures). Hold last known good expected_accel.
-                if not skip_predict:
+                # Also skip FDI when commanded throttles are zero - expected_accel=[0,0,0] but gravity
+                # is ~9.8 m/s² which would always trip the fault threshold during coasting.
+                # Finally, skip FDI if the vessel is touching the ground (normal force triggers false positive).
+                throttles_zero = (len(self.expected_throttles) == 0) or (np.abs(self.expected_throttles).max() < 1e-6)
+                landed = situation in ("landed", "pre_launch", "splashed")
+                
+                if not skip_predict and not throttles_zero and not landed:
                     fault_detected = self.fdi.detect_fault(self.expected_accel, noisy_accel_body)
                     if fault_detected and len(active_engines) > 0:
                         failed_indices = self.fdi.isolate_fault(
@@ -175,8 +248,9 @@ class MissionDirector:
             
             # 4. State Machine & Control Wrench Computation
             # Use estimated altitude instead of raw telemetry for transitions
-            est_alt = state_vector[2]
-            est_vz = state_vector[5]
+            # Altitude is the projection of the state vector onto the up_vector
+            est_alt = float(np.dot(state_vector[:3], self.up_vector))
+            est_vz = float(np.dot(state_vector[3:], self.up_vector))
             
             # Smart Activation Logic
             if self.state == "STANDBY":
@@ -186,12 +260,13 @@ class MissionDirector:
                     self.writer.log_event({"type": "ACTIVATION"})
                     if est_vz > 0:
                         self.state = "ASCENT_COAST"
-                    elif est_alt > config.ALT_HYPERSONIC:
-                        self.state = "DEORBIT_BURN"
-                    elif est_alt > config.ALT_POWERED_DESCENT:
-                        self.state = "HYPERSONIC_COAST"
                     else:
-                        self.state = "POWERED_DESCENT"
+                        if est_alt > config.ALT_HYPERSONIC:
+                            self.state = "DEORBIT_BURN"
+                        elif est_alt > config.ALT_POWERED_DESCENT:
+                            self.state = "HYPERSONIC_COAST"
+                        else:
+                            self.state = "POWERED_DESCENT"
                     self.writer.log_event({"type": "STATE_TRANSITION", "from": "STANDBY", "to": self.state})
             
             target_state = np.zeros(6) # [x, y, z, vx, vy, vz]
@@ -231,43 +306,85 @@ class MissionDirector:
                 # Unguided phases in this prototype. Zero out control authority.
                 pass
             elif self.state == "POWERED_DESCENT":
-                target_state[:3] = np.array([0.0, 0.0, 500.0]) # Target a point high above the pad
-                target_state[3:] = np.array([0.0, 0.0, -50.0]) # Descend at 50 m/s
+                # ISS-011: glide-slope target instead of static up_vector*500.0
+                target_state = self._compute_glideslope_target(
+                    state_vector,
+                    floor_alt=config.ALT_HOVER,
+                    max_descent_rate=config.GLIDESLOPE_RATE_POWERED_DESCENT,
+                    k_alt_gain=config.GLIDESLOPE_K_ALT,
+                )
             elif self.state == "HOVER_TARGETING":
-                target_state[2] = 50.0 # Target a static position 50m above the pad
+                # ISS-011: glide-slope target instead of static up_vector*50.0
+                target_state = self._compute_glideslope_target(
+                    state_vector,
+                    floor_alt=config.ALT_TERMINAL,
+                    max_descent_rate=config.GLIDESLOPE_RATE_HOVER,
+                    k_alt_gain=config.GLIDESLOPE_K_ALT,
+                )
             elif self.state == "TERMINAL_DESCENT":
-                target_state[5] = -2.0 # Target a constant descent velocity of 2 m/s downwards
+                if situation in ("landed", "splashed"):
+                    self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "LANDED"})
+                    logger.info(f"Transitioning from {self.state} to LANDED. Touchdown confirmed.")
+                    self.state = "LANDED"
+                else:
+                    # ISS-011: glide-slope target instead of static pos=0 / vel=-2
+                    target_state = self._compute_glideslope_target(
+                        state_vector,
+                        floor_alt=0.0,
+                        max_descent_rate=config.GLIDESLOPE_RATE_TERMINAL,
+                        k_alt_gain=config.GLIDESLOPE_K_ALT,
+                    )
+                    
+            elif self.state == "LANDED":
+                logger.info("Vessel is landed. Shutting down engines and concluding mission.")
+                for engine in active_engines:
+                    engine.part.engine.thrust_limit = 0.0
+                break # Exit the control loop gracefully
                 
             if self.state not in ["HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST"]:
+                # Ensure engines are activated in KSP when AEGIS takes control
+                for e in active_engines:
+                    if e.part.engine and not e.part.engine.active:
+                        e.part.engine.active = True
+                        
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,
                     current_attitude=attitude,
                     mass=mass,
                     target_state=target_state,
+                    up_vector=self.up_vector,
                     dt=dt
                 )
             else:
                 desired_wrench = np.zeros(6)
                 
             # 5. Allocate Thrust
-            if active_engines and self.state != "HARD_ABORT":
+            if active_engines and self.state not in ["HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "LANDED"]:
                 try:
                     throttles, gimbals = self.allocator.allocate(desired_wrench, active_engines)
                     
                     # Apply EMA to individual engine throttles to model spool-up dynamically
+                    # We MUST use alpha=0.95 to match the physical KSP engine spool-up time. 
+                    # A faster EMA causes the expected acceleration to outpace the real engines, triggering false FDI faults!
                     alpha = 0.95
                     expected_force = np.zeros(3)
-                    self.expected_throttles = []
+                    new_expected_throttles = []
                     
                     for i, engine in enumerate(active_engines):
                         # Update engine's internal EMA state
                         engine.expected_throttle = alpha * engine.expected_throttle + (1 - alpha) * throttles[i]
-                        self.expected_throttles.append(engine.expected_throttle)
+                        new_expected_throttles.append(engine.expected_throttle)
                         
                         expected_force += engine.thrust_direction * engine.max_thrust * engine.expected_throttle
+                        
+                        # Apply thrust limit directly to kRPC part (critical actuation step)
+                        if engine.part and engine.part.engine:
+                            engine.part.engine.thrust_limit = float(engine.expected_throttle)
                     
-                    self.expected_throttles = np.array(self.expected_throttles)
-                    self.expected_accel = expected_force / mass 
+                    self.expected_throttles = np.array(new_expected_throttles)
+                    
+                    # Expected acceleration is total force (thrust + aerodynamic) divided by mass
+                    self.expected_accel = (expected_force + aero_body) / mass 
                 except AllocationDegenerateError as e:
                     print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "DEGENERATE_ALLOCATION"})
@@ -280,7 +397,7 @@ class MissionDirector:
             frame = TelemetryFrame(
                 timestamp=start_time,
                 altitude=noisy_alt,
-                velocity=np.zeros(3),
+                velocity=state_vector[3:],  # ISS-011 fix: was np.zeros(3), hid the KF velocity estimate
                 noisy_accel=noisy_accel_body,
                 throttles=throttles,
                 gimbals=gimbals,
@@ -293,7 +410,7 @@ class MissionDirector:
             sleep_time = dt - elapsed
             if sleep_time > 0:
                 time.sleep(sleep_time)
-        
+                
         # Cleanup when loop ends
         self.writer.close()
 
@@ -317,6 +434,14 @@ if __name__ == "__main__":
         conn = krpc.connect(name=config.KRPC_CLIENT_NAME, address=address)
         logger.info("Connected. Starting Mission Director...")
         director = MissionDirector(conn)
-        director.run_loop()
+        try:
+            director.run_loop()
+        except krpc.error.RPCError as e:
+            logger.error(f"kRPC Error: {str(e)}. Vessel may have been destroyed. Exiting gracefully.")
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}. Exiting gracefully.")
+        finally:
+            logger.info("Mission Director shutdown. Closing telemetry streams.")
+            director.writer.close()
     except ConnectionError:
         logger.error(f"Failed to connect to KSP at {address}. Ensure the server is running and KRPC_ADDRESS is set.")

@@ -30,9 +30,20 @@ FDI_THRESHOLD = 3.0
 # Simulation Determinism
 RANDOM_SEED = 42
 
+# Glide-Slope Guidance (ISS-011)
+# Vertical position target = current altitude (zero vertical pos_err).
+# Vertical velocity target = -min(max_rate, K_ALT * (current_alt - floor_alt)).
+# These need empirical tuning against the vessel's actual TWR.
+GLIDESLOPE_K_ALT = 0.3                  # [1/s] -- desired-speed-per-meter-above-floor
+GLIDESLOPE_RATE_POWERED_DESCENT = 50.0  # [m/s] -- matches prior "descend at 50 m/s" intent
+GLIDESLOPE_RATE_HOVER = 10.0            # [m/s]
+GLIDESLOPE_RATE_TERMINAL = 2.0          # [m/s] -- matches prior "2 m/s" intent
+
 # Guidance Controller Gains
+# KD_VEL Y-axis is increased to 40.0 to give the controller a much stronger reaction to falling speed,
+# allowing it to initiate a suicide burn earlier and overcome the 2-second physical engine spool-up.
 GUIDANCE_KP_POS = [1.0, 1.0, 1.0]
-GUIDANCE_KD_VEL = [1.0, 1.0, 1.0]
+GUIDANCE_KD_VEL = [10.0, 40.0, 10.0]
 GUIDANCE_KP_ATT = [10.0, 10.0, 10.0]
 GUIDANCE_KD_ATT = [5.0, 5.0, 5.0]
 GRAVITY = [0.0, 0.0, -9.81]
