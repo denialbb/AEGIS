@@ -117,8 +117,12 @@ class MissionDirector:
                 skip_predict = False
             self.last_tick_time = start_time
             
-            # 1. Poll Telemetry via SensorModels wrapper
+            # 1. Poll Telemetry
             noisy_alt, noisy_accel_body, attitude, mass = self.sensors.poll()
+            
+            # Ensure vessel main throttle is at 100% so our individual engine limits work
+            if self.state not in ["STANDBY", "ASCENT_COAST", "HARD_ABORT"]:
+                self.vessel.control.throttle = 1.0
             
             # 2. Update Estimator
             if not skip_predict:
