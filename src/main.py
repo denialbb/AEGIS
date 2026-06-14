@@ -28,7 +28,8 @@ class MissionDirector:
         self.state: str = "STANDBY"
         
         # Initialize kRPC specifics
-        vessel = self.conn.space_center.active_vessel
+        self.vessel = self.conn.space_center.active_vessel
+        vessel = self.vessel
         body = vessel.orbit.body
         
         target_lat = config.TARGET_LAT
