@@ -86,6 +86,9 @@ class GuidanceController:
             raise ValueError("NNFeedforward requires inertia_tensor to be set")
         if nn_model is not None and ctm_calculator is None:
             raise ValueError("NNFeedforward requires CTMCalculator to be active")
+        # Warn if CTM is active but WSEF gains are configured (they will be unused)
+        if ctm_calculator is not None and (np.any(self.kp_att != 0.0) or np.any(self.kd_att != 0.0)):
+            logger.warning("CTMCalculator is active - WSEF kp_att/kd_att gains will be unused")
 
     def reset(self) -> None:
         """Resets the internal state of the controller and ADRC if active."""

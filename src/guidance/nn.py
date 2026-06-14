@@ -14,9 +14,9 @@ def _relu(x: np.ndarray) -> np.ndarray:
     return np.maximum(0.0, x)
 
 
-def _glorot_uniform(fan_in: int, fan_out: int) -> np.ndarray:
+def _glorot_uniform(fan_in: int, fan_out: int, rng: np.random.RandomState) -> np.ndarray:
     limit = np.sqrt(6.0 / (fan_in + fan_out))
-    return np.random.uniform(-limit, limit, (fan_in, fan_out))
+    return rng.uniform(-limit, limit, (fan_in, fan_out))
 
 
 class NNFeedforward:
@@ -62,15 +62,12 @@ class NNFeedforward:
             self.b3 = np.array(b3, dtype=float)
         else:
             rng = np.random.RandomState(42)
-            _old_state = np.random.get_state()
-            np.random.set_state(rng.get_state())
-            self.W1 = _glorot_uniform(_N_INPUT, _N_HIDDEN)
+            self.W1 = _glorot_uniform(_N_INPUT, _N_HIDDEN, rng)
             self.b1 = np.zeros(_N_HIDDEN)
-            self.W2 = _glorot_uniform(_N_HIDDEN, _N_HIDDEN)
+            self.W2 = _glorot_uniform(_N_HIDDEN, _N_HIDDEN, rng)
             self.b2 = np.zeros(_N_HIDDEN)
-            self.W3 = _glorot_uniform(_N_HIDDEN, _N_OUTPUT)
+            self.W3 = _glorot_uniform(_N_HIDDEN, _N_OUTPUT, rng)
             self.b3 = np.zeros(_N_OUTPUT)
-            np.random.set_state(_old_state)
 
         self.clamp = float(clamp)
         self.is_trained: bool = False
@@ -132,10 +129,10 @@ class NNFeedforward:
         return (pred - y).ravel()
 
     def train(self,
-              X: np.ndarray,
-              y: np.ndarray,
-              max_nfev: int = 2000,
-              verbose: int = 0) -> dict[str, Any]:
+               X: np.ndarray,
+               y: np.ndarray,
+               max_nfev: int = 2000,
+               verbose: int = 0) -> dict[str, Any]:
         from scipy.optimize import least_squares
 
         if X.ndim != 2 or X.shape[1] != _N_INPUT:
@@ -146,6 +143,13 @@ class NNFeedforward:
             raise ValueError(
                 f"y must have shape (N, {_N_OUTPUT}), got {y.shape}"
             )
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(
+                f"X and y must have the same number of samples, "
+                f"got X.shape={X.shape}, y.shape={y.shape}"
+            )
+        
+        logger.info(f"Starting NN training with {X.shape[0]} samples")
 
         x0 = self._pack()
         # Use 'trf' method for small datasets (lm requires more residuals than variables)
@@ -155,6 +159,7 @@ class NNFeedforward:
         )
         self._unpack(result.x)
         self.is_trained = True
+        logger.info(f"NN training completed. Success: {result.success}, Cost: {result.cost}")
         return {
             'success': result.success,
             'cost': result.cost,

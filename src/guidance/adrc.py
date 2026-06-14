@@ -1,10 +1,11 @@
 import numpy as np
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def fal(e: float, alpha: float, delta: float) -> float:
+def fal(e: float | np.floating[Any], alpha: float | np.floating[Any], delta: float | np.floating[Any]) -> float | np.floating[Any]:
     """
     Nonlinear fal() function from Leblebicioglu et al. (gimbal NN-ADRC paper).
     Continuous at |e| = delta.
@@ -43,14 +44,14 @@ class PerAxisESO:
     """
 
     def __init__(self,
-                  dt: float = 0.02,
-                  beta_01: float = 15.0,
-                  beta_02: float = 75.0,
-                  beta_03: float = 125.0,
-                  alpha_1: float = 0.5,
-                  alpha_2: float = 0.25,
-                  delta: float = 0.1,
-                  b0: float = 1.0):
+                  dt: float | np.floating[Any] = 0.02,
+                  beta_01: float | np.floating[Any] = 15.0,
+                  beta_02: float | np.floating[Any] = 75.0,
+                  beta_03: float | np.floating[Any] = 125.0,
+                  alpha_1: float | np.floating[Any] = 0.5,
+                  alpha_2: float | np.floating[Any] = 0.25,
+                  delta: float | np.floating[Any] = 0.1,
+                  b0: float | np.floating[Any] = 1.0):
         if delta <= 0.0:
             raise ValueError(f"PerAxisESO requires delta > 0, got {delta}")
         if b0 == 0.0:
@@ -67,9 +68,9 @@ class PerAxisESO:
         self.delta = delta
         self.b0 = b0
 
-        self.z1: float = 0.0
-        self.z2: float = 0.0
-        self.z3: float = 0.0
+        self.z1: float | np.floating[Any] = 0.0
+        self.z2: float | np.floating[Any] = 0.0
+        self.z3: float | np.floating[Any] = 0.0
 
     def reset(self) -> None:
         """Reset all ESO states to zero."""
@@ -154,6 +155,12 @@ class CTMCalculator:
             )
 
         self._inv_inertia = np.linalg.inv(self.inertia_tensor)
+        
+        # Check conditioning of inertia tensor (similar to allocator pattern)
+        cond = np.linalg.cond(self.inertia_tensor)
+        logger.debug(f"CTMCalculator inertia tensor condition number: {cond}")
+        if cond > 1e4:
+            logger.warning(f"Inertia tensor is ill-conditioned (cond={cond:.2f}), results may be numerically unstable")
 
     def compute_feedforward(self,
                              err_axis: np.ndarray,
@@ -276,8 +283,8 @@ class ADRCController:
             raise ValueError(f"eso_params must have length 3 (one per axis), got {len(eso_params)}")
 
         self.eso: list[PerAxisESO] = []
-        for params in eso_params:
-            self.eso.append(PerAxisESO(
+        for i, params in enumerate(eso_params):
+            eso = PerAxisESO(
                 dt=self.dt,
                 beta_01=params.get('beta_01', 15.0),
                 beta_02=params.get('beta_02', 75.0),
@@ -286,7 +293,10 @@ class ADRCController:
                 alpha_2=params.get('alpha_2', 0.25),
                 delta=params.get('delta', 0.1),
                 b0=params.get('b0', 1.0),
-            ))
+            )
+            self.eso.append(eso)
+            logger.debug(f"Initialized ESO {i}: beta_01={eso.beta_01}, beta_02={eso.beta_02}, beta_03={eso.beta_03}, "
+                        f"alpha_1={eso.alpha_1}, alpha_2={eso.alpha_2}, delta={eso.delta}, b0={eso.b0}")
 
         self.prev_u: np.ndarray = np.zeros(3)
 
@@ -345,6 +355,11 @@ class ADRCController:
             raise ValueError(
                 f"ctm_feedforward must have shape (3,), "
                 f"got {ctm_feedforward.shape}"
+            )
+        if angular_velocity is not None and angular_velocity.shape != (3,):
+            raise ValueError(
+                f"angular_velocity must have shape (3,) when provided, "
+                f"got {angular_velocity.shape}"
             )
 
         adrc_out = np.zeros(3)
