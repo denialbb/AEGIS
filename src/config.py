@@ -122,12 +122,27 @@ GUIDANCE_KD_VEL_VERTICAL = 40.0
 # Attitude stiffness (Pitch, Yaw, Roll). 
 # Higher values command more torque to point the nose. Too high causes thrust windup and allocator saturation.
 # Min: 2.0, Max: 50.0
+# DEPRECATED in favor of GUIDANCE_ATT_NATURAL_FREQ / GUIDANCE_ATT_DAMPING_RATIO (ADR-028).
+# When inertia-scaled torque is active (inertia_tensor passed to controller), Kp/Kd are
+# computed from: Kp = ωₙ², Kd = 2ζωₙ. These raw Kp/Kd values are used only as a fallback.
 GUIDANCE_KP_ATT = [10.0, 10.0, 10.0]
 
 # Attitude dampening (Gimbal oscillation control).
 # CRITICAL FOR GIMBALS: Higher values heavily dampen "wobbling" or "rocking" by resisting rotational speed.
 # Min: 1.0 (Wobbly), Max: 40.0 (Stiff)
+# DEPRECATED in favor of GUIDANCE_ATT_NATURAL_FREQ / GUIDANCE_ATT_DAMPING_RATIO (ADR-028).
 GUIDANCE_KD_ATT = [20.0, 20.0, 20.0]
+
+# Natural frequency (rad/s) for attitude control per axis [pitch, yaw, roll].
+# Replaces direct Kp/Kd gains when inertia-scaled torque is active (ADR-028).
+# Kp = ωₙ², Kd = 2ζωₙ.
+# Min: 1.0 (slow), Max: 6.0 (fast)
+GUIDANCE_ATT_NATURAL_FREQ = [3.0, 3.0, 3.0]
+
+# Damping ratio for attitude control per axis [pitch, yaw, roll].
+# ζ < 1 = underdamped, ζ = 1 = critically damped, ζ > 1 = overdamped.
+# Min: 0.5, Max: 2.0
+GUIDANCE_ATT_DAMPING_RATIO = [1.0, 1.0, 1.0]
 
 GRAVITY = [0.0, 0.0, -9.81]
 

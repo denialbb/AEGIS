@@ -81,15 +81,26 @@ class MissionDirector:
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(threshold=config.FDI_THRESHOLD)
         
+        # Query inertia tensor from kRPC (ADR-028), reshape from row-major list to 3x3
+        # Same clean-telemetry caveat as mass (ISS-006 applies)
+        self.inertia_tensor: np.ndarray = np.array(self.vessel.inertia_tensor).reshape(3, 3)
+        
+        # Derive attitude gains from natural frequency and damping ratio (ADR-028)
+        omega_n = np.array(config.GUIDANCE_ATT_NATURAL_FREQ)
+        zeta = np.array(config.GUIDANCE_ATT_DAMPING_RATIO)
+        kp_att = omega_n ** 2
+        kd_att = 2.0 * zeta * omega_n
+        
         # Initialize Guidance Controller with gains from config and proper gravity vector
         self.guidance: GuidanceController = GuidanceController(
             kp_pos_lateral=config.GUIDANCE_KP_POS_LATERAL,
             kp_pos_vertical=config.GUIDANCE_KP_POS_VERTICAL,
             kd_vel_lateral=config.GUIDANCE_KD_VEL_LATERAL,
             kd_vel_vertical=config.GUIDANCE_KD_VEL_VERTICAL,
-            kp_att=np.array(config.GUIDANCE_KP_ATT),
-            kd_att=np.array(config.GUIDANCE_KD_ATT),
-            gravity=-self.up_vector * 9.81
+            kp_att=kp_att,
+            kd_att=kd_att,
+            gravity=-self.up_vector * 9.81,
+            inertia_tensor=self.inertia_tensor
         )
         
         self.writer: TelemetryWriter = TelemetryWriter({
@@ -168,7 +179,7 @@ class MissionDirector:
         target_hz = config.TARGET_HZ
         dt = 1.0 / target_hz
         
-        while self.state != "HARD_ABORT":
+        while self.state not in ["HARD_ABORT", "LANDED"]:
             start_time = time.time()
             # Timing and Frame Drop Handling
             # KSP physics runs at 50Hz (20ms). If the game lags or pauses, 'actual_dt' spikes.
@@ -188,7 +199,7 @@ class MissionDirector:
             self.last_tick_time = start_time
             
             # 1. Poll Telemetry
-            noisy_alt, noisy_accel_body, attitude, mass, aero_body, situation = self.sensors.poll()
+            noisy_alt, noisy_accel_body, attitude, mass, aero_body, situation, angular_velocity = self.sensors.poll()
             
             # Ensure vessel main throttle is at 100% so our individual engine limits work
             if self.state not in ["STANDBY", "ASCENT_COAST", "HARD_ABORT", "LANDED"]:
@@ -268,6 +279,14 @@ class MissionDirector:
                 if activated:
                     logger.info("AEGIS Activated. Smart Routing initialized.")
                     self.writer.log_event({"type": "ACTIVATION"})
+                    
+                    # Lock retrograde on SAS to help stabilize during descent
+                    self.vessel.control.sas = True
+                    try:
+                        self.vessel.control.sas_mode = self.conn.space_center.SASMode.retrograde
+                    except Exception as e:
+                        logger.warning(f"Could not set SAS to retrograde: {e}")
+                        
                     if est_vz > 0:
                         self.state = "ASCENT_COAST"
                     else:
@@ -307,7 +326,11 @@ class MissionDirector:
                 logger.info("Transitioning from HOVER_TARGETING to TERMINAL_DESCENT")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "TERMINAL_DESCENT"})
                 self.state = "TERMINAL_DESCENT"
-            elif self.state not in ["STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
+            elif self.state == "TERMINAL_DESCENT" and situation in ("landed", "splashed"):
+                logger.info("Touchdown detected. Transitioning to LANDED")
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "LANDED"})
+                self.state = "LANDED"
+            elif self.state not in ["STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT", "LANDED"]:
                 self.state = "HARD_ABORT"
                 
             # Define instantaneous target kinematic state based on the current mission phase.
@@ -387,7 +410,8 @@ class MissionDirector:
                     mass=mass,
                     target_state=target_state,
                     up_vector=self.up_vector,
-                    dt=dt
+                    dt=dt,
+                    angular_velocity=angular_velocity
                 )
             else:
                 desired_wrench = np.zeros(6)

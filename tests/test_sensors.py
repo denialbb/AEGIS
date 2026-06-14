@@ -30,6 +30,11 @@ def test_sensor_models_noise_statistics():
     ut_mock = MagicMock(side_effect=ut_mock_func)
     attitude_mock = MagicMock(return_value=(1.0, 0.0, 0.0, 0.0))
     mass_mock = MagicMock(return_value=5000.0)
+    angular_vel_mock = MagicMock(return_value=(0.0, 0.0, 0.0))
+    aero_mock = MagicMock(return_value=(0.0, 0.0, 0.0))
+    situation_mock = MagicMock()
+    situation_mock.name = "flying"
+    situation_stream = MagicMock(return_value=situation_mock)
     
     # Simulate conn.add_stream returning callable mock streams
     def add_stream_side_effect(func, obj, attr):
@@ -43,6 +48,12 @@ def test_sensor_models_noise_statistics():
             return attitude_mock
         elif attr == 'mass':
             return mass_mock
+        elif attr == 'angular_velocity':
+            return angular_vel_mock
+        elif attr == 'aerodynamic_force':
+            return aero_mock
+        elif attr == 'situation':
+            return situation_stream
         return MagicMock()
         
     conn.add_stream.side_effect = add_stream_side_effect
@@ -64,13 +75,17 @@ def test_sensor_models_noise_statistics():
         # Velocity changes due to gravity (falling straight down)
         vel_values[0] = vel_values[0] + np.array([0.0, 0.0, -9.81 * 0.02])
         
-        noisy_alt, noisy_accel, attitude, mass = sensors.poll()
+        result = sensors.poll()
+        noisy_alt, noisy_accel, attitude, mass = result[0], result[1], result[2], result[3]
         alt_samples.append(noisy_alt)
         accel_samples.append(noisy_accel)
         
         # Verify perfect values are passed through untouched where expected
         np.testing.assert_array_equal(attitude, np.array([1.0, 0.0, 0.0, 0.0]))
         assert mass == 5000.0
+        
+        # Verify angular velocity is returned correctly
+        np.testing.assert_array_equal(result[6], np.array([0.0, 0.0, 0.0]))
         
     alt_samples = np.array(alt_samples)
     accel_samples = np.array(accel_samples)

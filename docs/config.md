@@ -4,6 +4,16 @@ This document explains the practical effects of the various configuration parame
 
 ---
 
+## 🚀 Automated Tuning (Optuna)
+Because tuning 17 interdependent parameters manually is extremely difficult, AEGIS includes an automated hyperparameter tuning script using **Optuna**.
+To run the automated tuner:
+1. Ensure you have the `aegis_tune_start` save in KSP.
+2. Run the tuning agent skill or the script directly:
+   `wsl -d Arch sh -c "export KRPC_ADDRESS=<your_ip> && .venv/bin/python scripts/tune_config_optuna.py"`
+3. The script will run iteratively, persisting results to `logs/optuna.db`. You can stop it with `Ctrl+C` and restart it later to resume.
+
+---
+
 ## 1. Control Loop & System
 | Parameter | Description | Practical Effect | Min/Max Examples |
 |-----------|-------------|------------------|------------------|
