@@ -14,13 +14,16 @@ class TelemetryFrame:
         noisy_accel: Noisy accelerometer readings. Shape: (3,)
         throttles: Commanded throttles. Shape: (N,) where N is engine count.
         gimbals: Commanded gimbal angles (pitch, yaw). Shape: (N, 2) where N is engine count.
+        skip_predict: Flag indicating if Kalman filter predict step was skipped due to dt spike.
     """
     timestamp: float
     altitude: float
     velocity: np.ndarray
     noisy_accel: np.ndarray
     throttles: np.ndarray
+    fuel_state: np.ndarray
     gimbals: np.ndarray
+    skip_predict: bool = False
 
     def flatten(self) -> Dict[str, Any]:
         """
@@ -30,6 +33,7 @@ class TelemetryFrame:
         flat_data: Dict[str, Any] = {
             "timestamp": self.timestamp,
             "altitude": self.altitude,
+            "skip_predict": int(self.skip_predict),  # ISS-010: Log skip_predict for debugging
         }
         
         # Flatten velocity (3,)
@@ -46,6 +50,11 @@ class TelemetryFrame:
         num_engines = self.throttles.size
         for i in range(num_engines):
             flat_data[f"throttle_{i}"] = float(self.throttles[i])
+            
+        # Flatten fuel_state (N,)
+        if hasattr(self, 'fuel_state') and self.fuel_state is not None:
+            for i in range(num_engines):
+                flat_data[f"has_fuel_{i}"] = int(self.fuel_state[i])
             
         # Flatten gimbals (N, 2) -> N engines, 2 axes (pitch, yaw typically)
         if self.gimbals.ndim == 2:
@@ -67,12 +76,13 @@ class TelemetryFrame:
         Get the ordered list of CSV headers based on engine count.
         """
         headers = [
-            "timestamp", "altitude",
+            "timestamp", "altitude", "skip_predict",
             "vel_x", "vel_y", "vel_z",
             "accel_x", "accel_y", "accel_z"
         ]
         for i in range(num_engines):
             headers.append(f"throttle_{i}")
+            headers.append(f"has_fuel_{i}")
         for i in range(num_engines):
             headers.append(f"gimbal_{i}_0")
             headers.append(f"gimbal_{i}_1")

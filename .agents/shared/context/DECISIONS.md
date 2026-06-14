@@ -502,3 +502,203 @@ Create a custom, planet-fixed reference frame centered exactly on the target lan
 - ✅ Drastically simplifies math. The target position is always exactly $(0,0,0)$.
 - ✅ Improves Kalman Filter numerical stability by bounding position values.
 - ⚠️ Requires knowing the exact landing coordinates at startup. We will hardcode default coordinates (e.g., KSC Launchpad) for now.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-018 — Proportional-Derivative (PD) Translation Control
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Guidance
+
+**Context**
+The Guidance module needs to compute a desired 3D force vector to track the desired trajectory during powered descent.
+
+**Options Considered**
+1. Proportional-Derivative (PD) Controller — Tracks position and velocity errors.
+2. Apollo E-Guidance — Time-optimal but assumes constant gravity and no atmosphere.
+3. Model Predictive Control (MPC) — Perfect constraint handling but computationally heavy.
+
+**Decision**
+Option 1: Proportional-Derivative (PD) Controller. Simple, robust, and computationally cheap. We retain the possibility of implementing Apollo E-Guidance in the future for atmospheric-free landings.
+
+**Consequences**
+- ✅ Easy to tune and guarantee execution within the 20ms physics tick budget.
+- ✅ Highly robust to unexpected disturbances like engine-out torque.
+- ⚠️ Not strictly fuel-optimal compared to E-Guidance or MPC.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-021 — Guidance and FDI Decoupling from skip_predict
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Mission Director, FDI
+
+**Context**
+The `skip_predict` flag was originally used to gate both the Kalman filter predict step AND the guidance controller. This caused a cascading failure during dt spikes: guidance suppression led to zero thrust, which made FDI misinterpret gravity as engine failures, triggering HARD_ABORT (ISS-010).
+
+**Options Considered**
+1. Gate guidance on skip_predict — Simple but dangerous. Leads to uncontrolled free-fall during lags.
+2. Decouple guidance from skip_predict — Guidance always runs during powered descent. FDI detects faults only when predict is active. This requires telemetry to log skip_predict state for debugging.
+3. Implement hover degraded mode — Command thrust to counter gravity during dt spikes. More complex, deferred.
+
+**Decision**
+Option 2: Decouple guidance from skip_predict. Guidance always runs during powered descent phases. FDI fault detection is skipped during dt spikes, holding last known good expected_accel. skip_predict is logged to telemetry for visibility.
+
+**Consequences**
+- ✅ Prevents catastrophic HARD_ABORT during dt spikes by ensuring continuous thrust command.
+- ✅ Maintains FDI's ability to detect real failures when system is stable.
+- ✅ Provides visibility into degraded states via telemetry.
+- ⚠️ FDI cannot detect faults during dt spikes (by design) — this is a known tradeoff.
+- ⚠️ Velocity estimate may become stale during long dt spikes (deferred to ISS-011).
+
+**Review Notes**
+Resolves ISS-010 and POSTMORTEM_2026-06-14_035508.md. Implements all HIGH priority fixes from postmortem.
+
+---
+
+### ADR-019 — Quaternion-based PD Attitude Control
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Guidance
+
+**Context**
+The Guidance module needs to compute desired torques ($\tau_x, \tau_y, \tau_z$) to track the desired orientation and feed the 6-DOF wrench to the Control Allocator.
+
+**Options Considered**
+1. Quaternion-based PD controller — Avoids gimbal lock, standard spacecraft control.
+2. Euler-angle PID controller — Easy to conceptualize, susceptible to gimbal lock near 90 degrees pitch.
+3. Offload to KSP SAS — Allocator couldn't use main engines to counter torque.
+
+**Decision**
+Option 1: Quaternion-based PD controller. Ensures stability in all orientations without gimbal lock.
+
+**Consequences**
+- ✅ Mathematically robust across the entire attitude sphere.
+- ✅ Fully integrated with the Control Allocator's wrench inputs.
+- ⚠️ Quaternions are less intuitive to debug via raw numerical logs.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-020 — Stateless Target Generation (Mission Director Driven)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Mission Director, Guidance
+
+**Context**
+Trajectory tracking requires a moving target state (e.g. glide slope). This logic could live in the Guidance module or the Mission Director.
+
+**Options Considered**
+1. Mission Director passes instantaneous `target_state` on every tick.
+2. Guidance module holds an internal state machine to track the descent profile.
+
+**Decision**
+Option 1: Mission Director passes instantaneous `target_state` directly to Guidance on every tick (`guidance.compute_wrench(current_state, target_state)`).
+
+**Consequences**
+- ✅ Strictly decouples logic. Mission Director owns "what to do", Guidance owns "how to do it".
+- ✅ Guidance module remains purely a stateless mathematical function, simplifying unit testing.
+- ⚠️ Mission Director's `run_loop` becomes slightly more complex as it must interpolate the target position.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-022 — Dynamic Glide-Slope Target Generation
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Mission Director, Guidance
+
+**Context**
+During powered descent, static waypoint targets set far below the current altitude caused massive position-error terms in the PD controller. This resulted in the Control Allocator receiving commands for downward thrust, which it correctly rejected by cutting engines to 0. The vessel would free-fall until position error decreased enough to demand upward thrust, often too late.
+
+**Options Considered**
+1. Static waypoints — Leads to actuator saturation and free-fall.
+2. Glide-slope target generation — The vertical position target is set to the current altitude (zeroing vertical position error), while the velocity target is set to a descent rate proportional to altitude.
+3. Path integral control — Too complex for the current setup.
+
+**Decision**
+Option 2: Glide-slope target generation. `main.py` explicitly zeroes vertical position error by setting target altitude to current altitude, and commands an altitude-proportional descent rate (`GLIDESLOPE_K_ALT * alt_above_floor`).
+
+**Consequences**
+- ✅ Actuator saturation is eliminated; thrust remains continuously bounded.
+- ✅ Produces a smooth deceleration profile.
+- ⚠️ The controller no longer attempts to "catch up" to a specific altitude if it falls behind, strictly following the velocity profile.
+- ⚠️ Requires empirical tuning of `GLIDESLOPE_K_ALT` against actual TWR.
+
+**Review Notes**
+Resolves ISS-011.
+
+---
+
+### ADR-023 — Explicit Throttle Setting with Independent Throttle
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Agent
+- **Module(s):** Control Allocator, Mission Director
+
+**Context**
+To modulate asymmetric thrust across multiple engines, we enable `independent_throttle = True` on each engine so it can be controlled independently of the main vessel throttle via its `thrust_limit`. However, when uncoupled from the main vessel throttle, the engine's internal throttle value defaults to 0.0. Modulating `thrust_limit` while `throttle = 0.0` yields zero actual thrust output, causing silent failures (e.g., vessel dropping like a rock despite "100%" thrust_limit commands).
+
+**Options Considered**
+1. Modulate `engine.throttle` directly instead of `thrust_limit` — Would require overhauling the existing architecture, and KSP sometimes clamps `engine.throttle` based on other UI interactions.
+2. Explicitly force `engine.throttle = 1.0` and modulate `thrust_limit` — Leaves the primary actuator mechanism (`thrust_limit`) intact while explicitly satisfying the API requirement for independent throttle.
+
+**Decision**
+Option 2: Whenever `independent_throttle` is enabled, explicitly force `engine.throttle = 1.0` in the same execution cycle. All fine-grained control continues to be routed through `engine.thrust_limit`.
+
+**Consequences**
+- ✅ Prevents silent 0.0 N thrust failures.
+- ✅ Requires no changes to the math inside the Control Allocator (which already outputs 0 to 1 thrust limits).
+- ⚠️ Adds one extra RPC call per engine during activation/configuration.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-024 — Engine Gimbal Trim Mod Integration for Asymmetric Control
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Agent
+- **Module(s):** Control Allocator, Mission Director
+
+**Context**
+By default, KSP's stock kRPC interface only allows global flight commands (pitch, yaw, roll) that KSP internally mixes and applies to all engines. It does not provide an API to control the gimbal angles of individual engines independently. To fully utilize 6-DOF control allocation (which requires differential gimbal deflection to generate torque/forces for yaw, pitch, and roll without relying solely on RCS or reaction wheels), we need a way to actuate each engine's gimbal deflection individually.
+
+**Options Considered**
+1. **Rely on stock reaction wheels and RCS** for attitude torque, and only use engines for differential throttling.
+   - *Pros:* Simple, requires no external mods.
+   - *Cons:* Reaction wheels lack authority for larger vessels, RCS fuel is limited, and this doesn't leverage the engines' active gimbal capability.
+2. **Use the Gimbal Trim mod (`ModuleGimbalTrim`)** to command individual gimbals.
+   - *Pros:* Exposes independent `Gimbal X` and `Gimbal Y` fields per engine. Allows the Control Allocator to specify precise, independent gimbal deflection angles (in radians, mapped/clipped to \(\pm 5^\circ\) limit) for each engine part.
+   - *Cons:* Requires the Gimbal Trim mod installed in KSP; adds RPC overhead during the control loop.
+
+**Decision**
+Option 2: We use the Gimbal Trim mod (`ModuleGimbalTrim`).
+- When initializing/configuring the engines in the control loop, if `ModuleGimbalTrim` is present on a part, we trigger its `"Toggle Trim"` event to enable manual control override.
+- During the control loop, we query the Control Allocator for optimal gimbal angles (radians), convert them to degrees, clip them to the physical limits (\(\pm 5^\circ\)), and write them directly to the `"Gimbal X"` and `"Gimbal Y"` float fields of the `ModuleGimbalTrim` module on each active engine.
+
+**Consequences**
+- ✅ Active 6-DOF allocation is achieved using both differential throttling and differential gimbaling.
+- ✅ Substantially improves attitude authority, especially under asymmetric engine failure states.
+- ⚠️ Adds dependency on the Gimbal Trim KSP mod.
+- ⚠️ Increases the number of RPC calls per engine per control tick (two field writes per engine).
+
+**Review Notes**
+None yet.
+

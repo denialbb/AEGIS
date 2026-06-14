@@ -5,68 +5,58 @@
 ---
 
 ## Meta
-- **Branch:** `feature/state-estimator`
-- **Commit hash:** `[LATEST]`
-- **Timestamp:** `2026-06-13 01:25 UTC`
-- **Module(s) touched:** `State Estimator, FDI, Control Allocator, Mission Director`
-- **Review urgency:** `[x] Blocking  [ ] Standard  [ ] Low-priority`
+- **Branch:** `iss-011`
+- **Commit hash:** `dcaf8de`
+- **Timestamp:** `2026-06-14 06:50 UTC`
+- **Module(s) touched:** `Control Allocator, Mission Director, Telemetry`
+- **Review urgency:** `[ ] Blocking  [x] Standard  [ ] Low-priority`
 
 ---
 
 ## Summary of Changes
-Implemented fixes addressing Claude's code review (REVIEW_2026-06-13_0130). Transitioned the State Estimator to a 6D state vector (omitting mass) using the "Option A" fusion strategy where noisy acceleration is fed directly into the predict step and altitude serves as the sole measurement update. Re-tuned FDI logic to accommodate simultaneous multiple-engine failures using combinatorics, while incorporating missing comments about strict kRPC mass dependency (ISS-006). Modified Control Allocator to dynamically detect physically absurd commands by monitoring the condition number (`1e4` threshold) of the configuration matrix, successfully mapping these degenerate states to a Hard Abort condition in the Mission Director. 
+Integrated physical engine gimballing by actuating `ModuleGimbalTrim` fields on the vessel parts. Fixed a catastrophic issue in the pseudo-inverse allocator where mathematically unconstrained torque demands were producing requested forces of 4+ million Newtons. This was resolved by both hard-clamping the allocated lateral forces and adding an `rcond=1e-4` parameter to `np.linalg.pinv` to disregard floating-point singularities in the B-matrix. Lastly, gimbal oscillations were dampened by increasing the attitude PD derivative gain.
 
 ---
 
 ## Changed Files
-
 | File | Change Type | Notes |
 |------|-------------|-------|
-| `src/estimation/estimator.py` | `Modified` | Changed state from 7D to 6D, decoupled predict/update. |
-| `tests/test_estimator.py` | `Modified` | Updated for 6D state, added `test_estimator_noisy_update`. |
-| `src/guidance/allocator.py` | `Modified` | Implemented `AllocationDegenerateError`, checks `cond > 1e4`. |
-| `tests/test_allocator.py` | `Modified` | Updated tests to check for `AllocationDegenerateError` correctly. |
-| `src/fdi/fdi.py` | `Modified` | Changed `isolate_fault` to use combinatorics to find up to N failures. Added ISS-006 comments. |
-| `tests/test_fdi.py` | `Modified` | Added `test_isolate_multiple_faults`. |
-| `src/main.py` | `Modified` | Refactored `run_loop` to handle multiple failures and degenerate matrices by triggering `HARD_ABORT`. |
-| `.agents/shared/context/ARCHITECTURE.md` | `Modified` | Documented 6D state, 1x1 R-matrix, degenerate allocator exception, and Hard Abort conditions. |
-| `.agents/shared/context/DECISIONS.md` | `Modified` | Added ADR-010 for condition number threshold, updated ADR-007 for Option A Accelerometer fusion. |
+| `src/main.py` | `Modified` | Added kRPC calls to toggle and set Gimbal Trim during the main loop |
+| `src/guidance/allocator.py` | `Modified` | Clamped lateral force outputs to tan(5°) max to prevent throttle explosion; added rcond to pinv |
+| `src/guidance/controller.py` | `Modified` | Target attitude vector uses `a_cmd_world` directly to steer into drift |
+| `src/config.py` | `Modified` | Increased `GUIDANCE_KD_ATT` from 5.0 to 20.0 to dampen gimbals |
+| `src/telemetry/frame.py` | `Modified` | Telemetry frame now records `gimbals` arrays correctly |
+| `docs/*.md` | `Added` | Extensive markdown documentation detailing engine interfaces and control limits |
 
 ---
 
 ## Interface Contracts
-
-- **State Estimator:** `update(noisy_alt, noisy_accel, dt)` was split into `predict(noisy_accel, dt)` and `update(noisy_alt)`. State output is `(6,)` instead of `(7,)`.
-- **Control Allocator:** Now raises `AllocationDegenerateError` explicitly rather than returning unphysical bounds, changing its API contract from implicitly absorbing errors to explicitly failing loudly.
-- **FDI:** `isolate_fault` now returns a list of failed engines (which may contain >= 2 engines) rather than isolating a single candidate.
+No breaking interface changes. `TelemetryFrame` acquired a new `gimbals` property which is flattened automatically by the CSV writer.
 
 ---
 
 ## Mathematical / Algorithmic Notes
-- **State Estimator:** Uses a linear Kalman Filter (6D state, 1D measurement) leveraging the accelerometer purely as a dynamic control input (B matrix).
-- **Control Allocator:** Monitors structural stability by comparing the condition number (`np.linalg.cond(B)`) against a conservative threshold (`1e4`). If it exceeds this, the matrix is numerically degenerate, guaranteeing unphysical control bounds.
-- **FDI:** To find 2+ failures simultaneously, `isolate_fault` now exhaustively checks combinations of failures up to $N$, selecting the configuration that best matches the un-accounted force deviation.
+The B-Matrix (6xN) was assuming engines could translate forces with 360 degrees of freedom, combined with an ill-conditioned B-Matrix (all engines point exactly straight down, so lateral forces are entirely rank-deficient). We added `rcond=1e-4` to `pinv` to safely drop any singular values smaller than $10^{-4}$ of the max singular value. 
+After computing the ideal 3D force vector per-engine, we hard-clamp the lateral magnitude to `axial_force * tan(5 degrees)` to guarantee the resulting computed throttle magnitude doesn't explode when the PD controller asks for unachievable torques.
 
 ---
 
 ## Self-Identified Concerns
-
-- [ ] `cond > 1e4` threshold: Might need tuning pending real KSP physics interactions if the scale of forces generates naturally high condition numbers.
-- [ ] Combinatorial FDI: Is safe for $N \le 6$ but computationally explosive if we ever transition to massive $N$-engine platforms (e.g. 33 Raptors). For AEGIS scope this is fine.
+- [x] The `GuidanceController` can theoretically output a desired acceleration pointing downwards (if it wants to rapidly descend). This causes `target_up_world` to point down, flipping the rocket. We mitigate this with high glideslope floors currently, but an explicit tilt constraint should probably be implemented in `controller.py`.
+- [x] The 5-degree physical limit is hardcoded in `allocator.py` and `main.py` rather than being queried from the kRPC part (which requires digging through part metadata).
 
 ---
 
 ## Testing Done
-- Mypy strictly typed checks cleanly.
-- `pytest tests/` successfully validates single faults, simultaneous multiple faults, degenerate rank allocations, and synthetic noisy Kalman filter falling estimates.
+Ran a full hardware-in-the-loop launch test via `run.sh` with live kRPC simulation. The allocator correctly managed the engines, successfully clamped the throttle explosion, and smoothly steered the vessel down to 500m where it transitioned into `HOVER_TARGETING`. The vessel effectively survived the flight and only ended because it organically exhausted all onboard fuel.
 
 ---
 
 ## Context for Reviewer
-Resolves Blockers B1, B2, B3 and Majors M1-M5 from REVIEW_2026-06-13_0130.
+See `docs/architecture_design.md` for the overarching structural logic.
 
 ---
 
 ## Status
-- [ ] Ready for first review
-- [x] Revision after review `[REVIEW_2026-06-13_0130]` — changes described above
+- [x] Ready for first review
+- [ ] Revision after review `[REVIEW_timestamp]` — changes described above

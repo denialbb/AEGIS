@@ -68,8 +68,8 @@ def test_allocator_rank_deficient():
     
     with pytest.raises(AllocationDegenerateError) as excinfo:
         allocator.allocate(wrench, engines)
-        
-    assert "rank-deficient" in str(excinfo.value)
+
+    assert "rank < 6" in str(excinfo.value)
 
 def test_allocator_empty():
     allocator = ControlAllocator([])
@@ -125,3 +125,26 @@ def test_allocator_gimbal_angles():
     for i in range(6):
         assert np.isclose(gimbals[i, 1], np.pi / 2, atol=1e-5)
         assert np.isclose(gimbals[i, 0], 0.0, atol=1e-5)
+
+def test_allocator_negative_thrust():
+    engines = [
+        Engine(0, np.array([ 1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0),
+        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0),
+        Engine(2, np.array([ 0.0,  1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0),
+        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0),
+        Engine(4, np.array([ 0.0,  0.0, 1.0]), np.array([1.0, 0.0, 0.0]), 100.0),
+        Engine(5, np.array([ 0.0,  0.0,-1.0]), np.array([0.0, 1.0, 0.0]), 100.0)
+    ]
+    allocator = ControlAllocator(engines)
+    
+    # Request massive downward force (-1200 Z). Engines 0-3 point in +Z.
+    # To satisfy this, the allocator might try to fire engines 0-3 with negative dot product,
+    # or fire engines 4/5 by gimbaling. Actually, engines 0-3 are physically incapable of pushing -Z.
+    wrench = np.array([0.0, 0.0, -1200.0, 0.0, 0.0, 0.0])
+    throttles, gimbals = allocator.allocate(wrench, engines)
+    
+    # Engines 0-3 should be clipped to 0.0 because dot_prod < 0
+    assert throttles[0] == 0.0
+    assert throttles[1] == 0.0
+    assert throttles[2] == 0.0
+    assert throttles[3] == 0.0

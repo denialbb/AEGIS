@@ -150,7 +150,12 @@ State machine that manages nominal mission phases and handles contingencies.
 - **Single Engine Failure:** FDI flags, active engines reduced. Allocator remaps wrench.
 - **Degenerate Allocation:** Control Allocator raises `AllocationDegenerateError`. MD immediately transitions to `HARD_ABORT`.
 - **Multiple Simultaneous Failures:** FDI returns 2+ failed engines. MD immediately transitions to `HARD_ABORT`.
-- **DT_SPIKE / KSP Pause:** If `dt > 3 * expected_dt`, the MD skips the Kalman filter predict step to avoid divergence and logs a `DT_SPIKE` event.
+- **DT_SPIKE / KSP Pause:** If `dt > 3 * expected_dt`, the MD:
+  - Skips the Kalman filter predict step to avoid divergence (velocity state may become stale)
+  - **Always runs** the Guidance controller during powered descent phases (never gated on skip_predict)
+  - Skips FDI fault detection, holding the last known good `expected_accel`
+  - Logs a `DT_SPIKE` event with actual vs expected dt
+  - **Note:** Guidance continues to command thrust to maintain control during degraded states, preventing uncontrolled free-fall.
 
 ### Interface
 ```python

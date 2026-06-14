@@ -31,6 +31,35 @@ def test_telemetry_frame_flatten():
     assert flat["gimbal_1_0"] == 0.3
     assert flat["gimbal_1_1"] == 0.4
 
+def test_telemetry_frame_flatten_mismatched_arrays():
+    # 2 throttles, but only 1 gimbal configured
+    frame = TelemetryFrame(
+        timestamp=100.5,
+        altitude=1000.0,
+        velocity=np.array([1.0, 2.0]), # intentionally short 2D velocity vector
+        noisy_accel=np.array([0.1, 0.2, 0.3, 0.4]), # intentionally long 4D accel vector
+        throttles=np.array([0.5, 0.6]),
+        gimbals=np.array([[0.1, 0.2]]) # only 1 engine has gimbal
+    )
+    flat = frame.flatten()
+    
+    assert flat["timestamp"] == 100.5
+    assert flat["vel_x"] == 1.0
+    assert flat["vel_y"] == 2.0
+    assert "vel_z" not in flat
+    
+    assert flat["accel_x"] == 0.1
+    assert flat["accel_y"] == 0.2
+    assert flat["accel_z"] == 0.3
+    # 4th accel component is ignored
+    
+    assert flat["throttle_0"] == 0.5
+    assert flat["throttle_1"] == 0.6
+    
+    assert flat["gimbal_0_0"] == 0.1
+    assert flat["gimbal_0_1"] == 0.2
+    assert "gimbal_1_0" not in flat
+
 def test_telemetry_writer_creates_files():
     temp_dir = tempfile.mkdtemp()
     try:

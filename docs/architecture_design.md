@@ -26,7 +26,8 @@ The architecture is strictly decoupled into four primary domains to ensure robus
 ### A. The Mission Director (Hierarchical State Machine)
 The overarching logic controller. It manages nominal mission phases and handles contingency branching based on the severity and timing of a detected fault.
 
-*   **States:** `DEORBIT_BURN`, `HYPERSONIC_COAST`, `POWERED_DESCENT`, `HOVER_TARGETING`, `TERMINAL_DESCENT`, and `HARD_ABORT`.
+*   **States:** `STANDBY`, `ASCENT_COAST`, `DEORBIT_BURN`, `HYPERSONIC_COAST`, `POWERED_DESCENT`, `HOVER_TARGETING`, `TERMINAL_DESCENT`, and `HARD_ABORT`.
+*   **Smart Activation:** The Director idles in `STANDBY` until manually activated via a user action group. Upon activation, it evaluates current altitude and vertical velocity to seamlessly inject itself into the appropriate mission phase (e.g., `ASCENT_COAST` if moving upwards, or `HYPERSONIC_COAST` if falling from space).
 *   **Contingency Logic Example:** 
     *   *Fault during `Powered_Descent`:* The Director commands the Guidance module to recalculate burn time or shift the landing target to a closer safe zone.
     *   *Fault during `Terminal_Descent` (< 50m):* The Director triggers a "Hard Abort" contingency—ignoring precision targeting and commanding the Control Allocator to maximize vertical thrust on surviving engines regardless of lateral drift.
@@ -36,6 +37,7 @@ KSP provides perfect data (`vessel.flight().surface_altitude`), which we will pu
 *   **Noise Wrapper:** kRPC telemetry streams will be wrapped in a function that injects continuous Gaussian noise into the radar altimeter and accelerometer readings.
 *   **The Filter:** A linear Discrete-Time Kalman Filter that fuses noisy acceleration data with noisy altitude data to produce a clean, probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z]$. (Note: Vessel mass is treated as a clean, external telemetry parameter, not estimated).
 *   **Attitude Handling:** To keep the filter fast and linear, we use a small-angle approximation: attitude telemetry is treated as perfect when rotating body-frame acceleration to the world frame, and the accelerometer noise variance is artificially inflated to absorb the physical attitude uncertainty.
+*   **Coordinate System and Gravity:** KSP's custom Reference Frames do not naturally rotate to remain "Z-Up" relative to the planet's surface. To compensate, the system computes a normalized `up_vector` from the pad's surface position. This vector is used to correctly subtract the constant gravitational acceleration from the IMU telemetry and to map the true vertical altitude/velocity components for the State Machine target assignments.
 
 ### C. Fault Detection & Isolation Module (FDI)
 The system's diagnostic nervous system.
@@ -48,9 +50,10 @@ The core engineering solution to asymmetric thrust.
 *   **The Solution:** The guidance algorithm does not command individual engines. Instead, it commands a desired 6-DOF "Wrench" (Forces $F_x, F_y, F_z$ and Torques $\tau_x, \tau_y, \tau_z$).
 *   **The Mapper:** The Allocator uses a pseudo-inverse matrix solver (`numpy.linalg.pinv`) to map the desired Wrench to the *surviving* engines. It will automatically throttle down engines opposite the failure to kill the torque, while throttling up adjacent engines to maintain the required vertical stopping force.
 
-### E. Telemetry Logger (Debugging Infrastructure)
+### E. Telemetry & Application Logger (Debugging Infrastructure)
 *   **The Problem:** The KSP physics loop runs at 50Hz. Interactive debugging or slow console printing breaks this real-time constraint.
-*   **The Solution:** A dual-file logging strategy. A high-density CSV logs the complete system state at every tick, while a JSONL file records discrete state changes and faults. I/O is heavily buffered to ensure the control loop never blocks.
+*   **The Telemetry Solution:** A dual-file logging strategy. A high-density CSV logs the complete system state at every tick, while a JSONL file records discrete state changes and faults. I/O is heavily buffered to ensure the control loop never blocks.
+*   **The Application Logging Solution:** Standard `print()` statements are replaced by a global `logging` configuration (`src/common/logger.py`) that strictly avoids the 50Hz inner loop. It outputs runtime information (startup, state transitions, isolated faults) to the console and/or file, toggled via `DEBUG_LOGGING` and `LOG_TO_FILE` in `config.py`.
 
 ---
 

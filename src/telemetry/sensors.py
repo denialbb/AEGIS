@@ -1,6 +1,10 @@
 import numpy as np
+import logging
 from typing import Tuple, Any
 import src.config as config
+from scipy.spatial.transform import Rotation as R  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 class SensorModels:
     """
@@ -8,40 +12,53 @@ class SensorModels:
     This separates the perfect simulation data from the estimator, satisfying the noise-driven
     simulation philosophy.
     """
-    def __init__(self, conn: Any, vessel: Any, ref_frame: Any):
+    def __init__(self, conn: Any, vessel: Any, ref_frame: Any, up_vector: np.ndarray):
         """
         Initializes high-frequency data streams.
         conn: kRPC connection object
         vessel: active vessel object
         ref_frame: the custom landing pad reference frame
+        up_vector: (3,) normalized vector pointing away from the center of the celestial body in the reference frame
         """
         self.conn = conn
         self.vessel = vessel
         self.ref_frame = ref_frame
+        self.up_vector = up_vector
         
         # Initialize kRPC streams
-        flight = self.vessel.flight(self.ref_frame)
-        self.altitude_stream = self.conn.add_stream(getattr, flight, 'surface_altitude')
+        flight_world = self.vessel.flight(self.ref_frame)
+        flight_body = self.vessel.flight(self.vessel.reference_frame)
         
-        # For acceleration, we want body frame, but since there's no native body-frame acceleration 
-        # that ignores gravity, we'll pull from the vessel's native reference frame.
-        # However, to be consistent with ADR-014, we will pull acceleration in the custom world frame
-        # and then we'll pretend it's body frame for testing, or just use world frame natively.
-        # Actually, flight.velocity is relative to ref_frame. We can stream flight.velocity
-        # to calculate true acceleration, or use kRPC's `vessel.flight(ref_frame).acceleration`.
-        self.accel_stream = self.conn.add_stream(getattr, flight, 'acceleration')
+        self.altitude_stream = self.conn.add_stream(getattr, flight_world, 'surface_altitude')
+        
+        # KSP doesn't provide a direct acceleration stream, so we stream velocity and UT to differentiate
+        self.velocity_stream = self.conn.add_stream(getattr, flight_world, 'velocity')
+        self.ut_stream = self.conn.add_stream(getattr, self.conn.space_center, 'ut')
+        self.last_vel: np.ndarray | None = None
+        self.last_ut: float | None = None
         
         # Attitude (quaternion) in the target reference frame
-        self.attitude_stream = self.conn.add_stream(getattr, flight, 'rotation')
+        self.attitude_stream = self.conn.add_stream(getattr, flight_world, 'rotation')
+        
+        # Aerodynamic force in the target reference frame
+        self.aero_stream = self.conn.add_stream(getattr, flight_world, 'aerodynamic_force')
         
         # Mass stream
         self.mass_stream = self.conn.add_stream(getattr, self.vessel, 'mass')
         
+        # Situation stream
+        self.situation_stream = self.conn.add_stream(getattr, self.vessel, 'situation')
+        
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT
         self.sigma_accel = config.SIGMA_ACCEL
+        
+        # Isolated RNG for determinism
+        self.rng = np.random.default_rng(config.RANDOM_SEED)
+        
+        logger.info(f"Initialized SensorModels with sigma_alt={self.sigma_alt}, sigma_accel={self.sigma_accel}")
 
-    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float]:
+    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str]:
         """
         Samples the streams and applies zero-mean Gaussian noise.
         Returns:
@@ -49,15 +66,46 @@ class SensorModels:
             noisy_accel (np.ndarray shape (3,))
             attitude (np.ndarray shape (4,))
             mass (float)
+            aero_force_body (np.ndarray shape (3,))
+            situation (str)
         """
         # Read perfect data
         perfect_alt = self.altitude_stream()
-        perfect_accel = np.array(self.accel_stream())
+        
+        ut = self.ut_stream()
+        vel = np.array(self.velocity_stream())
+        
+        if self.last_vel is None:
+            perfect_accel = np.zeros(3)
+        else:
+            dt = ut - self.last_ut
+            if dt > 0:
+                perfect_accel = (vel - self.last_vel) / dt
+            else:
+                perfect_accel = np.zeros(3)
+                
+        self.last_vel = vel
+        self.last_ut = ut
         attitude = np.array(self.attitude_stream())
         mass = self.mass_stream()
+        aero_world = np.array(self.aero_stream())
+        situation = self.situation_stream().name
+        
+        # KSP coordinate acceleration includes gravity when landed, but is g when falling.
+        # Proper acceleration (what an IMU measures and what engines produce) requires counteracting the gravity vector.
+        gravity_world = -self.up_vector * 9.81  # Simplified constant gravity aligned with up_vector
+        perfect_proper_accel = perfect_accel - gravity_world
+
+        # Rotate world proper acceleration to body frame
+        # attitude is [x, y, z, w] quaternion from kRPC (which matches scipy)
+        rot = R.from_quat(attitude)
+        perfect_accel_body = rot.inv().apply(perfect_proper_accel)
         
         # Inject Gaussian Noise
-        noisy_alt = float(perfect_alt + np.random.normal(0, self.sigma_alt))
-        noisy_accel = perfect_accel + np.random.normal(0, self.sigma_accel, size=3)
+        noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
+        noisy_accel = perfect_accel_body + self.rng.normal(0, self.sigma_accel, size=3)
         
-        return noisy_alt, noisy_accel, attitude, float(mass)
+        # Rotate aero force to body frame
+        aero_body = rot.inv().apply(aero_world)
+        
+        return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation

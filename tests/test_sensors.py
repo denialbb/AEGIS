@@ -13,9 +13,21 @@ def test_sensor_models_noise_statistics():
     
     vessel.flight.return_value = flight
     
+    # Define up_vector
+    up_vector = np.array([0.0, 0.0, 1.0])
+    
     # Mock the streams to return constant perfect values
     altitude_mock = MagicMock(return_value=1000.0)
-    accel_mock = MagicMock(return_value=(0.0, 9.8, 0.0))
+    # Falling velocity decreasing by 9.81 each second
+    ut_values = [0.0]
+    vel_values = [np.array([0.0, 0.0, 0.0])]
+    def velocity_mock_func():
+        return vel_values[0]
+    def ut_mock_func():
+        return ut_values[0]
+        
+    velocity_mock = MagicMock(side_effect=velocity_mock_func)
+    ut_mock = MagicMock(side_effect=ut_mock_func)
     attitude_mock = MagicMock(return_value=(1.0, 0.0, 0.0, 0.0))
     mass_mock = MagicMock(return_value=5000.0)
     
@@ -23,8 +35,10 @@ def test_sensor_models_noise_statistics():
     def add_stream_side_effect(func, obj, attr):
         if attr == 'surface_altitude':
             return altitude_mock
-        elif attr == 'acceleration':
-            return accel_mock
+        elif attr == 'velocity':
+            return velocity_mock
+        elif attr == 'ut':
+            return ut_mock
         elif attr == 'rotation':
             return attitude_mock
         elif attr == 'mass':
@@ -34,14 +48,22 @@ def test_sensor_models_noise_statistics():
     conn.add_stream.side_effect = add_stream_side_effect
     
     # Instantiate the sensor models
-    sensors = SensorModels(conn, vessel, ref_frame)
+    sensors = SensorModels(conn, vessel, ref_frame, up_vector)
     
     # Run a statistical test by polling multiple times
     n_samples = 10000
     alt_samples = []
     accel_samples = []
     
+    # First poll initializes last_vel and last_ut
+    sensors.poll()
+    
     for _ in range(n_samples):
+        # Advance time by 0.02s
+        ut_values[0] += 0.02
+        # Velocity changes due to gravity (falling straight down)
+        vel_values[0] = vel_values[0] + np.array([0.0, 0.0, -9.81 * 0.02])
+        
         noisy_alt, noisy_accel, attitude, mass = sensors.poll()
         alt_samples.append(noisy_alt)
         accel_samples.append(noisy_accel)
@@ -55,8 +77,10 @@ def test_sensor_models_noise_statistics():
     
     # Verify the mean is roughly the perfect value (zero-mean noise)
     assert np.isclose(np.mean(alt_samples), 1000.0, atol=0.1)
+    
+    # Accel should be close to 0,0,0 since we are in freefall and proper accel is 0
     assert np.isclose(np.mean(accel_samples[:, 0]), 0.0, atol=0.05)
-    assert np.isclose(np.mean(accel_samples[:, 1]), 9.8, atol=0.05)
+    assert np.isclose(np.mean(accel_samples[:, 1]), 0.0, atol=0.05)
     assert np.isclose(np.mean(accel_samples[:, 2]), 0.0, atol=0.05)
     
     # Verify the standard deviation matches the config (within 5% relative tolerance)
