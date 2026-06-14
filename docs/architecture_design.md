@@ -21,7 +21,7 @@ To implement complex matrices and state filters, we must break out of the native
 
 ## 3. Core System Modules
 
-The architecture is strictly decoupled into four primary domains to ensure robust systems engineering.
+The architecture is strictly decoupled into five primary domains to ensure robust systems engineering.
 
 ### A. The Mission Director (Hierarchical State Machine)
 The overarching logic controller. It manages nominal mission phases and handles contingency branching based on the severity and timing of a detected fault.
