@@ -81,15 +81,26 @@ class MissionDirector:
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(threshold=config.FDI_THRESHOLD)
         
+        # Query inertia tensor from kRPC (ADR-028), reshape from row-major list to 3x3
+        # Same clean-telemetry caveat as mass (ISS-006 applies)
+        self.inertia_tensor: np.ndarray = np.array(self.vessel.inertia_tensor).reshape(3, 3)
+        
+        # Derive attitude gains from natural frequency and damping ratio (ADR-028)
+        omega_n = np.array(config.GUIDANCE_ATT_NATURAL_FREQ)
+        zeta = np.array(config.GUIDANCE_ATT_DAMPING_RATIO)
+        kp_att = omega_n ** 2
+        kd_att = 2.0 * zeta * omega_n
+        
         # Initialize Guidance Controller with gains from config and proper gravity vector
         self.guidance: GuidanceController = GuidanceController(
             kp_pos_lateral=config.GUIDANCE_KP_POS_LATERAL,
             kp_pos_vertical=config.GUIDANCE_KP_POS_VERTICAL,
             kd_vel_lateral=config.GUIDANCE_KD_VEL_LATERAL,
             kd_vel_vertical=config.GUIDANCE_KD_VEL_VERTICAL,
-            kp_att=np.array(config.GUIDANCE_KP_ATT),
-            kd_att=np.array(config.GUIDANCE_KD_ATT),
-            gravity=-self.up_vector * 9.81
+            kp_att=kp_att,
+            kd_att=kd_att,
+            gravity=-self.up_vector * 9.81,
+            inertia_tensor=self.inertia_tensor
         )
         
         self.writer: TelemetryWriter = TelemetryWriter({
@@ -188,7 +199,7 @@ class MissionDirector:
             self.last_tick_time = start_time
             
             # 1. Poll Telemetry
-            noisy_alt, noisy_accel_body, attitude, mass, aero_body, situation = self.sensors.poll()
+            noisy_alt, noisy_accel_body, attitude, mass, aero_body, situation, angular_velocity = self.sensors.poll()
             
             # Ensure vessel main throttle is at 100% so our individual engine limits work
             if self.state not in ["STANDBY", "ASCENT_COAST", "HARD_ABORT", "LANDED"]:
@@ -399,7 +410,8 @@ class MissionDirector:
                     mass=mass,
                     target_state=target_state,
                     up_vector=self.up_vector,
-                    dt=dt
+                    dt=dt,
+                    angular_velocity=angular_velocity
                 )
             else:
                 desired_wrench = np.zeros(6)

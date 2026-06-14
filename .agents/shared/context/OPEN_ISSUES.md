@@ -361,3 +361,84 @@ so the Kalman-estimated velocity is invisible in telemetry.
 **Resolution**
 
 Implemented `_compute_glideslope_target` to dynamically track velocity while zeroing vertical position error, avoiding actuator saturation.
+
+---
+
+### ISS-012 — `fal()` δ=0 guard and per-axis `b0` derivation (NN-ADRC Risk)
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-14
+- **Module(s):** Guidance (ADRC)
+- **Related ADR:** ADR-027
+- **Related Review:** None
+
+**Description**
+The `fal()` nonlinearity from the ESO equations has a `δ=0` edge case causing `ZeroDivisionError` for `δ**(1-α)` when `α<1`. Additionally, `b0` for attitude axes (≈1/I_axis) differs fundamentally from translation axes (≈1/mass). Per NN_ADRC_DESIGN_ADVISORY.md §4.
+
+**Acceptance Criteria**
+- `fal()` has an explicit `δ>0` guard with a clear error message.
+- All six per-axis `b0` derivations documented with data source and clean-telemetry caveats.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-013 — NN output bounding and ADRC fallback mode (NN-ADRC Risk)
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-14
+- **Module(s):** Guidance (ADRC)
+- **Related ADR:** ADR-027
+- **Related Review:** None
+
+**Description**
+An untrained-region NN producing NaN or out-of-range `Δr̈` is similar to a runtime TypeError during engine-out. ADR-002's safety philosophy requires clamping and fallback. Per NN_ADRC_DESIGN_ADVISORY.md §4.
+
+**Acceptance Criteria**
+- `Δr̈` clamped to a physically plausible range.
+- Documented fallback (pure ADRC, NN contribution = 0) when clamp triggers repeatedly.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-014 — FDI/ADRC diagnostic interface and re-derived dt-spike guards
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-14
+- **Module(s):** FDI, Guidance
+- **Related ADR:** ADR-027
+- **Related Review:** None
+
+**Description**
+The FDI/ADRC interface must go through the Mission Director (ADR-013 pattern), not direct cross-module access. `z3`/`Δr̈` signals need their own dt-spike/zero-throttle guards (ISS-010 fix must be re-derived for these signals). Per NN_ADRC_DESIGN_ADVISORY.md §3.4.
+
+**Acceptance Criteria**
+- `AdrcDiagnostics` dataclass returned from `compute_wrench`, routed through main.py to FDI.
+- ISS-010-style guards re-derived and validated for `z3`/`Δr̈` transient behavior.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-015 — Quaternion convention verification (current_attitude format vs R.from_quat)
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-14
+- **Module(s):** Guidance, Telemetry
+- **Related ADR:** None
+- **Related Review:** None
+
+**Description**
+`controller.py` line 58 docstring documents `current_attitude` as scalar-first `[w, x, y, z]`, but line 100 calls `R.from_quat(current_attitude)` which expects scalar-last `[x, y, z, w]`. `sensors.py` line 101 confirms kRPC returns `[x, y, z, w]` (scalar-last, matching scipy). The docstring is wrong, not the code — but the inconsistency risks hard-to-debug quaternion bugs when the NN-ADRC phases add new quaternion arithmetic. Per NN_ADRC_DESIGN_ADVISORY.md §5.
+
+**Acceptance Criteria**
+- A small unit test takes a known rotation (e.g., 90° about Z), round-trips through `R.from_quat`/`.as_quat()`, and asserts expected Euler angles.
+- `controller.py` docstring for `current_attitude` corrected to scalar-last convention.
+- The unit test passes on the actual `sensors.py` return format.
+
+**Resolution**
+<!-- Fill in when resolved -->

@@ -47,6 +47,9 @@ class SensorModels:
         self.mass_stream = self.conn.add_stream(getattr, self.vessel, 'mass')
         
         # Situation stream
+        # Angular velocity in vessel reference frame (body rates, rad/s)
+        self.angular_vel_stream = self.conn.add_stream(getattr, flight_body, 'angular_velocity')
+        
         self.situation_stream = self.conn.add_stream(getattr, self.vessel, 'situation')
         
         # Noise parameters (Standard Deviations) from config
@@ -58,7 +61,7 @@ class SensorModels:
         
         logger.info(f"Initialized SensorModels with sigma_alt={self.sigma_alt}, sigma_accel={self.sigma_accel}")
 
-    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str]:
+    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str, np.ndarray]:
         """
         Samples the streams and applies zero-mean Gaussian noise.
         Returns:
@@ -68,6 +71,7 @@ class SensorModels:
             mass (float)
             aero_force_body (np.ndarray shape (3,))
             situation (str)
+            angular_velocity (np.ndarray shape (3,)) body-frame angular rates (rad/s)
         """
         # Read perfect data
         perfect_alt = self.altitude_stream()
@@ -108,4 +112,6 @@ class SensorModels:
         # Rotate aero force to body frame
         aero_body = rot.inv().apply(aero_world)
         
-        return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation
+        angular_velocity = np.array(self.angular_vel_stream())
+        
+        return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation, angular_velocity

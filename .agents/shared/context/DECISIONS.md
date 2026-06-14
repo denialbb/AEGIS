@@ -761,9 +761,93 @@ Testing all 17 configuration parameters using a combinatorial grid search is mat
 We implemented an Optuna-based hyperparameter tuning framework (TPE algorithm). It evaluates each set of parameters by running the AEGIS flight simulation (via kRPC save loading) and computes a fitness score based on landing distance and fuel consumption. Severe penalties are applied if the vessel crashes.
 
 **Consequences**
-- âœ… Can optimize all 17 parameters efficiently over hundreds of runs.
-- âœ… Learns which parameters cause crashes and focuses on promising areas.
-- âš ï¸ Requires the external `optuna` package and takes hours to converge.
+- ☑️ Can optimize all 17 parameters efficiently over hundreds of runs.
+- ☑️ Learns which parameters cause crashes and focuses on promising areas.
+- ⚠️ Requires the external `optuna` package and takes hours to converge.
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-027 — ESO/ADRC Ownership and Guidance/Estimator Boundary
+- **Status:** DEFERRED
+- **Date:** 2026-06-14
+- **Author:** Claude (Chief Code Reviewer)
+- **Module(s):** Guidance, State Estimator
+
+**Context**
+The NN-ADRC plan proposed placing the Extended State Observer (ESO) in the State Estimator. The design advisory (NN_ADRC_DESIGN_ADVISORY.md §3.1) identified this as a cross-domain coupling that reopens ADR-003/ADR-014.
+
+**Options Considered**
+1. ESO in State Estimator — Requires Estimator to know `b0` (a control-effectiveness parameter) and previous commanded wrench. Cross-domain coupling.
+2. ESO in Guidance module (`controller.py` or new `adrc.py`) — Fed by existing KF output. Keeps Estimator scoped to ADR-007/014.
+
+**Decision**
+Deferred until Phase 2 of the NN-ADRC roadmap. ESO will live in Guidance. Option 2 is the agreed direction.
+
+**Consequences**
+- ☑️ State Estimator remains scoped to ADR-007/014.
+- ⚠️ ESO implementation depends on Phase 1 (inertia tensor, quaternion upgrade) completing first.
+
+**Review Notes**
+Recommended by NN_ADRC_DESIGN_ADVISORY.md §3.1.
+
+---
+
+### ADR-028 — Vessel Inertia Tensor Sourcing
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Agent
+- **Module(s):** Guidance, Mission Director, Cross-cutting
+
+**Context**
+The quaternion control law upgrade (Phase 1 of the NN-ADRC roadmap) requires a 3×3 inertia tensor `J` for:
+- `J·(Kp·e + Kd·ė)` inertia-scaled PD torque
+- `Ω(ω)Jω` gyroscopic cross-coupling feedforward
+- NN-ADRC wrench scaling (Phase 4, deferred)
+
+AEGIS currently has no module that queries, owns, or passes around `J`.
+
+**Options Considered**
+1. Query `vessel.moment_of_inertia` (3-tuple diagonal) — Simple, but only provides principal moments; off-diagonal components are assumed zero.
+2. Query `vessel.inertia_tensor` (full 3×3 matrix) — Full inertia tensor; captures off-diagonal coupling.
+3. Hardcode a fixed inertia value — Brittle; changes with fuel burn and vessel config.
+
+**Decision**
+Option 2: Query `vessel.inertia_tensor` once at startup, reshape to 3×3 numpy array. Owned by Mission Director, passed to GuidanceController at construction. Same clean-telemetry pattern as `mass` (ISS-006 caveat applies).
+
+**Consequences**
+- ☑️ Unblocks quaternion feedforward (Phase 1) and NN-ADRC wrench scaling (Phase 4).
+- ☑️ Same clean-telemetry dependency as `mass` (ISS-006) — documented.
+- ⚠️ Inertia changes with fuel burn; queried once at startup currently. Re-polling deferred.
+- ⚠️ New parameter in `controller.py` interface; must be passed from `main.py`.
+
+**Review Notes**
+Recommended by NN_ADRC_DESIGN_ADVISORY.md §3.3.
+
+---
+
+### ADR-029 — KF State Vector Scope for NN-ADRC Inputs (Option A vs 9-state vs EKF)
+- **Status:** DEFERRED
+- **Date:** 2026-06-14
+- **Author:** Claude (Chief Code Reviewer)
+- **Module(s):** State Estimator
+
+**Context**
+The NN-ADRC plan mentions "EKF" and implies acceleration may become part of the state vector. Advisory §3.2 identifies ambiguity: current 6-state linear KF (ADR-007 Option A) uses accelerometer as control input.
+
+**Options Considered**
+1. Option A — Keep current 6-state linear KF. Source filtered acceleration from ESO's z2 or existing `kinematic_accel_world`.
+2. Option B — Extend to 9-state constant-acceleration KF (still linear).
+3. Option C — Fold attitude into state; accept EKF + Jacobians. Reopens ADR-014.
+
+**Decision**
+Deferred until Phase 2. Option A is sufficient for Phase 1.
+
+**Consequences**
+- ⚠️ Decision needed before ESO/NN implementation (Phase 2+).
+- ☑️ Does not block Phase 1.
+
+**Review Notes**
+Recommended by NN_ADRC_DESIGN_ADVISORY.md §3.2.
