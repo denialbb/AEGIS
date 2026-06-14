@@ -12,17 +12,26 @@ class FaultDetectionIsolation:
         """
         # ISS-001: placeholder — calibrate against measured KF output noise once ISS-003 is resolved.
         self.threshold: float = threshold
+        self.persistence_ticks: int = 15  # 300ms at 50Hz to allow for engine spool up
+        self.consecutive_faults: int = 0
 
     def detect_fault(self, expected_accel: np.ndarray, measured_accel: np.ndarray) -> bool:
         """
         Compares expected vs measured acceleration.
-        Returns True if the magnitude of the difference exceeds the threshold.
+        Increments a persistence counter to filter out transients like engine spool-up.
+        Returns True if the magnitude of the difference exceeds the threshold for N consecutive ticks.
         """
         diff = expected_accel - measured_accel
         deviation = np.linalg.norm(diff)
         if deviation > self.threshold:
-            logger.warning(f"[FDI] Fault detected! Expected: {expected_accel}, Measured: {measured_accel}, Diff: {diff}, Deviation: {deviation} > {self.threshold}")
-        return bool(deviation > self.threshold)
+            self.consecutive_faults += 1
+            if self.consecutive_faults >= self.persistence_ticks:
+                logger.warning(f"[FDI] Persistent Fault Confirmed! Expected: {expected_accel}, Measured: {measured_accel}, Deviation: {deviation} > {self.threshold}")
+                return True
+        else:
+            self.consecutive_faults = 0
+            
+        return False
 
     def isolate_fault(self, active_engines: List[Engine], expected_throttles: np.ndarray, 
                       measured_accel: np.ndarray, mass: float) -> List[int]:
@@ -42,8 +51,8 @@ class FaultDetectionIsolation:
             
         expected_accel = expected_force / mass
         
-        if not self.detect_fault(expected_accel, measured_accel):
-            return []
+        # We assume isolate_fault is only called AFTER detect_fault has returned True.
+        # We do not call detect_fault again here to avoid double-incrementing the persistence counter.
 
         missing_force = expected_force - (measured_accel * mass)
         force_tolerance = self.threshold * mass
