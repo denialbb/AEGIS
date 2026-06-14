@@ -268,6 +268,14 @@ class MissionDirector:
                 if activated:
                     logger.info("AEGIS Activated. Smart Routing initialized.")
                     self.writer.log_event({"type": "ACTIVATION"})
+                    
+                    # Lock retrograde on SAS to help stabilize during descent
+                    self.vessel.control.sas = True
+                    try:
+                        self.vessel.control.sas_mode = self.conn.space_center.SASMode.retrograde
+                    except Exception as e:
+                        logger.warning(f"Could not set SAS to retrograde: {e}")
+                        
                     if est_vz > 0:
                         self.state = "ASCENT_COAST"
                     else:
