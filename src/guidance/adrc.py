@@ -98,6 +98,126 @@ class PerAxisESO:
         self.z3 += self.dt * (-self.beta_03 * fal_e2)
 
 
+class CTMCalculator:
+    """
+    Computed-Torque Method feedforward calculator (Phase 3).
+
+    The CTM provides a model-based feedforward torque based on the vehicle's
+    rigid-body dynamics, enabling the CTM-ADRC hybrid architecture from
+    Leblebicioglu et al. The CTM captures the nominal plant behavior, and
+    the ESO only needs to estimate the residual disturbance.
+
+    Feedforward torque::
+        tau_ctm = J @ (kp_ctm * err - kd_ctm * omega) + omega x J @ omega
+
+    This is the inverse-dynamics torque for the desired attitude regulation
+    (err -> 0, omega -> 0). When added to the ADRC output, it pre-compensates
+    for the known rigid-body dynamics, leaving the ESO to handle only
+    unmodeled effects (aero torques, engine failures, fuel slosh).
+
+    See also:
+        - FDI's expected_force/mass: the translation analog of this calculator.
+        - PHASE_3.md for the CTM-ADRC architecture decision.
+    """
+
+    def __init__(self,
+                 inertia_tensor: np.ndarray,
+                 kp_ctm: np.ndarray | None = None,
+                 kd_ctm: np.ndarray | None = None):
+        """
+        Args:
+            inertia_tensor: (3,3) Full inertia tensor in body frame.
+            kp_ctm: (3,) CTM proportional gains. If None defaults to [9,9,9]
+                    (omega_n=3 rad/s, zeta=1.0: k = omega_n^2 = 9).
+            kd_ctm: (3,) CTM derivative gains. If None defaults to [6,6,6]
+                    (omega_n=3 rad/s, zeta=1.0: d = 2*zeta*omega_n = 6).
+
+        Raises:
+            ValueError: If inertia_tensor does not have shape (3,3).
+        """
+        self.inertia_tensor = np.array(inertia_tensor, dtype=float)
+        if self.inertia_tensor.shape != (3, 3):
+            raise ValueError(
+                f"inertia_tensor must have shape (3,3), "
+                f"got {self.inertia_tensor.shape}"
+            )
+
+        self.kp_ctm = np.ones(3) * 9.0 if kp_ctm is None else np.array(kp_ctm, dtype=float)
+        self.kd_ctm = np.ones(3) * 6.0 if kd_ctm is None else np.array(kd_ctm, dtype=float)
+
+        if self.kp_ctm.shape != (3,) or self.kd_ctm.shape != (3,):
+            raise ValueError(
+                f"kp_ctm and kd_ctm must have shape (3,), "
+                f"got {self.kp_ctm.shape}, {self.kd_ctm.shape}"
+            )
+
+        self._inv_inertia = np.linalg.inv(self.inertia_tensor)
+
+    def compute_feedforward(self,
+                             err_axis: np.ndarray,
+                             angular_velocity: np.ndarray) -> np.ndarray:
+        """
+        Compute the CTM feedforward torque for attitude regulation.
+
+        The CTM provides negative-feedback PD (matching the WSEF sign
+        convention) plus gyroscopic feedforward::
+
+            tau_ctm = J @ (-kp_ctm * err - kd_ctm * omega) + omega x J @ omega
+
+        The `-kp_ctm * err` term provides negative feedback — positive error
+        produces negative torque to reduce the error. This matches the WSEF's
+        ``kp * (0 - z1)`` convention where z1 tracks err.
+
+        The gyroscopic term ``omega x J @ omega`` provides model-based
+        compensation for known cross-coupling dynamics.
+
+        Args:
+            err_axis: (3,) Angular error in body frame (rad).
+            angular_velocity: (3,) Body-frame angular velocity (rad/s).
+
+        Returns:
+            tau_ctm: (3,) Feedforward torque (N-m) in body frame.
+
+        Raises:
+            ValueError: If inputs don't have shape (3,).
+        """
+        if err_axis.shape != (3,):
+            raise ValueError(f"err_axis must have shape (3,), got {err_axis.shape}")
+        if angular_velocity.shape != (3,):
+            raise ValueError(
+                f"angular_velocity must have shape (3,), "
+                f"got {angular_velocity.shape}"
+            )
+
+        tau_inertia = self.inertia_tensor @ (
+            -self.kp_ctm * err_axis - self.kd_ctm * angular_velocity
+        )
+        tau_gyro = np.cross(
+            angular_velocity,
+            self.inertia_tensor @ angular_velocity,
+        )
+        return tau_inertia + tau_gyro
+
+    def expected_angular_accel(self, expected_torque: np.ndarray) -> np.ndarray:
+        """
+        Convert expected torque to expected angular acceleration.
+
+        alpha_expected = J^{-1} @ tau_expected
+
+        Args:
+            expected_torque: (3,) Expected torque from engines (N-m).
+
+        Returns:
+            alpha_expected: (3,) Expected angular acceleration (rad/s^2).
+        """
+        if expected_torque.shape != (3,):
+            raise ValueError(
+                f"expected_torque must have shape (3,), "
+                f"got {expected_torque.shape}"
+            )
+        return self._inv_inertia @ expected_torque
+
+
 class ADRCController:
     """
     Active Disturbance Rejection Controller for 3-DOF attitude control (Phase 2).
@@ -166,48 +286,76 @@ class ADRCController:
 
     def compute_torque(self,
                        err_axis: np.ndarray,
-                       angular_velocity: np.ndarray | None = None) -> np.ndarray:
+                       angular_velocity: np.ndarray | None = None,
+                       ctm_feedforward: np.ndarray | None = None) -> np.ndarray:
         """
-        Compute ADRC torque command using ESO + WSEF control law.
+        Compute ADRC torque command using ESO + WSEF control law,
+        with optional CTM feedforward (Phase 3).
 
-        For each axis:
-          1. Update ESO with current measurement y = err_axis[i] and previous
-             control u = prev_u[i].
-          2. WSEF control law (reference r=0, r_dot=0):
-               e1 = 0 - z1
-               vel = angular_velocity[i] if provided, else z2
-               u0 = kp * e1 - kd * vel
-               u  = u0 - z3 / b0
+        When CTM feedforward is NOT provided (pure ADRC mode):
+          For each axis:
+            1. Update ESO with (y=err_axis[i], u=prev_u[i]).
+            2. WSEF: u0 = kp * (0 - z1) - kd * vel
+            3. Torque = u0 - z3 / b0
+
+        When CTM feedforward IS provided (CTM-ADRC mode):
+          The CTM provides the full model-based PD torque, and the ADRC
+          provides only disturbance rejection (the ESO's z3 estimate).
+          The WSEF kp/kd are NOT applied — they are replaced by the CTM's
+          inertia-scaled PD. This avoids double-PD cancellation.
+          For each axis:
+            1. Update ESO with (y=err_axis[i], u=prev_u[i]).
+            2. ADRC output = -z3 / b0  (disturbance rejection only)
+            3. Torque = adrc_out + ctm_feedforward[i]
+
+        The prev_u stored for the next tick is the TOTAL torque (ADRC + CTM),
+        so the ESO models the full plant response.
 
         Args:
-            err_axis: (3,) Angular error in body frame (cross product of
-                      nose vector and target-up vector).
+            err_axis: (3,) Angular error in body frame.
             angular_velocity: (3,) Body-frame angular velocity (rad/s).
                               When provided, used directly as the velocity
                               term in the WSEF law instead of z2.
+            ctm_feedforward: (3,) Optional CTM feedforward torque (N-m)
+                             from CTMCalculator.compute_feedforward().
+                             When provided, WSEF kp/kd are bypassed and
+                             only disturbance rejection from -z3/b0 is used.
 
         Returns:
             torque: (3,) Commanded torque per axis (body frame).
 
         Raises:
-            ValueError: If err_axis doesn't have shape (3,).
+            ValueError: If inputs have invalid shape.
         """
         if err_axis.shape != (3,):
             raise ValueError(f"err_axis must have shape (3,), got {err_axis.shape}")
+        if ctm_feedforward is not None and ctm_feedforward.shape != (3,):
+            raise ValueError(
+                f"ctm_feedforward must have shape (3,), "
+                f"got {ctm_feedforward.shape}"
+            )
 
-        torque = np.zeros(3)
+        adrc_out = np.zeros(3)
 
         for i in range(3):
             self.eso[i].update(err_axis[i], self.prev_u[i])
 
-            z1 = self.eso[i].z1
-            z2 = self.eso[i].z2
             z3 = self.eso[i].z3
 
-            vel = angular_velocity[i] if angular_velocity is not None else z2
+            if ctm_feedforward is not None:
+                # CTM-ADRC mode: CTM provides PD, ADRC provides disturbance rejection
+                adrc_out[i] = -z3 / self.eso[i].b0
+            else:
+                # Pure ADRC mode: WSEF provides PD + disturbance rejection
+                z1 = self.eso[i].z1
+                vel = angular_velocity[i] if angular_velocity is not None else self.eso[i].z2
+                u0 = self.kp[i] * (0.0 - z1) - self.kd[i] * vel
+                adrc_out[i] = u0 - z3 / self.eso[i].b0
 
-            u0 = self.kp[i] * (0.0 - z1) - self.kd[i] * vel
-            torque[i] = u0 - z3 / self.eso[i].b0
+        if ctm_feedforward is not None:
+            total_torque = adrc_out + ctm_feedforward
+        else:
+            total_torque = adrc_out
 
-        self.prev_u = torque.copy()
-        return torque
+        self.prev_u = total_torque.copy()
+        return total_torque

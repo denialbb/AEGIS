@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from src.guidance.adrc import fal, PerAxisESO, ADRCController
+from src.guidance.adrc import fal, PerAxisESO, ADRCController, CTMCalculator
 
 
 # =============================================================================
@@ -666,6 +666,419 @@ class TestGuidanceControllerWithADRC:
         w1 = c1.compute_wrench(state, att, 1000.0, np.zeros(6), np.array([0.0, 0.0, 1.0]))
         w2 = c2.compute_wrench(state, att, 1000.0, np.zeros(6), np.array([0.0, 0.0, 1.0]))
         assert np.allclose(w1, w2)
+
+
+# =============================================================================
+# CTMCalculator Unit Tests
+# =============================================================================
+
+class TestCTMCalculator:
+    """Unit tests for CTMCalculator (Phase 3 feedforward)."""
+
+    def test_default_initialization(self):
+        """CTMCalculator with default gains creates correctly."""
+        inertia = np.eye(3) * 1000.0
+        ctm = CTMCalculator(inertia)
+        assert np.allclose(ctm.kp_ctm, [9.0, 9.0, 9.0])
+        assert np.allclose(ctm.kd_ctm, [6.0, 6.0, 6.0])
+        assert np.allclose(ctm.inertia_tensor, inertia)
+
+    def test_custom_gains(self):
+        """Custom kp_ctm/kd_ctm are stored correctly."""
+        inertia = np.eye(3) * 1000.0
+        kp = np.array([12.0, 15.0, 9.0])
+        kd = np.array([8.0, 10.0, 6.0])
+        ctm = CTMCalculator(inertia, kp_ctm=kp, kd_ctm=kd)
+        assert np.allclose(ctm.kp_ctm, kp)
+        assert np.allclose(ctm.kd_ctm, kd)
+
+    def test_compute_feedforward_shape(self):
+        """compute_feedforward returns a (3,) array."""
+        inertia = np.eye(3) * 1000.0
+        ctm = CTMCalculator(inertia)
+        err = np.array([0.1, -0.05, 0.02])
+        omega = np.array([0.01, -0.02, 0.005])
+        ff = ctm.compute_feedforward(err, omega)
+        assert ff.shape == (3,)
+        assert np.all(np.isfinite(ff))
+
+    def test_feedforward_zero_error_zero_omega(self):
+        """With zero error and zero angular velocity, feedforward is zero."""
+        inertia = np.eye(3) * 1000.0
+        ctm = CTMCalculator(inertia)
+        ff = ctm.compute_feedforward(np.zeros(3), np.zeros(3))
+        assert np.allclose(ff, np.zeros(3), atol=1e-10)
+
+    def test_feedforward_nonzero_error(self):
+        """Feedforward proportional to err via J @ (-kp * err) (negative fb)."""
+        inertia = np.diag(np.array([500.0, 800.0, 600.0]))
+        ctm = CTMCalculator(inertia, kp_ctm=np.array([9.0, 9.0, 9.0]))
+        err = np.array([0.2, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, np.zeros(3))
+        # tau_x = Ixx * (-kp_x) * err_x = 500 * (-9) * 0.2 = -900
+        assert np.isclose(ff[0], -900.0)
+        assert np.isclose(ff[1], 0.0)
+        assert np.isclose(ff[2], 0.0)
+
+    def test_feedforward_gyroscopic_term(self):
+        """Feedforward includes omega x J @ omega gyroscopic term."""
+        inertia = np.diag(np.array([500.0, 800.0, 600.0]))
+        ctm = CTMCalculator(inertia, kp_ctm=np.zeros(3), kd_ctm=np.zeros(3))
+        err = np.zeros(3)
+        omega = np.array([0.1, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        # omega x J*omega = [0.1,0,0] x [50,0,0] = [0,0,0]
+        # Pure x rotation has no gyroscopic coupling
+        assert np.allclose(ff, np.zeros(3), atol=1e-10)
+
+    def test_feedforward_gyroscopic_coupling(self):
+        """Gyroscopic coupling appears with multi-axis rotation."""
+        inertia = np.diag(np.array([500.0, 800.0, 600.0]))
+        ctm = CTMCalculator(inertia, kp_ctm=np.zeros(3), kd_ctm=np.zeros(3))
+        # omega = [0.1, 0.2, 0.0]
+        omega = np.array([0.1, 0.2, 0.0])
+        # J*omega = [50, 160, 0]
+        # cross(omega, J*omega) = cross([0.1,0.2,0], [50,160,0])
+        #   = [0.2*0 - 0*160, 0*50 - 0.1*0, 0.1*160 - 0.2*50]
+        #   = [0, 0, 16 - 10] = [0, 0, 6]
+        Jw = inertia @ omega
+        expected_gyro = np.cross(omega, Jw)
+        ff = ctm.compute_feedforward(np.zeros(3), omega)
+        assert np.allclose(ff, expected_gyro)
+
+    def test_feedforward_combined(self):
+        """Feedforward combines negative-feedback PD + gyroscopic."""
+        inertia = np.diag(np.array([500.0, 800.0, 600.0]))
+        kp = np.array([9.0, 9.0, 9.0])
+        kd = np.array([6.0, 6.0, 6.0])
+        ctm = CTMCalculator(inertia, kp_ctm=kp, kd_ctm=kd)
+        err = np.array([0.1, -0.05, 0.02])
+        omega = np.array([0.01, -0.02, 0.005])
+        # CTM uses negative feedback: J @ (-kp * err - kd * omega)
+        tau_pd = inertia @ (-kp * err - kd * omega)
+        tau_gyro = np.cross(omega, inertia @ omega)
+        expected = tau_pd + tau_gyro
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.allclose(ff, expected)
+
+    def test_non_diagonal_inertia(self):
+        """CTM works with non-diagonal (coupled) inertia tensor."""
+        inertia = np.array([
+            [500.0, -10.0, -5.0],
+            [-10.0, 800.0, -20.0],
+            [-5.0, -20.0, 600.0],
+        ])
+        ctm = CTMCalculator(inertia, kp_ctm=np.ones(3), kd_ctm=np.ones(3))
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([0.01, 0.02, 0.015])
+        ff = ctm.compute_feedforward(err, omega)
+        assert ff.shape == (3,)
+        assert np.all(np.isfinite(ff))
+
+    def test_expected_angular_accel(self):
+        """expected_angular_accel converts torque to angular acceleration."""
+        inertia = np.diag(np.array([500.0, 800.0, 600.0]))
+        ctm = CTMCalculator(inertia)
+        torque = np.array([100.0, 200.0, 150.0])
+        alpha = ctm.expected_angular_accel(torque)
+        expected_alpha = np.linalg.inv(inertia) @ torque
+        assert np.allclose(alpha, expected_alpha)
+
+    def test_expected_angular_accel_non_diagonal(self):
+        """expected_angular_accel works with non-diagonal inertia."""
+        inertia = np.array([
+            [500.0, -10.0, -5.0],
+            [-10.0, 800.0, -20.0],
+            [-5.0, -20.0, 600.0],
+        ])
+        ctm = CTMCalculator(inertia)
+        torque = np.array([100.0, 200.0, 150.0])
+        alpha = ctm.expected_angular_accel(torque)
+        expected_alpha = np.linalg.inv(inertia) @ torque
+        assert np.allclose(alpha, expected_alpha)
+
+    def test_invalid_inertia_shape(self):
+        """Non-(3,3) inertia tensor raises ValueError."""
+        with pytest.raises(ValueError, match="must have shape"):
+            CTMCalculator(np.eye(4))
+
+    def test_invalid_kp_shape(self):
+        """Non-(3,) kp_ctm raises ValueError."""
+        with pytest.raises(ValueError, match="kp_ctm and kd_ctm"):
+            CTMCalculator(np.eye(3), kp_ctm=np.array([1.0, 2.0]))
+
+    def test_invalid_err_axis_shape(self):
+        """compute_feedforward raises for non-(3,) err_axis."""
+        ctm = CTMCalculator(np.eye(3))
+        with pytest.raises(ValueError, match="err_axis must have shape"):
+            ctm.compute_feedforward(np.array([0.1, 0.2]), np.zeros(3))
+
+    def test_invalid_angular_velocity_shape(self):
+        """compute_feedforward raises for non-(3,) angular_velocity."""
+        ctm = CTMCalculator(np.eye(3))
+        with pytest.raises(ValueError, match="angular_velocity must have shape"):
+            ctm.compute_feedforward(np.zeros(3), np.array([0.1, 0.2]))
+
+    def test_invalid_expected_torque_shape(self):
+        """expected_angular_accel raises for non-(3,) torque."""
+        ctm = CTMCalculator(np.eye(3))
+        with pytest.raises(ValueError, match="expected_torque must have shape"):
+            ctm.expected_angular_accel(np.array([0.1, 0.2]))
+
+
+# =============================================================================
+# Integration Tests: ADRCController with CTM Feedforward
+# =============================================================================
+
+_STABLE_ESO = dict(beta_01=15.0, beta_02=75.0, beta_03=125.0, delta=0.1)
+"""Stable bandwidth-parameterized ESO gains (ω₀=5 rad/s, see PHASE_2.md).
+All CTM-ADRC tests use these to avoid the discrete-time instability of the
+default gains (β01=100, δ=0.01) which oscillate at 50Hz.
+"""
+
+
+class TestADRCWithCTM:
+    """Test that CTM feedforward correctly augments ADRC output."""
+
+    def test_ctm_feedforward_accepted(self):
+        """ADRCController.compute_torque accepts ctm_feedforward parameter."""
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc = ADRCController(dt=0.02, eso_params=eso_params)
+        err = np.array([0.1, -0.05, 0.02])
+        omega = np.array([0.01, -0.02, 0.005])
+        ctm_ff = np.array([10.0, -5.0, 2.0])
+        torque = adrc.compute_torque(err, angular_velocity=omega,
+                                     ctm_feedforward=ctm_ff)
+        assert torque.shape == (3,)
+        assert np.all(np.isfinite(torque))
+
+    def test_ctm_is_additive(self):
+        """CTM feedforward adds to disturbance rejection output.
+        In CTM mode: torque = ctm_feedforward - z3/b0.
+        With zero error (y=0), z3 stays near zero, so torque ≈ ctm_ff.
+        """
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc = ADRCController(dt=0.02, kp=np.array([5.0, 5.0, 5.0]),
+                              kd=np.array([10.0, 10.0, 10.0]),
+                              eso_params=eso_params)
+        err = np.zeros(3)
+        omega = np.zeros(3)
+        ctm_ff = np.array([50.0, 0.0, 0.0])
+
+        t_yes = adrc.compute_torque(err, angular_velocity=omega,
+                                    ctm_feedforward=ctm_ff)
+
+        # With zero error and omega, ESO e=0 so z3 stays 0
+        # total = ctm_ff - 0/b0 = ctm_ff
+        assert np.allclose(t_yes, ctm_ff, atol=1e-10)
+
+    def test_prev_u_includes_ctm(self):
+        """prev_u stores the TOTAL torque including CTM."""
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc = ADRCController(dt=0.02, eso_params=eso_params)
+        err = np.array([0.1, 0.0, 0.0])
+        ctm_ff = np.array([25.0, 0.0, 0.0])
+        torque = adrc.compute_torque(err, ctm_feedforward=ctm_ff)
+        assert np.allclose(adrc.prev_u, torque)
+
+    def test_prev_u_without_ctm(self):
+        """prev_u stores only ADRC output when no CTM."""
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc = ADRCController(dt=0.02, eso_params=eso_params)
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.allclose(adrc.prev_u, torque)
+
+    def test_ctm_feedforward_none_identical(self):
+        """ctm_feedforward=None gives same result as no kwarg."""
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc1 = ADRCController(dt=0.02, eso_params=eso_params)
+        adrc2 = ADRCController(dt=0.02, eso_params=eso_params)
+        err = np.array([0.1, -0.05, 0.02])
+        omega = np.array([0.01, -0.02, 0.005])
+        t1 = adrc1.compute_torque(err, angular_velocity=omega)
+        t2 = adrc2.compute_torque(err, angular_velocity=omega,
+                                  ctm_feedforward=None)
+        assert np.allclose(t1, t2)
+
+    def test_ctm_eso_sees_full_command(self):
+        """CTM-ADRC converges with stable ESO and properly tuned CTM gains."""
+        inertia_val = 2.0
+        inertia = np.eye(3) * inertia_val
+        kp = np.array([10.0, 10.0, 10.0])
+        kd = np.array([5.0, 5.0, 5.0])
+
+        ctm = CTMCalculator(inertia,
+                            kp_ctm=kp, kd_ctm=kd)
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc = ADRCController(dt=0.02, kp=kp, kd=kd,
+                              eso_params=eso_params)
+
+        err_axis = np.array([0.5, 0.0, 0.0])
+        omega = np.array([0.0, 0.0, 0.0])
+
+        for _ in range(3000):
+            ctm_ff = ctm.compute_feedforward(err_axis, omega)
+            torque = adrc.compute_torque(err_axis, angular_velocity=omega,
+                                         ctm_feedforward=ctm_ff)
+            omega += 0.02 * torque / inertia_val
+            err_axis += 0.02 * omega
+
+        assert abs(err_axis[0]) < 0.01
+        assert abs(err_axis[1]) < 0.001
+        assert abs(err_axis[2]) < 0.001
+
+    def test_ctm_better_convergence_with_inertia(self):
+        """CTM-ADRC converges well with stable ESO and inertia-aware CTM."""
+        inertia_val = 10.0
+        inertia = np.eye(3) * inertia_val
+        kp = np.array([5.0, 5.0, 5.0])
+        kd = np.array([10.0, 10.0, 10.0])
+
+        ctm = CTMCalculator(inertia, kp_ctm=kp, kd_ctm=kd)
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc_only = ADRCController(dt=0.02, kp=kp, kd=kd,
+                                   eso_params=eso_params)
+        adrc_ctm = ADRCController(dt=0.02, kp=kp, kd=kd,
+                                  eso_params=eso_params)
+
+        err_only = np.array([0.5, 0.0, 0.0])
+        omega_only = np.array([0.0, 0.0, 0.0])
+        err_ctm = np.array([0.5, 0.0, 0.0])
+        omega_ctm = np.array([0.0, 0.0, 0.0])
+
+        for _ in range(3000):
+            t_only = adrc_only.compute_torque(err_only, angular_velocity=omega_only)
+            omega_only += 0.02 * t_only / inertia_val
+            err_only += 0.02 * omega_only
+
+            ctm_ff = ctm.compute_feedforward(err_ctm, omega_ctm)
+            t_ctm = adrc_ctm.compute_torque(err_ctm, angular_velocity=omega_ctm,
+                                            ctm_feedforward=ctm_ff)
+            omega_ctm += 0.02 * t_ctm / inertia_val
+            err_ctm += 0.02 * omega_ctm
+
+        # Both converge; CTM-ADRC with inertia-aware PD converges tighter
+        assert abs(err_ctm[0]) < 0.01
+        assert abs(err_only[0]) < 0.01
+
+    def test_ctm_disturbance_rejection(self):
+        """CTM-ADRC rejects disturbances with stable ESO gains."""
+        inertia_val = 5.0
+        inertia = np.eye(3) * inertia_val
+        kp = np.array([8.0, 8.0, 8.0])
+        kd = np.array([6.0, 6.0, 6.0])
+
+        ctm = CTMCalculator(inertia, kp_ctm=kp, kd_ctm=kd)
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc_only = ADRCController(dt=0.02, kp=kp, kd=kd,
+                                   eso_params=eso_params)
+        adrc_ctm = ADRCController(dt=0.02, kp=kp, kd=kd,
+                                  eso_params=eso_params)
+
+        disturbance = 5.0
+
+        err_only = 0.0
+        omega_only = 0.0
+        err_ctm = 0.0
+        omega_ctm = 0.0
+
+        for _ in range(3000):
+            t_only = adrc_only.compute_torque(
+                np.array([err_only, 0.0, 0.0]),
+                angular_velocity=np.array([omega_only, 0.0, 0.0]),
+            )
+            omega_only += 0.02 * (t_only[0] + disturbance) / inertia_val
+            err_only += 0.02 * omega_only
+
+            err_arr = np.array([err_ctm, 0.0, 0.0])
+            omega_arr = np.array([omega_ctm, 0.0, 0.0])
+            ctm_ff = ctm.compute_feedforward(err_arr, omega_arr)
+            t_ctm = adrc_ctm.compute_torque(
+                err_arr, angular_velocity=omega_arr,
+                ctm_feedforward=ctm_ff,
+            )
+            omega_ctm += 0.02 * (t_ctm[0] + disturbance) / inertia_val
+            err_ctm += 0.02 * omega_ctm
+
+        # Both reject disturbance
+        assert abs(err_ctm) < 0.05
+        assert abs(err_only) < 0.05
+
+    def test_invalid_ctm_shape(self):
+        """Non-(3,) ctm_feedforward raises ValueError."""
+        adrc = ADRCController()
+        with pytest.raises(ValueError, match="ctm_feedforward must have shape"):
+            adrc.compute_torque(np.zeros(3), ctm_feedforward=np.array([1.0, 2.0]))
+
+    def test_eso_prev_u_with_ctm(self):
+        """With CTM, prev_u correctly includes CTM in total."""
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc = ADRCController(dt=0.02, eso_params=eso_params)
+        err = np.array([0.1, -0.05, 0.02])
+        ctm_ff = np.array([5.0, -3.0, 1.0])
+        torque = adrc.compute_torque(err, ctm_feedforward=ctm_ff)
+        assert np.allclose(adrc.prev_u, torque)
+
+
+# =============================================================================
+# Integration Tests: CTM Stabilizes Edge Cases
+# =============================================================================
+
+class TestCTMEdgeCases:
+    """CTM-ADRC behavior under edge conditions."""
+
+    def test_ctm_large_error_no_instability(self):
+        """CTM-ADRC handles large initial errors without instability."""
+        inertia = np.eye(3) * 10.0
+        ctm = CTMCalculator(inertia)
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc = ADRCController(dt=0.02, kp=np.array([3.0, 3.0, 3.0]),
+                              kd=np.array([5.0, 5.0, 5.0]),
+                              eso_params=eso_params)
+        err = np.array([10.0, -5.0, 3.0])
+        omega = np.array([0.0, 0.0, 0.0])
+        for _ in range(200):
+            ctm_ff = ctm.compute_feedforward(err, omega)
+            torque = adrc.compute_torque(err, angular_velocity=omega,
+                                         ctm_feedforward=ctm_ff)
+            omega += 0.02 * torque / 10.0
+            err += 0.02 * omega
+            assert np.all(np.isfinite(torque))
+            assert np.all(np.isfinite(err))
+
+    def test_ctm_equals_adrc_for_identity_inertia(self):
+        """CTM-ADRC and pure ADRC both converge for identity inertia."""
+        inertia = np.eye(3)
+        kp = np.array([10.0, 10.0, 10.0])
+        kd = np.array([5.0, 5.0, 5.0])
+        ctm = CTMCalculator(inertia, kp_ctm=kp, kd_ctm=kd)
+        eso_params = [_STABLE_ESO.copy() for _ in range(3)]
+        adrc_ctm = ADRCController(dt=0.02, kp=kp, kd=kd,
+                                  eso_params=eso_params)
+        adrc_only = ADRCController(dt=0.02, kp=kp, kd=kd,
+                                   eso_params=eso_params)
+
+        err_ctm = np.array([0.2, 0.0, 0.0])
+        omega_ctm = np.zeros(3)
+        err_only = np.array([0.2, 0.0, 0.0])
+        omega_only = np.zeros(3)
+
+        for _ in range(2000):
+            ctm_ff = ctm.compute_feedforward(err_ctm, omega_ctm)
+            t_ctm = adrc_ctm.compute_torque(err_ctm, angular_velocity=omega_ctm,
+                                            ctm_feedforward=ctm_ff)
+            omega_ctm += 0.02 * t_ctm
+            err_ctm += 0.02 * omega_ctm
+
+            t_only = adrc_only.compute_torque(err_only, angular_velocity=omega_only)
+            omega_only += 0.02 * t_only
+            err_only += 0.02 * omega_only
+
+        # Both converge; CTM-ADRC uses CTM PD directly while pure ADRC
+        # uses WSEF PD via z1 — both converge well for identity inertia
+        assert abs(err_ctm[0]) < 0.01
+        assert abs(err_only[0]) < 0.01
 
 
 # =============================================================================

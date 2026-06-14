@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R  # type: ignore
-from src.guidance.adrc import ADRCController
+from src.guidance.adrc import ADRCController, CTMCalculator
 
 class GuidanceController:
     """
@@ -21,7 +21,8 @@ class GuidanceController:
                  kd_att: np.ndarray,
                  gravity: np.ndarray = np.zeros(3),
                  inertia_tensor: np.ndarray | None = None,
-                 adrc: ADRCController | None = None):
+                 adrc: ADRCController | None = None,
+                 ctm_calculator: CTMCalculator | None = None):
         """
         Initializes the Guidance Controller with tunable gains.
 
@@ -40,6 +41,10 @@ class GuidanceController:
                   When provided, replaces the PD attitude torque with the ADRC
                   WSEF control law. Gyroscopic feedforward is still applied
                   when inertia_tensor is available.
+            ctm_calculator: Optional CTMCalculator for CTM-ADRC feedforward
+                            (Phase 3). When provided alongside adrc, the CTM
+                            feedforward torque is added to the ADRC output.
+                            Requires inertia_tensor to be set.
         """
         self.kp_pos_lateral = float(kp_pos_lateral)
         self.kp_pos_vertical = float(kp_pos_vertical)
@@ -56,6 +61,9 @@ class GuidanceController:
                 raise ValueError(f"inertia_tensor must have shape (3,3), got {self.inertia_tensor.shape}")
 
         self.adrc: ADRCController | None = adrc
+        self.ctm_calculator: CTMCalculator | None = ctm_calculator
+        if ctm_calculator is not None and inertia_tensor is None:
+            raise ValueError("CTMCalculator requires inertia_tensor to be set")
 
     def reset(self) -> None:
         """Resets the internal state of the controller and ADRC if active."""
@@ -142,15 +150,18 @@ class GuidanceController:
 
         if self.adrc is not None:
             # ---- ADRC attitude control (Phase 2, ADR-027) ----
-            if angular_velocity is not None:
+            # Optionally augmented with CTM feedforward (Phase 3)
+            if self.ctm_calculator is not None:
+                if angular_velocity is None:
+                    raise ValueError("angular_velocity is required for CTM-ADRC")
+                ctm_ff = self.ctm_calculator.compute_feedforward(err_axis, angular_velocity)
+                torque_body = self.adrc.compute_torque(
+                    err_axis, angular_velocity, ctm_feedforward=ctm_ff,
+                )
+            elif angular_velocity is not None:
                 torque_body = self.adrc.compute_torque(err_axis, angular_velocity)
             else:
                 torque_body = self.adrc.compute_torque(err_axis)
-
-            # Gyroscopic feedforward (inertia-dependent, adds disturbance rejection)
-            if self.inertia_tensor is not None:
-                torque_body += np.cross(angular_velocity if angular_velocity is not None else np.zeros(3),
-                                        self.inertia_tensor @ (angular_velocity if angular_velocity is not None else np.zeros(3)))
         elif self.inertia_tensor is not None:
             # ---- Inertia-scaled PD torque + gyroscopic feedforward (ADR-028) ----
             if angular_velocity is None:
