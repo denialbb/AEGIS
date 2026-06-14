@@ -53,9 +53,14 @@ class FaultDetectionIsolation:
         
         import itertools
         
+        # The FDI problem is an underdetermined inverse problem. We know there is missing force,
+        # but we don't know which subset of engines stopped producing it.
+        # We solve this by brute-forcing all possible failure combinations (1 engine out, 2 engines out, etc.).
         # Test all combinations of active engines (from 1 to N failures)
         for num_failed in range(1, len(active_engines) + 1):
             for combo in itertools.combinations(enumerate(active_engines), num_failed):
+                
+                # Calculate the hypothetical force this specific combination of engines *should* have produced
                 combo_force = np.zeros(3)
                 for i, engine in combo:
                     combo_force += engine.thrust_direction * engine.max_thrust * expected_throttles[i]

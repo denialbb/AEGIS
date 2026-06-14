@@ -36,13 +36,20 @@ class StateEstimator:
         # For now, we assume body frame is aligned with world frame.
         noisy_accel_world = noisy_accel_body.copy()
         
-        # Update dynamic state transition matrix F
+        # Update dynamic state transition matrix F.
+        # This matrix represents the physics model x_next = F * x_current.
+        # For a constant velocity model, position updates as: x_next = x + v * dt
+        # The top right 3x3 block maps the velocity state (indices 3,4,5) into the position state (indices 0,1,2).
         self.kf.F = np.eye(6)
         self.kf.F[0, 3] = dt
         self.kf.F[1, 4] = dt
         self.kf.F[2, 5] = dt
         
-        # Control input matrix B for acceleration
+        # Control input matrix B for acceleration.
+        # This maps the control input (acceleration 'u') into the state vector.
+        # According to Newtonian kinematics:
+        # Position change due to acceleration: 0.5 * a * dt^2 (Top 3x3 block)
+        # Velocity change due to acceleration: a * dt (Bottom 3x3 block)
         B = np.zeros((6, 3))
         B[0:3, 0:3] = 0.5 * (dt ** 2) * np.eye(3)
         B[3:6, 0:3] = dt * np.eye(3)
