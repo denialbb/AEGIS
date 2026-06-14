@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R  # type: ignore
 from src.guidance.adrc import ADRCController, CTMCalculator
+from src.guidance.nn import NNFeedforward
 
 class GuidanceController:
     """
@@ -22,7 +23,8 @@ class GuidanceController:
                  gravity: np.ndarray = np.zeros(3),
                  inertia_tensor: np.ndarray | None = None,
                  adrc: ADRCController | None = None,
-                 ctm_calculator: CTMCalculator | None = None):
+                 ctm_calculator: CTMCalculator | None = None,
+                 nn_model: NNFeedforward | None = None):
         """
         Initializes the Guidance Controller with tunable gains.
 
@@ -45,6 +47,9 @@ class GuidanceController:
                             (Phase 3). When provided alongside adrc, the CTM
                             feedforward torque is added to the ADRC output.
                             Requires inertia_tensor to be set.
+            nn_model: Optional NNFeedforward for learned disturbance compensation
+                      (Phase 4). The NN correction is added to the CTM feedforward
+                      in torque space. Requires adrc and inertia_tensor.
         """
         self.kp_pos_lateral = float(kp_pos_lateral)
         self.kp_pos_vertical = float(kp_pos_vertical)
@@ -64,6 +69,12 @@ class GuidanceController:
         self.ctm_calculator: CTMCalculator | None = ctm_calculator
         if ctm_calculator is not None and inertia_tensor is None:
             raise ValueError("CTMCalculator requires inertia_tensor to be set")
+
+        self.nn_model: NNFeedforward | None = nn_model
+        if nn_model is not None and adrc is None:
+            raise ValueError("NNFeedforward requires ADRC to be active (adrc must be set)")
+        if nn_model is not None and inertia_tensor is None:
+            raise ValueError("NNFeedforward requires inertia_tensor to be set")
 
     def reset(self) -> None:
         """Resets the internal state of the controller and ADRC if active."""
@@ -151,12 +162,29 @@ class GuidanceController:
         if self.adrc is not None:
             # ---- ADRC attitude control (Phase 2, ADR-027) ----
             # Optionally augmented with CTM feedforward (Phase 3)
+            # and/or NN learned correction (Phase 4)
+            feedforward_torque = np.zeros(3)
+
             if self.ctm_calculator is not None:
                 if angular_velocity is None:
                     raise ValueError("angular_velocity is required for CTM-ADRC")
-                ctm_ff = self.ctm_calculator.compute_feedforward(err_axis, angular_velocity)
+                feedforward_torque = self.ctm_calculator.compute_feedforward(
+                    err_axis, angular_velocity,
+                )
+
+            if self.nn_model is not None and self.nn_model.is_trained:
+                if angular_velocity is None:
+                    raise ValueError("angular_velocity is required with NN feedforward")
+                z3_current = np.array([eso.z3 for eso in self.adrc.eso])
+                nn_state = np.concatenate([err_axis, angular_velocity, z3_current])
+                nn_correction = self.nn_model.predict(nn_state)
+                feedforward_torque += self.inertia_tensor @ nn_correction
+
+            if self.ctm_calculator is not None or (
+                self.nn_model is not None and self.nn_model.is_trained
+            ):
                 torque_body = self.adrc.compute_torque(
-                    err_axis, angular_velocity, ctm_feedforward=ctm_ff,
+                    err_axis, angular_velocity, ctm_feedforward=feedforward_torque,
                 )
             elif angular_velocity is not None:
                 torque_body = self.adrc.compute_torque(err_axis, angular_velocity)
