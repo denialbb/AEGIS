@@ -31,6 +31,7 @@ If you need architectural context, read `docs/architecture_design.md`.
 - **Branches:** Always create and work in feature branches for new developments or changes.
 - **Staging:** Never use `git add .`. Add files cautiously and explicitly to ensure only intended files are staged.
 - **Commits:** Write precise, clear, and informative commit messages.
+- **Autonomy:** You are expected to proactively commit your work when a logical chunk of work or feature implementation is complete and verified. Do not wait for the user to explicitly ask you to commit.
 
 # Python Environment & Tooling
 - **Execution Environment:** The project runs in a Linux environment inside the Arch WSL distribution (`wsl -d Arch`).

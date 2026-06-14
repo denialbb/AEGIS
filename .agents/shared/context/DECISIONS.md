@@ -353,3 +353,152 @@ Simulate wind by intercepting the `noisy_accel` telemetry stream in the Gremlin 
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-012 — Two-Tier Test Harness (Unit Tests + Kinematic Mock)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Claude (Reviewer)
+- **Module(s):** Cross-cutting (Testbed)
+
+**Context**
+To iterate quickly without running full Kerbal Space Program (KSP) scenarios, we need an offline simulation/test harness (ISS-007). A proposal was made to build a full 6-DOF physics engine using `scipy.integrate.solve_ivp` to synthesize perfect KSP flight data and inject noise.
+
+**Options Considered**
+1. Full 6-DOF Analytical Physics Engine (scipy) — Synthesizes perfect trajectories and re-injects noise. Massive overkill, introduces a "second-system trap" that requires KSP to validate itself before validating AEGIS. Mismatched noise statistics would corrupt Kalman filter and FDI calibration.
+2. Two-Tier Test Harness (Unit tests + Kinematic mock) — Tier 1: Pure `pytest` unit tests for module-level correctness. Tier 2: A simple 3-line Newtonian kinematic mock (`a = thrust_sum / mass - g + noise; v += a * dt; x += v * dt`) for integration loop testing.
+
+**Decision**
+Two-Tier Test Harness. We explicitly reject building a full physics engine. We will rely on pure unit tests with synthetic inputs for mathematical verification, and a lightweight kinematic mock for loop integration testing. The mock must use the exact same noise wrapper as the live system.
+
+**Consequences**
+- ✅ Prevents maintaining a complex second system (the physics engine).
+- ✅ Ensures test noise statistics precisely match production noise statistics.
+- ✅ Massively reduces the time required to build the test harness.
+- ⚠️ The offline kinematic mock will not capture KSP-specific transient dynamics (like gimbal slew rates or variable gravity), meaning final parameter tuning must still occur against live KSP runs.
+
+**Review Notes**
+Addresses the architectural feedback from Claude's review of the `proposal/6dof-scipy-physics-harness` proposal.
+
+---
+
+### ADR-013 — Dual-File Telemetry Logging Architecture
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Claude & Joint
+- **Module(s):** Cross-cutting (Telemetry)
+
+**Context**
+Debugging live KSP runs is difficult because the console output is too fast and interactive debugging breaks the 50Hz control loop constraint. We need a telemetry logging system that can serve as the primary post-mortem debugging surface without blocking the control loop.
+
+**Options Considered**
+1. Single CSV Log — High resolution, but extremely difficult to parse for specific events (e.g., fault moments) since it generates ~180,000 rows per hour.
+2. Dual-File Strategy (CSV + JSONL) — A dense `telemetry.csv` captures every physics tick for deep analysis, while `events.jsonl` captures only discrete state changes or faults.
+3. Module-Level Logging — Each module writes its own logs. Violates ADR-003 by coupling pure math modules to I/O logic.
+
+**Decision**
+Dual-File Strategy. The `MissionDirector` is the sole owner of the `TelemetryWriter` and passes a fully assembled `TelemetryFrame` to it every tick. File I/O is heavily buffered (1MB) to prevent loop blocking. Logs are written to a timestamped folder with a `logs/latest` symlink for easy predictable access.
+
+**Consequences**
+- ✅ Preserves the 20ms physics tick budget by preventing synchronous file writes.
+- ✅ Creates a highly readable "what happened" timeline via the events log.
+- ✅ Keeps core modules pure and decoupled from I/O.
+- ⚠️ The `MissionDirector` has to assemble data from all modules, increasing its orchestration burden.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-014 — Fold Small-Angle Attitude Noise into Accelerometer Noise Budget
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Joint
+- **Module(s):** State Estimator, Cross-cutting
+
+**Context**
+The State Estimator requires the vessel's attitude to rotate body-frame acceleration from the IMU into the world frame. Real sensors have noise, so attitude telemetry should theoretically be noisy. However, applying noise to the attitude creates a non-linear rotation matrix. The linear Discrete-Time Kalman Filter (chosen in ADR-007) cannot handle non-linear transformations, which would strictly require upgrading to an Extended Kalman Filter (EKF).
+
+**Options Considered**
+1. Perfect Attitude (No Noise) — Unrealistic, breaks project simulation philosophy.
+2. Upgrade to Extended Kalman Filter (EKF) — Accurate, but introduces significant mathematical complexity (Jacobians) and testing burden to manage a 13-state filter.
+3. Small-Angle Approximation — Assume attitude error is small during controlled flight. Use the un-noised attitude to rotate the acceleration into the world frame, and artificially inflate the accelerometer noise parameter ($\sigma_{accel}$) to absorb the mathematical error introduced by the small rotation error.
+
+**Decision**
+Option 3: Small-Angle Approximation. We will standardize the noise wrapper to output **body-frame acceleration**. The Mission Director or Estimator will rotate this vector into the world frame using the raw, un-noised attitude telemetry, and the Kalman Filter will use an inflated accelerometer noise variance to account for the attitude uncertainty.
+
+**Consequences**
+- ✅ Maintains the simplicity and speed of the linear Discrete-Time Kalman Filter (ADR-007).
+- ✅ Drastically reduces development and testing time compared to an EKF.
+- ⚠️ Assumes attitude error remains small ($\le 2-5^\circ$). If the vessel tumbles, the approximation breaks down (though if this occurs during powered descent, the mission is likely already lost).
+- ⚠️ The reference frame for telemetry is explicitly defined: `noisy_accel` is body-frame.
+
+**Review Notes**
+Resolves the architecture gap exposed by Claude regarding attitude noise in the linear Kalman filter.
+
+---
+
+### ADR-015 — WSL2 to KSP Connection Topology
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Human & Agent
+- **Module(s):** Cross-cutting
+
+**Context**
+AEGIS runs in an Arch WSL2 environment, which operates inside a Hyper-V VM with its own virtual network adapter. KSP and the kRPC server run on the Windows host. Connecting to `localhost` (127.0.0.1) from within WSL2 reaches the VM's loopback interface, not the Windows host, causing kRPC connection timeouts unless Windows 11 `localhostforwarding` is explicitly enabled (which is not guaranteed).
+
+**Options Considered**
+1. Rely on `.wslconfig` `localhostforwarding=true` — Simple in code, but requires manual Windows configuration and relies on Windows 11 features that can be brittle across versions.
+2. Dynamically resolve Windows Host IP — The Python process reads the host IP from `/etc/resolv.conf` (the `nameserver` entry) and connects to that IP. Works universally across WSL2 setups without manual `.wslconfig` changes.
+
+**Decision**
+Option 2: Dynamically resolve Windows Host IP. The kRPC connection setup code must dynamically determine the host IP rather than hardcoding `localhost`.
+
+**Consequences**
+- ✅ Guarantees connection reliability out-of-the-box for any WSL2 user.
+- ✅ Prevents silent failure modes where the agent hangs on `krpc.connect()`.
+- ⚠️ Adds slight complexity to the initial connection bootstrapping logic.
+
+**Review Notes**
+None yet.
+
+---
+
+### ADR-016 — Engine Discovery via kOS/kRPC Tags
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Joint
+- **Module(s):** Mission Director
+
+**Context**
+To allocate thrust, the Control Allocator needs to know which engines it is allowed to control. Simply querying all engines or active stages risks accidentally controlling separation motors or RCS thrusters. 
+
+**Decision**
+We will strictly use kRPC's `vessel.parts.with_tag("AegisEngine")` to discover controllable engines. 
+
+**Consequences**
+- ✅ Guarantees safety against hijacking unrelated solid rocket motors or RCS thrusters.
+- ⚠️ **Future RCS Support:** Currently, this explicitly ignores RCS thrusters. When future updates add RCS support to the Control Allocator, we will need to query `vessel.parts.with_tag("AegisRCS")` from `vessel.parts.rcs` and include them in the allocation matrix.
+
+**Review Notes**
+Requested specifically by the user.
+
+---
+
+### ADR-017 — Custom Landing Pad Reference Frame
+- **Status:** ACCEPTED
+- **Date:** 2026-06-13
+- **Author:** Agent
+- **Module(s):** Cross-cutting (Math)
+
+**Context**
+Using a generic planetary surface frame places the origin $(0,0,0)$ at the center of the celestial body. This results in huge orbital state vectors ($600,000$ meters) which degrade floating-point precision inside the Kalman Filter and needlessly complicate guidance targeting.
+
+**Decision**
+Create a custom, planet-fixed reference frame centered exactly on the target landing pad's latitude and longitude, using KSP's `ReferenceFrame.create_relative`.
+
+**Consequences**
+- ✅ Drastically simplifies math. The target position is always exactly $(0,0,0)$.
+- ✅ Improves Kalman Filter numerical stability by bounding position values.
+- ⚠️ Requires knowing the exact landing coordinates at startup. We will hardcode default coordinates (e.g., KSC Launchpad) for now.

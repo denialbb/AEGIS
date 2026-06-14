@@ -46,9 +46,11 @@ class StateEstimator:
         """
         pass
 
-    def predict(self, noisy_accel: np.ndarray, dt: float):
+    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float):
         """
         Predicts the next state using the measured acceleration as the control input (Option A).
+        noisy_accel_body: Accelerometer reading in vessel body frame.
+        attitude: Vessel attitude (e.g., quaternion) required to rotate acceleration to world frame.
         """
         pass
 
@@ -148,6 +150,7 @@ State machine that manages nominal mission phases and handles contingencies.
 - **Single Engine Failure:** FDI flags, active engines reduced. Allocator remaps wrench.
 - **Degenerate Allocation:** Control Allocator raises `AllocationDegenerateError`. MD immediately transitions to `HARD_ABORT`.
 - **Multiple Simultaneous Failures:** FDI returns 2+ failed engines. MD immediately transitions to `HARD_ABORT`.
+- **DT_SPIKE / KSP Pause:** If `dt > 3 * expected_dt`, the MD skips the Kalman filter predict step to avoid divergence and logs a `DT_SPIKE` event.
 
 ### Interface
 ```python
@@ -161,6 +164,7 @@ class MissionDirector:
         self.estimator: StateEstimator = ...
         self.fdi: FaultDetectionIsolation = ...
         self.allocator: ControlAllocator = ...
+        self.writer: TelemetryWriter = ...  # Owns the logging infrastructure
 
     def run_loop(self):
         """
@@ -170,3 +174,47 @@ class MissionDirector:
         """
         pass
 ```
+
+---
+
+## 6. Telemetry Logger (`src/telemetry/`)
+
+High-performance, non-blocking telemetry and event logging infrastructure to provide the primary debug surface. Owned exclusively by the Mission Director (ADR-013).
+
+### TelemetryFrame
+A typed dataclass (`src/telemetry/frame.py`) containing the complete system state snapshot for a single 20ms physics tick. Flattens nested arrays into CSV columns.
+
+### Interface
+```python
+class TelemetryWriter:
+    def __init__(self, run_config: dict):
+        """
+        Creates a timestamped run directory and updates the `logs/latest` symlink.
+        Serializes `run_config` to `run_config.json`.
+        """
+        pass
+
+    def log_tick(self, frame: TelemetryFrame):
+        """
+        Flattens the frame and appends it to the heavily-buffered `telemetry.csv`.
+        """
+        pass
+
+    def log_event(self, event: dict):
+        """
+        Appends a discrete, structured event to `events.jsonl` (e.g., STATE_TRANSITION, FAULT_DETECTED).
+        """
+        pass
+```
+
+---
+
+## 7. Physical Execution Topology
+
+KSP and the kRPC server run on the Windows host. AEGIS runs in the Arch WSL2 environment. Because WSL2 operates within a Hyper-V VM with its own virtual network adapter, AEGIS cannot reach KSP via `localhost` (127.0.0.1) by default unless Windows 11 `localhostforwarding` is explicitly enabled in `.wslconfig`.
+
+To guarantee connection reliability, the kRPC client must resolve the Windows host IP dynamically (typically found in `/etc/resolv.conf` under the `nameserver` entry) rather than hardcoding `localhost`.
+
+### Interface Requirements
+- The Python process must explicitly read the WSL host IP at startup.
+- All high-frequency telemetry uses `conn.add_stream()` to push data via the kRPC stream port (50001) rather than pulling via RPC calls (50000).
