@@ -12,7 +12,7 @@ class FaultDetectionIsolation:
         """
         # ISS-001: placeholder — calibrate against measured KF output noise once ISS-003 is resolved.
         self.threshold: float = threshold
-        self.persistence_ticks: int = 15  # 300ms at 50Hz to allow for engine spool up
+        self.persistence_ticks: int = 50  # 1 second at 50Hz to allow for engine spool up
         self.consecutive_faults: int = 0
 
     def detect_fault(self, expected_accel: np.ndarray, measured_accel: np.ndarray) -> bool:

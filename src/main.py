@@ -136,27 +136,35 @@ class MissionDirector:
             if self.state in ["POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
                 if len(self.expected_throttles) == 0 and len(active_engines) > 0:
                     self.expected_throttles = np.zeros(len(active_engines))
-                    
-                fault_detected = self.fdi.detect_fault(self.expected_accel, noisy_accel_body)
-                if fault_detected and len(active_engines) > 0:
-                    failed_indices = self.fdi.isolate_fault(
-                        active_engines, self.expected_throttles, noisy_accel_body, mass
-                    )
-                    
-                    # ISS-004: Handle multiple simultaneous failures
-                    if len(failed_indices) >= 2:
-                        logger.error(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
-                        self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "MULTIPLE_FAILURES"})
-                        self.state = "HARD_ABORT"
-                    
-                    for e in self.engines:
-                        if e.index in failed_indices:
-                            if e.active:
-                                self.writer.log_event({"type": "FAULT_DETECTED", "engine_index": e.index})
-                                e.active = False
-                    
-                    # Re-evaluate active engines
-                    active_engines = [e for e in self.engines if e.active]
+                
+                # ISS-010: Skip FDI detection during dt spikes to avoid spurious fault flags
+                # When skip_predict=True, expected_accel may be stale/invalid. Computing fault
+                # detection against invalid data causes false positives (e.g., gravity during free-fall
+                # looks like multiple engine failures). Hold last known good expected_accel.
+                if not skip_predict:
+                    fault_detected = self.fdi.detect_fault(self.expected_accel, noisy_accel_body)
+                    if fault_detected and len(active_engines) > 0:
+                        failed_indices = self.fdi.isolate_fault(
+                            active_engines, self.expected_throttles, noisy_accel_body, mass
+                        )
+                        
+                        # ISS-004: Handle multiple simultaneous failures
+                        if len(failed_indices) >= 2:
+                            logger.error(f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered.")
+                            self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "MULTIPLE_FAILURES"})
+                            self.state = "HARD_ABORT"
+                        
+                        for e in self.engines:
+                            if e.index in failed_indices:
+                                if e.active:
+                                    self.writer.log_event({"type": "FAULT_DETECTED", "engine_index": e.index})
+                                    e.active = False
+                        
+                        # Re-evaluate active engines
+                        active_engines = [e for e in self.engines if e.active]
+                        
+                else:
+                    logger.debug(f"[FDI] Skipping detection during dt spike, holding stale expected_accel")
                     
                 if not active_engines and len(self.engines) > 0:
                     # If we had engines and they all failed, trigger abort
@@ -230,7 +238,7 @@ class MissionDirector:
             elif self.state == "TERMINAL_DESCENT":
                 target_state[5] = -2.0 # Target a constant descent velocity of 2 m/s downwards
                 
-            if self.state not in ["HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST"] and not skip_predict:
+            if self.state not in ["HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST"]:
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,
                     current_attitude=attitude,
@@ -275,7 +283,8 @@ class MissionDirector:
                 velocity=np.zeros(3),
                 noisy_accel=noisy_accel_body,
                 throttles=throttles,
-                gimbals=gimbals
+                gimbals=gimbals,
+                skip_predict=skip_predict  # ISS-010: Log skip_predict state for debugging
             )
             self.writer.log_tick(frame)
 

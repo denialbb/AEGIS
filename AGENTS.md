@@ -2,11 +2,12 @@
 
 ## Critical Execution Rules
 
-- **Always use `.venv` from WSL Arch** for running, typechecking, and testing:
-  - Python: `wsl -d Arch .venv/bin/python src/main.py`
-  - mypy: `wsl -d Arch .venv/bin/mypy .`
-  - pytest: `wsl -d Arch .venv/bin/pytest`
+- **Always use `.venv` from WSL Arch with `uv`** for running, typechecking, and testing:
+- Python: `wsl -d Arch .venv/bin/python src/main.py`
+- mypy: `wsl -d Arch .venv/bin/mypy .`
+- pytest: `wsl -d Arch .venv/bin/pytest`
 - Do not use system Python or run from Windows directly.
+- The virtual environment is managed by `uv`, the modern Python package manager, ensuring fast, reliable dependency resolution in the Arch Linux WSL2 environment.
 
 ## Architecture (4 Strictly Decoupled Modules)
 

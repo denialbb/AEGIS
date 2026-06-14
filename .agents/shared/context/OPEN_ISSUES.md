@@ -240,3 +240,26 @@ Currently, log files just append indefinitely. This can lead to excessive disk u
 
 **Resolution**
 <!-- Fill in when resolved -->
+
+---
+
+### ISS-010 — Guidance and FDI incorrectly gated on skip_predict causing HARD_ABORT during dt spikes
+- **Severity:** 🔴 CRITICAL
+- **Status:** IN PROGRESS
+- **Date opened:** 2026-06-14
+- **Module(s):** Mission Director, FDI, Telemetry
+- **Related ADR:** None (see POSTMORTEM_2026-06-14_035508.md)
+- **Related Review:** None
+
+**Description**
+When a dt spike occurs (e.g., game lag on activation), the `skip_predict` flag is set to True. This flag incorrectly gates both the Kalman filter predict step AND the guidance controller. With guidance suppressed, `desired_wrench = zeros`, causing zero thrust. The FDI then observes gravity in the accelerometer data (while expected_accel = 0) and misidentifies it as multiple engine failures, triggering HARD_ABORT via ISS-004.
+
+**Acceptance Criteria**
+- Guidance runs continuously during powered descent phases, regardless of `skip_predict` state.
+- FDI fault detection is skipped during dt spikes to avoid spurious fault flags from stale expected_accel.
+- `skip_predict` field added to telemetry for visibility into degraded state events.
+- ARCHITECTURE.md updated to document correct dt spike handling behavior.
+- Velocity fallback strategy documented as future enhancement (numerical differentiation of altitude when predict skipped).
+
+**Resolution**
+<!-- Fill in when resolved -->

@@ -535,6 +535,35 @@ None yet.
 
 ---
 
+### ADR-021 — Guidance and FDI Decoupling from skip_predict
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Human & Agent
+- **Module(s):** Mission Director, FDI
+
+**Context**
+The `skip_predict` flag was originally used to gate both the Kalman filter predict step AND the guidance controller. This caused a cascading failure during dt spikes: guidance suppression led to zero thrust, which made FDI misinterpret gravity as engine failures, triggering HARD_ABORT (ISS-010).
+
+**Options Considered**
+1. Gate guidance on skip_predict — Simple but dangerous. Leads to uncontrolled free-fall during lags.
+2. Decouple guidance from skip_predict — Guidance always runs during powered descent. FDI detects faults only when predict is active. This requires telemetry to log skip_predict state for debugging.
+3. Implement hover degraded mode — Command thrust to counter gravity during dt spikes. More complex, deferred.
+
+**Decision**
+Option 2: Decouple guidance from skip_predict. Guidance always runs during powered descent phases. FDI fault detection is skipped during dt spikes, holding last known good expected_accel. skip_predict is logged to telemetry for visibility.
+
+**Consequences**
+- ✅ Prevents catastrophic HARD_ABORT during dt spikes by ensuring continuous thrust command.
+- ✅ Maintains FDI's ability to detect real failures when system is stable.
+- ✅ Provides visibility into degraded states via telemetry.
+- ⚠️ FDI cannot detect faults during dt spikes (by design) — this is a known tradeoff.
+- ⚠️ Velocity estimate may become stale during long dt spikes (deferred to ISS-011).
+
+**Review Notes**
+Resolves ISS-010 and POSTMORTEM_2026-06-14_035508.md. Implements all HIGH priority fixes from postmortem.
+
+---
+
 ### ADR-019 — Quaternion-based PD Attitude Control
 - **Status:** ACCEPTED
 - **Date:** 2026-06-14

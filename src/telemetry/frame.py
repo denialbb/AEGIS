@@ -14,6 +14,7 @@ class TelemetryFrame:
         noisy_accel: Noisy accelerometer readings. Shape: (3,)
         throttles: Commanded throttles. Shape: (N,) where N is engine count.
         gimbals: Commanded gimbal angles (pitch, yaw). Shape: (N, 2) where N is engine count.
+        skip_predict: Flag indicating if Kalman filter predict step was skipped due to dt spike.
     """
     timestamp: float
     altitude: float
@@ -21,6 +22,7 @@ class TelemetryFrame:
     noisy_accel: np.ndarray
     throttles: np.ndarray
     gimbals: np.ndarray
+    skip_predict: bool = False
 
     def flatten(self) -> Dict[str, Any]:
         """
@@ -30,6 +32,7 @@ class TelemetryFrame:
         flat_data: Dict[str, Any] = {
             "timestamp": self.timestamp,
             "altitude": self.altitude,
+            "skip_predict": int(self.skip_predict),  # ISS-010: Log skip_predict for debugging
         }
         
         # Flatten velocity (3,)
@@ -67,7 +70,7 @@ class TelemetryFrame:
         Get the ordered list of CSV headers based on engine count.
         """
         headers = [
-            "timestamp", "altitude",
+            "timestamp", "altitude", "skip_predict",
             "vel_x", "vel_y", "vel_z",
             "accel_x", "accel_y", "accel_z"
         ]
