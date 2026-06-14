@@ -5,65 +5,58 @@
 ---
 
 ## Meta
-- **Branch:** `feature/telemetry-logger`
-- **Commit hash:** `efaffd7`
-- **Timestamp:** `2026-06-14 01:31 UTC`
-- **Module(s) touched:** `Mission Director, Telemetry, Core Logging`
+- **Branch:** `iss-011`
+- **Commit hash:** `dcaf8de`
+- **Timestamp:** `2026-06-14 06:50 UTC`
+- **Module(s) touched:** `Control Allocator, Mission Director, Telemetry`
 - **Review urgency:** `[ ] Blocking  [x] Standard  [ ] Low-priority`
 
 ---
 
 ## Summary of Changes
-Implemented a robust, configurable application logging infrastructure and added `--debug` / `--log-to-file` CLI flags to facilitate easier debugging and monitoring. Resolved critical issues with the kRPC acceleration stream reference frame and launchpad initialization logic. Added `.gitignore` exclusions for the telemetry logs directory. Importantly, live testing with KSP was conducted; the WSL2 to Windows kRPC connection is working flawlessly, and the system correctly triggers a `HARD_ABORT` when expected.
+Integrated physical engine gimballing by actuating `ModuleGimbalTrim` fields on the vessel parts. Fixed a catastrophic issue in the pseudo-inverse allocator where mathematically unconstrained torque demands were producing requested forces of 4+ million Newtons. This was resolved by both hard-clamping the allocated lateral forces and adding an `rcond=1e-4` parameter to `np.linalg.pinv` to disregard floating-point singularities in the B-matrix. Lastly, gimbal oscillations were dampened by increasing the attitude PD derivative gain.
 
 ---
 
 ## Changed Files
-
 | File | Change Type | Notes |
 |------|-------------|-------|
-| `.gitignore` | `Modified` | Ignored `logs/` directory |
-| `run.sh` | `Modified` | Added `--debug` flag propagation and kRPC launchpad init fixes |
-| `src/main.py` | `Modified` | Integrated new logger, added `--debug` & `--log-to-file` args, fixed init |
-| `src/config.py` | `Modified` | Added logging configuration settings |
-| `src/common/logger.py` | `Added` | Core logger module implementation |
-| `src/telemetry/sensors.py` | `Modified` | Fixed kRPC acceleration stream reference frame |
-| `src/telemetry/writer.py` | `Modified` | Integrated logger |
-| `src/fdi/fdi.py` | `Modified` | Integrated logger |
-| `src/estimation/estimator.py` | `Modified` | Integrated logger |
-| `src/guidance/allocator.py` | `Modified` | Integrated logger |
-| `tests/*` | `Modified` | Minor adjustments in tests for logger integration |
+| `src/main.py` | `Modified` | Added kRPC calls to toggle and set Gimbal Trim during the main loop |
+| `src/guidance/allocator.py` | `Modified` | Clamped lateral force outputs to tan(5°) max to prevent throttle explosion; added rcond to pinv |
+| `src/guidance/controller.py` | `Modified` | Target attitude vector uses `a_cmd_world` directly to steer into drift |
+| `src/config.py` | `Modified` | Increased `GUIDANCE_KD_ATT` from 5.0 to 20.0 to dampen gimbals |
+| `src/telemetry/frame.py` | `Modified` | Telemetry frame now records `gimbals` arrays correctly |
+| `docs/*.md` | `Added` | Extensive markdown documentation detailing engine interfaces and control limits |
 
 ---
 
 ## Interface Contracts
-No interface changes. The logging module acts as an orthogonal service utilized by existing modules.
+No breaking interface changes. `TelemetryFrame` acquired a new `gimbals` property which is flattened automatically by the CSV writer.
 
 ---
 
 ## Mathematical / Algorithmic Notes
-No mathematical changes.
+The B-Matrix (6xN) was assuming engines could translate forces with 360 degrees of freedom, combined with an ill-conditioned B-Matrix (all engines point exactly straight down, so lateral forces are entirely rank-deficient). We added `rcond=1e-4` to `pinv` to safely drop any singular values smaller than $10^{-4}$ of the max singular value. 
+After computing the ideal 3D force vector per-engine, we hard-clamp the lateral magnitude to `axial_force * tan(5 degrees)` to guarantee the resulting computed throttle magnitude doesn't explode when the PD controller asks for unachievable torques.
 
 ---
 
 ## Self-Identified Concerns
-
-- [ ] Log file rotation and size management (currently might just append indefinitely).
-- [ ] Telemetry stream initialization performance with live kRPC.
-- [ ] Any potential race conditions in kRPC streams if network latency spikes.
+- [x] The `GuidanceController` can theoretically output a desired acceleration pointing downwards (if it wants to rapidly descend). This causes `target_up_world` to point down, flipping the rocket. We mitigate this with high glideslope floors currently, but an explicit tilt constraint should probably be implemented in `controller.py`.
+- [x] The 5-degree physical limit is hardcoded in `allocator.py` and `main.py` rather than being queried from the kRPC part (which requires digging through part metadata).
 
 ---
 
 ## Testing Done
-Live testing with KSP was successfully conducted. The connection logic correctly established a TCP connection with the kRPC server on the Windows host from the WSL2 environment. Telemetry streams (including the corrected acceleration stream) were successfully initialized. The system was observed to correctly trigger a `HARD_ABORT` state as expected during the test flight.
+Ran a full hardware-in-the-loop launch test via `run.sh` with live kRPC simulation. The allocator correctly managed the engines, successfully clamped the throttle explosion, and smoothly steered the vessel down to 500m where it transitioned into `HOVER_TARGETING`. The vessel effectively survived the flight and only ended because it organically exhausted all onboard fuel.
 
 ---
 
 ## Context for Reviewer
-These changes build upon the recent network connectivity resolutions and aim to make debugging the live system much easier moving forward. See ADR-015 for the WSL2 connection context.
+See `docs/architecture_design.md` for the overarching structural logic.
 
 ---
 
 ## Status
-- [ ] Ready for first review
-- [x] Revision after review `[REVIEW_20260614_012742]` — changes described above
+- [x] Ready for first review
+- [ ] Revision after review `[REVIEW_timestamp]` — changes described above
