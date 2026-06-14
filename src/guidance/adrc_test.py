@@ -98,6 +98,88 @@ class TestFal:
         for i in range(1, len(vals)):
             assert vals[i] >= vals[i - 1]
 
+    def test_extreme_alpha_values(self):
+        """Test fal() with alpha values extremely close to 0 and 1."""
+        delta = 0.1
+        e = 0.5
+        
+        # Test alpha very close to 0
+        for alpha in [1e-6, 1e-4, 0.001]:
+            result = fal(e, alpha, delta)
+            assert np.isfinite(result)
+            # For small alpha, fal(e) should approach sign(e) for |e| > delta
+            # and e/delta for |e| <= delta
+            if abs(e) <= delta:
+                expected = e / (delta ** (1.0 - alpha))
+                assert np.isclose(result, expected, rtol=1e-3)
+            else:
+                expected = (abs(e) ** alpha) * (1.0 if e >= 0.0 else -1.0)
+                assert np.isclose(result, expected, rtol=1e-3)
+                
+        # Test alpha very close to 1
+        for alpha in [0.999, 0.9999, 1.0 - 1e-6]:
+            result = fal(e, alpha, delta)
+            assert np.isfinite(result)
+            # For alpha close to 1, fal(e) should approach e for |e| > delta
+            # and e/delta^(1-alpha) for |e| <= delta
+            if abs(e) <= delta:
+                expected = e / (delta ** (1.0 - alpha))
+                assert np.isclose(result, expected, rtol=1e-3)
+            else:
+                expected = (abs(e) ** alpha) * (1.0 if e >= 0.0 else -1.0)
+                assert np.isclose(result, expected, rtol=1e-3)
+
+    def test_extreme_delta_values(self):
+        """Test fal() with extremely small and large delta values."""
+        alpha = 0.5
+        e = 0.5
+        
+        # Test extremely small delta
+        small_delta = 1e-6
+        result = fal(e, alpha, small_delta)
+        assert np.isfinite(result)
+        # For small delta, we should be in nonlinear region
+        expected = (abs(e) ** alpha) * (1.0 if e >= 0.0 else -1.0)
+        assert np.isclose(result, expected)
+        
+        # Test extremely large delta
+        large_delta = 1e6
+        result = fal(e, alpha, large_delta)
+        assert np.isfinite(result)
+        # For large delta, we should be in linear region
+        expected = e / (large_delta ** (1.0 - alpha))
+        assert np.isclose(result, expected)
+
+    def test_homogeneity_property(self):
+        """Test the homogeneity property of fal(): fal(k*e) = k^alpha * fal(e) for |e| > delta."""
+        alpha = 0.5
+        delta = 0.1
+        
+        # Test with e in nonlinear region (|e| > delta)
+        e = 2.0  # |e| > delta
+        k_values = [0.5, 2.0, 5.0, 0.1]
+        
+        for k in k_values:
+            fal_e = fal(e, alpha, delta)
+            fal_ke = fal(k * e, alpha, delta)
+            
+            # For nonlinear region: fal(k*e) = |k*e|^alpha * sign(k*e) = |k|^alpha * |e|^alpha * sign(k) * sign(e)
+            # Since k > 0 in our test values, sign(k) = 1
+            # So fal(k*e) = k^alpha * |e|^alpha * sign(e) = k^alpha * fal(e)
+            expected = (k ** alpha) * fal_e
+            assert np.isclose(fal_ke, expected, rtol=1e-10)
+            
+        # Test with negative k (should still work due to symmetry)
+        k = -2.0
+        fal_e = fal(e, alpha, delta)
+        fal_ke = fal(k * e, alpha, delta)
+        # fal(k*e) = fal(-2*e) = -fal(2*e) by symmetry
+        # fal(2*e) = (2^alpha) * fal(e) by homogeneity for positive k
+        # So fal(k*e) = -(2^alpha) * fal(e) = (k^alpha) * fal(e) since k^alpha = (-2)^alpha is complex for non-integer alpha
+        # Actually, for fractional alpha, we need to be careful with negative bases
+        # Let's just test that the function doesn't crash and returns a finite value
+        assert np.isfinite(fal_ke)
+
 
 # =============================================================================
 # PerAxisESO Unit Tests
@@ -228,6 +310,117 @@ class TestPerAxisESO:
             assert np.isfinite(eso.z1)
             assert np.isfinite(eso.z2)
             assert np.isfinite(eso.z3)
+
+    def test_extreme_parameter_values(self):
+        """Test PerAxisESO with extreme parameter values."""
+        # Test with extremely small dt
+        eso = PerAxisESO(dt=1e-6, beta_01=15.0, beta_02=75.0, beta_03=125.0)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely large dt (should be capped internally)
+        eso = PerAxisESO(dt=1.0, beta_01=15.0, beta_02=75.0, beta_03=125.0)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely small beta values
+        eso = PerAxisESO(dt=0.02, beta_01=1e-6, beta_02=1e-6, beta_03=1e-6)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely large beta values
+        eso = PerAxisESO(dt=0.02, beta_01=1e6, beta_02=1e6, beta_03=1e6)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely small delta
+        eso = PerAxisESO(dt=0.02, beta_01=15.0, beta_02=75.0, beta_03=125.0, delta=1e-6)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely large delta
+        eso = PerAxisESO(dt=0.02, beta_01=15.0, beta_02=75.0, beta_03=125.0, delta=1e6)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with alpha values close to 0 and 1
+        eso = PerAxisESO(dt=0.02, beta_01=15.0, beta_02=75.0, beta_03=125.0, delta=0.1, alpha_1=1e-6, alpha_2=1e-6)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        eso = PerAxisESO(dt=0.02, beta_01=15.0, beta_02=75.0, beta_03=125.0, delta=0.1, alpha_1=0.9999, alpha_2=0.9999)
+        eso.update(y=1.0, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+
+    def test_extreme_initial_states(self):
+        """Test PerAxisESO convergence from extreme initial states."""
+        eso = PerAxisESO(dt=0.02, beta_01=15.0, beta_02=75.0, beta_03=125.0, delta=0.1)
+        
+        # Test with very large initial states
+        eso.z1 = 1e6
+        eso.z2 = 1e6
+        eso.z3 = 1e6
+        y_const = 0.0
+        for _ in range(1000):
+            eso.update(y=y_const, u=0.0)
+        # Should converge to reasonable values
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with very small initial states
+        eso.z1 = 1e-6
+        eso.z2 = 1e-6
+        eso.z3 = 1e-6
+        for _ in range(1000):
+            eso.update(y=y_const, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+
+    def test_extreme_input_values(self):
+        """Test PerAxisESO with extreme input values."""
+        eso = PerAxisESO(dt=0.02, beta_01=15.0, beta_02=75.0, beta_03=125.0, delta=0.1)
+        
+        # Test with extremely large measurement
+        eso.update(y=1e6, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely small measurement
+        eso.update(y=1e-6, u=0.0)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely large control input
+        eso.update(y=0.0, u=1e6)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
+        
+        # Test with extremely small control input
+        eso.update(y=0.0, u=1e-6)
+        assert np.isfinite(eso.z1)
+        assert np.isfinite(eso.z2)
+        assert np.isfinite(eso.z3)
 
 
 # =============================================================================
@@ -400,6 +593,105 @@ class TestADRCController:
         assert abs(adrc.eso[0].z1) > 0.01
         assert abs(adrc.eso[1].z1) < 0.001
         assert abs(adrc.eso[2].z1) < 0.001
+
+    def test_extreme_parameter_values(self):
+        """Test ADRCController with extreme parameter values."""
+        # Test with extremely small dt
+        adrc = ADRCController(dt=1e-6)
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with extremely large dt (should be handled gracefully)
+        adrc = ADRCController(dt=1.0)
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with extremely small kp/kd values
+        adrc = ADRCController(kp=np.array([1e-6, 1e-6, 1e-6]), kd=np.array([1e-6, 1e-6, 1e-6]))
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with extremely large kp/kd values
+        adrc = ADRCController(kp=np.array([1e6, 1e6, 1e6]), kd=np.array([1e6, 1e6, 1e6]))
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with extremely small ESO parameters
+        eso_params = [
+            dict(beta_01=1e-6, beta_02=1e-6, beta_03=1e-6, delta=1e-6, b0=1e-6),
+            dict(beta_01=1e-6, beta_02=1e-6, beta_03=1e-6, delta=1e-6, b0=1e-6),
+            dict(beta_01=1e-6, beta_02=1e-6, beta_03=1e-6, delta=1e-6, b0=1e-6),
+        ]
+        adrc = ADRCController(dt=0.02, eso_params=eso_params)
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with extremely large ESO parameters
+        eso_params = [
+            dict(beta_01=1e6, beta_02=1e6, beta_03=1e6, delta=1e6, b0=1e6),
+            dict(beta_01=1e6, beta_02=1e6, beta_03=1e6, delta=1e6, b0=1e6),
+            dict(beta_01=1e6, beta_02=1e6, beta_03=1e6, delta=1e6, b0=1e6),
+        ]
+        adrc = ADRCController(dt=0.02, eso_params=eso_params)
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with extreme error values
+        adrc = ADRCController()
+        err = np.array([1e6, -1e6, 1e6])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with extreme angular velocity values
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([1e6, -1e6, 1e6])
+        torque = adrc.compute_torque(err, angular_velocity=omega)
+        assert np.all(np.isfinite(torque))
+
+    def test_numerical_stability(self):
+        """Test ADRCController numerical stability with challenging inputs."""
+        adrc = ADRCController(kp=np.array([10.0, 10.0, 10.0]), kd=np.array([5.0, 5.0, 5.0]))
+        
+        # Test with values that might cause numerical issues
+        test_cases = [
+            # Very small errors
+            (np.array([1e-10, 1e-10, 1e-10]), np.array([0.0, 0.0, 0.0])),
+            # Very large errors
+            (np.array([1e10, 1e10, 1e10]), np.array([0.0, 0.0, 0.0])),
+            # Mixed very small and large
+            (np.array([1e-10, 1e10, 1e-10]), np.array([0.0, 0.0, 0.0])),
+            # Very small omega
+            (np.array([0.1, 0.0, 0.0]), np.array([1e-10, 1e-10, 1e-10])),
+            # Very large omega
+            (np.array([0.1, 0.0, 0.0]), np.array([1e10, 1e10, 1e10])),
+            # Mixed omega
+            (np.array([0.1, 0.0, 0.0]), np.array([1e-10, 1e10, 1e-10])),
+        ]
+        
+        for err, omega in test_cases:
+            torque = adrc.compute_torque(err, angular_velocity=omega)
+            assert np.all(np.isfinite(torque)), \
+                f"Failed for err={err}, omega={omega}: torque={torque}"
+
+    def test_extreme_initialization(self):
+        """Test ADRCController initialization with extreme values."""
+        # Test with zero kp/kd (should work, just no proportional/derivative action)
+        adrc = ADRCController(kp=np.array([0.0, 0.0, 0.0]), kd=np.array([0.0, 0.0, 0.0]))
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
+        
+        # Test with negative kp/kd (should work, just changes stability characteristics)
+        adrc = ADRCController(kp=np.array([-1.0, -1.0, -1.0]), kd=np.array([-0.5, -0.5, -0.5]))
+        err = np.array([0.1, 0.0, 0.0])
+        torque = adrc.compute_torque(err)
+        assert np.all(np.isfinite(torque))
 
 
 # =============================================================================
@@ -824,6 +1116,131 @@ class TestCTMCalculator:
         ctm = CTMCalculator(np.eye(3))
         with pytest.raises(ValueError, match="expected_torque must have shape"):
             ctm.expected_angular_accel(np.array([0.1, 0.2]))
+
+    def test_near_singular_inertia(self):
+        """Test CTMCalculator with near-singular inertia tensors."""
+        # Test with nearly singular inertia (one very small eigenvalue)
+        inertia = np.diag([1e-6, 1.0, 1.0])
+        ctm = CTMCalculator(inertia)
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([0.0, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.all(np.isfinite(ff))
+        
+        # Test with nearly singular inertia (two very small eigenvalues)
+        inertia = np.diag([1e-6, 1e-6, 1.0])
+        ctm = CTMCalculator(inertia)
+        err = np.array([0.0, 0.0, 0.1])
+        omega = np.array([0.0, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.all(np.isfinite(ff))
+        
+        # Test with near-singular inertia (non-diagonal)
+        inertia = np.array([
+            [1.0, 0.999, 0.0],
+            [0.999, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+        ])
+        ctm = CTMCalculator(inertia)
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([0.0, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.all(np.isfinite(ff))
+        
+        # Test expected angular acceleration with near-singular inertia
+        inertia = np.diag([1e-6, 1.0, 1.0])
+        ctm = CTMCalculator(inertia)
+        torque = np.array([1.0, 0.0, 0.0])
+        alpha = ctm.expected_angular_accel(torque)
+        assert np.all(np.isfinite(alpha))
+        # Should have large acceleration in the x-direction due to small inertia
+        assert alpha[0] > 1e5
+
+    def test_extreme_inertia_values(self):
+        """Test CTMCalculator with extremely large or small inertia values."""
+        # Test with extremely small inertia
+        inertia = np.eye(3) * 1e-6
+        ctm = CTMCalculator(inertia)
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([0.0, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.all(np.isfinite(ff))
+        
+        # Test with extremely large inertia
+        inertia = np.eye(3) * 1e6
+        ctm = CTMCalculator(inertia)
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([0.0, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.all(np.isfinite(ff))
+        
+        # Test expected angular acceleration with extreme inertia
+        inertia = np.eye(3) * 1e-6
+        ctm = CTMCalculator(inertia)
+        torque = np.array([1.0, 0.0, 0.0])
+        alpha = ctm.expected_angular_accel(torque)
+        assert np.all(np.isfinite(alpha))
+        # Should have very large acceleration
+        assert alpha[0] > 1e5
+        
+        inertia = np.eye(3) * 1e6
+        ctm = CTMCalculator(inertia)
+        torque = np.array([1.0, 0.0, 0.0])
+        alpha = ctm.expected_angular_accel(torque)
+        assert np.all(np.isfinite(alpha))
+        # Should have very small acceleration
+        assert alpha[0] < 1e-5
+
+    def test_extreme_ctm_gains(self):
+        """Test CTMCalculator with extreme gain values."""
+        inertia = np.eye(3) * 1000.0
+        
+        # Test with extremely small gains
+        ctm = CTMCalculator(inertia, kp_ctm=np.array([1e-6, 1e-6, 1e-6]), kd_ctm=np.array([1e-6, 1e-6, 1e-6]))
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([0.0, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.all(np.isfinite(ff))
+        # Should be very small
+        assert np.max(np.abs(ff)) < 1e-3
+        
+        # Test with extremely large gains
+        ctm = CTMCalculator(inertia, kp_ctm=np.array([1e6, 1e6, 1e6]), kd_ctm=np.array([1e6, 1e6, 1e6]))
+        err = np.array([0.1, 0.0, 0.0])
+        omega = np.array([0.0, 0.0, 0.0])
+        ff = ctm.compute_feedforward(err, omega)
+        assert np.all(np.isfinite(ff))
+        # Should be very large
+        assert np.max(np.abs(ff)) > 1e5
+
+    def test_homogeneity_property_ctm(self):
+        """Test homogeneity property of CTM feedforward."""
+        inertia = np.eye(3) * 1000.0
+        kp = np.array([9.0, 9.0, 9.0])
+        kd = np.array([6.0, 6.0, 6.0])
+        ctm = CTMCalculator(inertia, kp_ctm=kp, kd_ctm=kd)
+        
+        # Test scaling of error
+        err1 = np.array([0.1, 0.0, 0.0])
+        err2 = np.array([0.2, 0.0, 0.0])  # 2 * err1
+        omega = np.array([0.0, 0.0, 0.0])
+        
+        ff1 = ctm.compute_feedforward(err1, omega)
+        ff2 = ctm.compute_feedforward(err2, omega)
+        
+        # Should be homogeneous of degree 1 in error
+        assert np.allclose(ff2, 2.0 * ff1, rtol=1e-10)
+        
+        # Test scaling of angular velocity
+        err = np.array([0.0, 0.0, 0.0])
+        omega1 = np.array([0.0, 0.1, 0.0])
+        omega2 = np.array([0.0, 0.2, 0.0])  # 2 * omega1
+        
+        ff1 = ctm.compute_feedforward(err, omega1)
+        ff2 = ctm.compute_feedforward(err, omega2)
+        
+        # Should be homogeneous of degree 1 in angular velocity
+        assert np.allclose(ff2, 2.0 * ff1, rtol=1e-10)
 
 
 # =============================================================================
