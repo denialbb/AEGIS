@@ -31,9 +31,13 @@ class ControlAllocator:
 
         B = np.zeros((6, 3 * N))
         for i, engine in enumerate(active_engines):
-            # Force block
+            # The control effectiveness matrix B maps individual engine 3D forces
+            # to the total 6-DOF wrench on the vessel. B is composed of two blocks per engine:
+            # 1. Force block (3x3): A simple identity matrix, since F_engine contributes 1:1 to F_total.
             B[0:3, 3 * i : 3 * i + 3] = np.eye(3)
-            # Torque block = cross product matrix of position
+            
+            # 2. Torque block (3x3): The cross product matrix of the engine's position vector 'r'.
+            # Since Torque = r x F, we can represent the cross product as a matrix multiplication [r_x] * F.
             r = engine.position
             rx = np.array([
                 [0.0, -r[2], r[1]],
@@ -54,7 +58,9 @@ class ControlAllocator:
             logger.error(f"[Allocator] Degenerate allocation! Condition number: {cond:.2f} > 1e4")
             raise AllocationDegenerateError(f"B ill-conditioned: cond={cond:.2f}, active_engines={len(active_engines)}")
 
-        # Solve for u using pseudo-inverse
+        # Solve for the optimal force vector 'u' using the Moore-Penrose pseudo-inverse.
+        # This minimizes the L2 norm of 'u', effectively distributing thrust as evenly as possible
+        # among the active engines while satisfying the requested wrench W = B * u.
         u = np.linalg.pinv(B) @ desired_wrench
 
         throttles = np.zeros(N)
@@ -70,17 +76,22 @@ class ControlAllocator:
                 logger.warning(f"Engine {engine.index} thrust saturated (requested: {f_mag:.2f}, max: {engine.max_thrust:.2f})")
             throttles[i] = float(np.clip(throttle, 0.0, 1.0))
             
-            # Gimbals
+            # Gimbals: We need to find the rotation angles to point the engine's default 
+            # thrust_direction towards the requested force direction 'n'.
             if f_mag > 1e-6:
                 n = f_vec / f_mag
+                
+                # The dot product gives the cosine of the angle between the two vectors.
                 # Use arccos for the angle to support [0, 180] range
                 dot_prod = np.clip(np.dot(engine.thrust_direction, n), -1.0, 1.0)
                 angle = np.arccos(dot_prod)
                 
+                # The cross product gives the axis of rotation perpendicular to both vectors.
                 c = np.cross(engine.thrust_direction, n)
                 s = np.linalg.norm(c)
                 
                 if s > 1e-6:
+                    # Scale the normalized rotation axis by the angle to get a compact rotation vector.
                     rot_vec = (c / s) * angle
                     gimbals[i, 0] = rot_vec[0]
                     gimbals[i, 1] = rot_vec[1]
