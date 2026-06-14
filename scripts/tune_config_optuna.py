@@ -62,13 +62,6 @@ def run_simulation(trial: optuna.Trial) -> float:
     time.sleep(0.5) # Let physics settle
     vessel = conn.space_center.active_vessel
     
-    # Enable trims
-    for part in vessel.parts.all:
-        if part.modules:
-            for module in part.modules:
-                if module.name == 'ModuleGimbalTrim':
-                    module.set_action('Toggle Event', True)
-
     # 3. Instantiate Director
     director = MissionDirector(conn)
     initial_mass = vessel.mass
