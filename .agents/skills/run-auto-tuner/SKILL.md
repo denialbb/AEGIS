@@ -17,17 +17,16 @@ None.
 
 ## Workflow
 ### 1. Execute the Tuner Script
-- Use the `run_command` tool to execute `wsl -d Arch .venv/bin/python scripts/tune_config.py`.
+- Use the `run_command` tool to execute `wsl -d Arch sh -c "export KRPC_ADDRESS=172.22.80.1 && .venv/bin/python scripts/tune_config_optuna.py"`.
 - Run the command asynchronously (set `WaitMsBeforeAsync` to `5000` or similar).
 
 ### 2. Wait for Completion
-- Use the `schedule` tool to set a 10-minute timer (`DurationSeconds=600`, `Prompt="The 10 minute tuning period has elapsed. Please check on the script or proceed to parse the results."`).
-- Stop calling tools and wait for a message indicating the task has completed or the timer has fired.
+- Let the script run. It persists data to `logs/optuna.db`. You can kill it to pause it, and running it again will resume it.
+- Once you decide it has run long enough or the user stops it, proceed.
 
 ### 3. Parse and Evaluate Results
-- Once complete, use the `run_command` tool to execute `wsl -d Arch .venv/bin/python scripts/parse_tuning.py --input logs/tuning_results.csv`.
-- This script will automatically filter for safe landings and output the JSON data of the most accurate run.
-- Note the optimal `KP_ATT` and `KD_ATT` values from the output.
+- The script automatically outputs the best parameters from the database when it exits.
+- You can also use Optuna's CLI to read the best run: `wsl -d Arch .venv/bin/python -c "import optuna; study = optuna.load_study(study_name='aegis_full_tuning', storage='sqlite:///logs/optuna.db'); print(study.best_params)"`
 
 ### 4. Update Configuration
 - Use the `replace_file_content` tool on `src/config.py`.
