@@ -16,3 +16,4 @@ class Engine:
         self.thrust_direction: np.ndarray = thrust_direction
         self.max_thrust: float = max_thrust
         self.active: bool = True  # Status flag managed by FDI
+        self.expected_throttle: float = 0.0 # EMA filtered throttle representing current physical state

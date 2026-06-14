@@ -240,12 +240,20 @@ class MissionDirector:
             if active_engines and self.state != "HARD_ABORT":
                 try:
                     throttles, gimbals = self.allocator.allocate(desired_wrench, active_engines)
-                    self.expected_throttles = throttles
                     
-                    # ISS-008: Compute actual expected acceleration using thrust allocation and mass.
+                    # Apply EMA to individual engine throttles to model spool-up dynamically
+                    alpha = 0.95
                     expected_force = np.zeros(3)
+                    self.expected_throttles = []
+                    
                     for i, engine in enumerate(active_engines):
-                        expected_force += engine.thrust_direction * engine.max_thrust * throttles[i]
+                        # Update engine's internal EMA state
+                        engine.expected_throttle = alpha * engine.expected_throttle + (1 - alpha) * throttles[i]
+                        self.expected_throttles.append(engine.expected_throttle)
+                        
+                        expected_force += engine.thrust_direction * engine.max_thrust * engine.expected_throttle
+                    
+                    self.expected_throttles = np.array(self.expected_throttles)
                     self.expected_accel = expected_force / mass 
                 except AllocationDegenerateError as e:
                     print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
