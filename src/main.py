@@ -70,12 +70,12 @@ class MissionDirector:
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(threshold=config.FDI_THRESHOLD)
         
-        # Initialize Guidance Controller with default gains and gravity
+        # Initialize Guidance Controller with gains from config and default gravity
         self.guidance: GuidanceController = GuidanceController(
-            kp_pos=np.array([1.0, 1.0, 1.0]),
-            kd_vel=np.array([1.0, 1.0, 1.0]),
-            kp_att=np.array([10.0, 10.0, 10.0]),
-            kd_att=np.array([5.0, 5.0, 5.0]),
+            kp_pos=np.array(config.GUIDANCE_KP_POS),
+            kd_vel=np.array(config.GUIDANCE_KD_VEL),
+            kp_att=np.array(config.GUIDANCE_KP_ATT),
+            kd_att=np.array(config.GUIDANCE_KD_ATT),
             gravity=np.array([0.0, 0.0, -9.81])  # Default to Earth/Kerbin surface gravity
         )
         
@@ -110,6 +110,7 @@ class MissionDirector:
                 if actual_dt > 3 * dt:
                     self.writer.log_event({"type": "DT_SPIKE", "actual_dt": actual_dt, "expected_dt": dt})
                     skip_predict = True
+                    self.guidance.reset()
                 else:
                     skip_predict = False
             else:
@@ -188,12 +189,18 @@ class MissionDirector:
                 
             # Define instantaneous target kinematic state based on the current mission phase.
             # The GuidanceController will attempt to reduce the error between this target and current_state to 0.
-            if self.state == "TERMINAL_DESCENT":
-                target_state[5] = -2.0 # Target a constant descent velocity of 2 m/s downwards
+            if self.state in ["DEORBIT_BURN", "HYPERSONIC_COAST"]:
+                # Unguided phases in this prototype. Zero out control authority.
+                pass
+            elif self.state == "POWERED_DESCENT":
+                target_state[:3] = np.array([0.0, 0.0, 500.0]) # Target a point high above the pad
+                target_state[3:] = np.array([0.0, 0.0, -50.0]) # Descend at 50 m/s
             elif self.state == "HOVER_TARGETING":
                 target_state[2] = 50.0 # Target a static position 50m above the pad
+            elif self.state == "TERMINAL_DESCENT":
+                target_state[5] = -2.0 # Target a constant descent velocity of 2 m/s downwards
                 
-            if self.state != "HARD_ABORT":
+            if self.state not in ["HARD_ABORT", "DEORBIT_BURN", "HYPERSONIC_COAST"] and not skip_predict:
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,
                     current_attitude=attitude,
@@ -210,8 +217,11 @@ class MissionDirector:
                     throttles, gimbals = self.allocator.allocate(desired_wrench, active_engines)
                     self.expected_throttles = throttles
                     
-                    # TODO(ISS-008): Compute actual expected acceleration using thrust allocation and mass.
-                    self.expected_accel = np.zeros(3) 
+                    # ISS-008: Compute actual expected acceleration using thrust allocation and mass.
+                    expected_force = np.zeros(3)
+                    for i, engine in enumerate(active_engines):
+                        expected_force += engine.thrust_direction * engine.max_thrust * throttles[i]
+                    self.expected_accel = expected_force / mass 
                 except AllocationDegenerateError as e:
                     print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HARD_ABORT", "reason": "DEGENERATE_ALLOCATION"})

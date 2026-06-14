@@ -23,6 +23,12 @@ FDI_THRESHOLD = 3.0
 # Simulation Determinism
 RANDOM_SEED = 42
 
+# Guidance Controller Gains
+GUIDANCE_KP_POS = [1.0, 1.0, 1.0]
+GUIDANCE_KD_VEL = [1.0, 1.0, 1.0]
+GUIDANCE_KP_ATT = [10.0, 10.0, 10.0]
+GUIDANCE_KD_ATT = [5.0, 5.0, 5.0]
+
 # Application Logging
 DEBUG_LOGGING = False
 LOG_TO_FILE = False

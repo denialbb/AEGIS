@@ -31,8 +31,8 @@ class SensorModels:
         # KSP doesn't provide a direct acceleration stream, so we stream velocity and UT to differentiate
         self.velocity_stream = self.conn.add_stream(getattr, flight_world, 'velocity')
         self.ut_stream = self.conn.add_stream(getattr, self.conn.space_center, 'ut')
-        self.last_vel = None
-        self.last_ut = None
+        self.last_vel: np.ndarray | None = None
+        self.last_ut: float | None = None
         
         # Attitude (quaternion) in the target reference frame
         self.attitude_stream = self.conn.add_stream(getattr, flight_world, 'rotation')

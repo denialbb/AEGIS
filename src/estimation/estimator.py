@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-from filterpy.kalman import KalmanFilter
+from filterpy.kalman import KalmanFilter  # type: ignore
 
 logger = logging.getLogger(__name__)  # type: ignore
 

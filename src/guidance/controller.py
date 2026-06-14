@@ -32,6 +32,10 @@ class GuidanceController:
         # State to store previous attitude error for numerical differentiation
         self.last_att_error = np.zeros(3)
 
+    def reset(self) -> None:
+        """Resets the internal state of the controller, specifically the derivative term."""
+        self.last_att_error = np.zeros(3)
+
     def compute_wrench(self, 
                        current_state: np.ndarray, 
                        current_attitude: np.ndarray, 
@@ -52,6 +56,9 @@ class GuidanceController:
         Returns:
             wrench: (6,) array [Fx, Fy, Fz, Tx, Ty, Tz] in the body frame.
         """
+        assert current_state.shape == (6,), f"current_state must have shape (6,), got {current_state.shape}"
+        assert target_state.shape == (6,), f"target_state must have shape (6,), got {target_state.shape}"
+        
         if dt <= 0.0:
             dt = 1e-6
             
