@@ -13,6 +13,13 @@ TARGET_HZ = 50.0
 TARGET_LAT = -0.0972
 TARGET_LON = -74.5577
 
+# State Machine Parameters
+ACTIVATION_ACTION_GROUP = 9
+ALT_HYPERSONIC = 10000.0
+ALT_POWERED_DESCENT = 2000.0
+ALT_HOVER = 500.0
+ALT_TERMINAL = 50.0
+
 # Sensor Noise Modeling (Standard Deviations)
 SIGMA_ALT = 2.0     # meters
 SIGMA_ACCEL = 0.5   # m/s^2

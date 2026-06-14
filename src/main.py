@@ -25,7 +25,7 @@ class MissionDirector:
         conn: kRPC connection object
         """
         self.conn = conn
-        self.state: str = "DEORBIT_BURN"
+        self.state: str = "STANDBY"
         
         # Initialize kRPC specifics
         vessel = self.conn.space_center.active_vessel
@@ -162,34 +162,58 @@ class MissionDirector:
             # 4. State Machine & Control Wrench Computation
             # Use estimated altitude instead of raw telemetry for transitions
             est_alt = state_vector[2]
+            est_vz = state_vector[5]
+            
+            # Smart Activation Logic
+            if self.state == "STANDBY":
+                activated = self.conn.space_center.active_vessel.control.get_action_group(config.ACTIVATION_ACTION_GROUP)
+                if activated:
+                    logger.info("AEGIS Activated. Smart Routing initialized.")
+                    self.writer.log_event({"type": "ACTIVATION"})
+                    if est_vz > 0:
+                        self.state = "ASCENT_COAST"
+                    elif est_alt > config.ALT_HYPERSONIC:
+                        self.state = "DEORBIT_BURN"
+                    elif est_alt > config.ALT_POWERED_DESCENT:
+                        self.state = "HYPERSONIC_COAST"
+                    else:
+                        self.state = "POWERED_DESCENT"
+                    self.writer.log_event({"type": "STATE_TRANSITION", "from": "STANDBY", "to": self.state})
             
             target_state = np.zeros(6) # [x, y, z, vx, vy, vz]
             
             # Simple state transition cascade based on altitude above the landing pad.
             # In a real system, these would also check velocity gates and fuel margins,
             # but for this prototype we rely purely on altitude boundaries.
-            if self.state == "DEORBIT_BURN" and est_alt < 10000:
+            if self.state == "ASCENT_COAST" and est_vz < 0:
+                logger.info("Apex reached. Transitioning from ASCENT_COAST.")
+                if est_alt > config.ALT_HYPERSONIC:
+                    self.state = "HYPERSONIC_COAST"
+                else:
+                    self.state = "POWERED_DESCENT"
+                self.writer.log_event({"type": "STATE_TRANSITION", "from": "ASCENT_COAST", "to": self.state})
+            elif self.state == "DEORBIT_BURN" and est_alt < config.ALT_HYPERSONIC:
                 logger.info("Transitioning from DEORBIT_BURN to HYPERSONIC_COAST")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HYPERSONIC_COAST"})
                 self.state = "HYPERSONIC_COAST"
-            elif self.state == "HYPERSONIC_COAST" and est_alt < 2000:
+            elif self.state == "HYPERSONIC_COAST" and est_alt < config.ALT_POWERED_DESCENT:
                 logger.info("Transitioning from HYPERSONIC_COAST to POWERED_DESCENT")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "POWERED_DESCENT"})
                 self.state = "POWERED_DESCENT"
-            elif self.state == "POWERED_DESCENT" and est_alt < 500:
+            elif self.state == "POWERED_DESCENT" and est_alt < config.ALT_HOVER:
                 logger.info("Transitioning from POWERED_DESCENT to HOVER_TARGETING")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HOVER_TARGETING"})
                 self.state = "HOVER_TARGETING"
-            elif self.state == "HOVER_TARGETING" and est_alt < 50:
+            elif self.state == "HOVER_TARGETING" and est_alt < config.ALT_TERMINAL:
                 logger.info("Transitioning from HOVER_TARGETING to TERMINAL_DESCENT")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "TERMINAL_DESCENT"})
                 self.state = "TERMINAL_DESCENT"
-            elif self.state not in ["DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
+            elif self.state not in ["STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
                 self.state = "HARD_ABORT"
                 
             # Define instantaneous target kinematic state based on the current mission phase.
             # The GuidanceController will attempt to reduce the error between this target and current_state to 0.
-            if self.state in ["DEORBIT_BURN", "HYPERSONIC_COAST"]:
+            if self.state in ["STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST"]:
                 # Unguided phases in this prototype. Zero out control authority.
                 pass
             elif self.state == "POWERED_DESCENT":
@@ -200,7 +224,7 @@ class MissionDirector:
             elif self.state == "TERMINAL_DESCENT":
                 target_state[5] = -2.0 # Target a constant descent velocity of 2 m/s downwards
                 
-            if self.state not in ["HARD_ABORT", "DEORBIT_BURN", "HYPERSONIC_COAST"] and not skip_predict:
+            if self.state not in ["HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST"] and not skip_predict:
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,
                     current_attitude=attitude,

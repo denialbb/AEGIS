@@ -26,7 +26,8 @@ The architecture is strictly decoupled into four primary domains to ensure robus
 ### A. The Mission Director (Hierarchical State Machine)
 The overarching logic controller. It manages nominal mission phases and handles contingency branching based on the severity and timing of a detected fault.
 
-*   **States:** `DEORBIT_BURN`, `HYPERSONIC_COAST`, `POWERED_DESCENT`, `HOVER_TARGETING`, `TERMINAL_DESCENT`, and `HARD_ABORT`.
+*   **States:** `STANDBY`, `ASCENT_COAST`, `DEORBIT_BURN`, `HYPERSONIC_COAST`, `POWERED_DESCENT`, `HOVER_TARGETING`, `TERMINAL_DESCENT`, and `HARD_ABORT`.
+*   **Smart Activation:** The Director idles in `STANDBY` until manually activated via a user action group. Upon activation, it evaluates current altitude and vertical velocity to seamlessly inject itself into the appropriate mission phase (e.g., `ASCENT_COAST` if moving upwards, or `HYPERSONIC_COAST` if falling from space).
 *   **Contingency Logic Example:** 
     *   *Fault during `Powered_Descent`:* The Director commands the Guidance module to recalculate burn time or shift the landing target to a closer safe zone.
     *   *Fault during `Terminal_Descent` (< 50m):* The Director triggers a "Hard Abort" contingency—ignoring precision targeting and commanding the Control Allocator to maximize vertical thrust on surviving engines regardless of lateral drift.
