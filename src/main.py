@@ -336,18 +336,33 @@ class MissionDirector:
                         max_descent_rate=config.GLIDESLOPE_RATE_TERMINAL,
                         k_alt_gain=config.GLIDESLOPE_K_ALT,
                     )
-                    
             elif self.state == "LANDED":
                 logger.info("Vessel is landed. Shutting down engines and concluding mission.")
                 for engine in active_engines:
-                    engine.part.engine.thrust_limit = 0.0
+                    if engine.part and engine.part.engine:
+                        engine.part.engine.thrust_limit = 0.0
+                        engine.part.engine.independent_throttle = False
+                break # Exit the control loop gracefully
+                
+            if self.state == "HARD_ABORT":
+                # In a hard abort, we must immediately kill all commanded thrust to prevent unpredictable spins
+                self.vessel.control.throttle = 0.0
+                for e in self.engines:
+                    if e.part and e.part.engine:
+                        e.part.engine.thrust_limit = 0.0
+                        e.part.engine.independent_throttle = False
                 break # Exit the control loop gracefully
                 
             if self.state not in ["HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST"]:
-                # Ensure engines are activated in KSP when AEGIS takes control
+                # Ensure engines are activated and decoupled from vessel main throttle
                 for e in active_engines:
-                    if e.part.engine and not e.part.engine.active:
-                        e.part.engine.active = True
+                    if e.part.engine:
+                        if not e.part.engine.active:
+                            e.part.engine.active = True
+                        # Independent throttle MUST be enabled so the engine ignores the vessel's 
+                        # main throttle and responds strictly to the thrust_limit we command.
+                        if not e.part.engine.independent_throttle:
+                            e.part.engine.independent_throttle = True
                         
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,
