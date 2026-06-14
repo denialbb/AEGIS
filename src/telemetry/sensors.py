@@ -79,10 +79,15 @@ class SensorModels:
         attitude = np.array(self.attitude_stream())
         mass = self.mass_stream()
         
-        # Rotate world acceleration to body frame
+        # KSP coordinate acceleration includes gravity when landed, but is g when falling.
+        # Proper acceleration (what an IMU measures and what engines produce) requires counteracting the gravity vector.
+        gravity_world = np.array([0.0, 0.0, -9.81])  # Simplified constant gravity
+        perfect_proper_accel = perfect_accel - gravity_world
+
+        # Rotate world proper acceleration to body frame
         # attitude is [x, y, z, w] quaternion from kRPC (which matches scipy)
         rot = R.from_quat(attitude)
-        perfect_accel_body = rot.inv().apply(perfect_accel)
+        perfect_accel_body = rot.inv().apply(perfect_proper_accel)
         
         # Inject Gaussian Noise
         noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
