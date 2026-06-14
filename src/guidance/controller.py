@@ -56,8 +56,10 @@ class GuidanceController:
         Returns:
             wrench: (6,) array [Fx, Fy, Fz, Tx, Ty, Tz] in the body frame.
         """
-        assert current_state.shape == (6,), f"current_state must have shape (6,), got {current_state.shape}"
-        assert target_state.shape == (6,), f"target_state must have shape (6,), got {target_state.shape}"
+        if current_state.shape != (6,):
+            raise ValueError(f"current_state must have shape (6,), got {current_state.shape}")
+        if target_state.shape != (6,):
+            raise ValueError(f"target_state must have shape (6,), got {target_state.shape}")
         
         if dt <= 0.0:
             dt = 1e-6

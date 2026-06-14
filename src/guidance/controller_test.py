@@ -104,3 +104,25 @@ def test_rotation_to_body_frame():
     # So world [10000, 0, 0] -> body [0, -10000, 0]
     assert np.allclose(wrench[:3], [0.0, -10000.0, 0.0], atol=1e-5)
     assert np.allclose(wrench[3:], [0.0, 0.0, 0.0])
+
+def test_reset():
+    """Test that reset() correctly clears the derivative state."""
+    controller = GuidanceController(
+        kp_pos=[0.0, 0.0, 0.0],
+        kd_vel=[0.0, 0.0, 0.0],
+        kp_att=[10.0, 10.0, 10.0],
+        kd_att=[5.0, 5.0, 5.0]
+    )
+    
+    current_state = np.zeros(6)
+    target_state = np.zeros(6)
+    mass = 1000.0
+    
+    # Induce an error
+    current_attitude = np.array([np.cos(np.pi/4), np.sin(np.pi/4), 0.0, 0.0])
+    controller.compute_wrench(current_state, current_attitude, mass, target_state, dt=0.1)
+    
+    assert not np.allclose(controller.last_att_error, np.zeros(3))
+    
+    controller.reset()
+    assert np.allclose(controller.last_att_error, np.zeros(3))

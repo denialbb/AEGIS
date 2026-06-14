@@ -76,7 +76,7 @@ class MissionDirector:
             kd_vel=np.array(config.GUIDANCE_KD_VEL),
             kp_att=np.array(config.GUIDANCE_KP_ATT),
             kd_att=np.array(config.GUIDANCE_KD_ATT),
-            gravity=np.array([0.0, 0.0, -9.81])  # Default to Earth/Kerbin surface gravity
+            gravity=np.array(config.GRAVITY)
         )
         
         self.writer: TelemetryWriter = TelemetryWriter({

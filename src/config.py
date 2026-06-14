@@ -28,6 +28,7 @@ GUIDANCE_KP_POS = [1.0, 1.0, 1.0]
 GUIDANCE_KD_VEL = [1.0, 1.0, 1.0]
 GUIDANCE_KP_ATT = [10.0, 10.0, 10.0]
 GUIDANCE_KD_ATT = [5.0, 5.0, 5.0]
+GRAVITY = [0.0, 0.0, -9.81]
 
 # Application Logging
 DEBUG_LOGGING = False
