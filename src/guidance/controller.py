@@ -7,8 +7,10 @@ class GuidanceController:
     Uses Proportional-Derivative (PD) control for both translation and attitude.
     """
     def __init__(self, 
-                 kp_pos: np.ndarray, 
-                 kd_vel: np.ndarray, 
+                 kp_pos_lateral: float,
+                 kp_pos_vertical: float,
+                 kd_vel_lateral: float,
+                 kd_vel_vertical: float,
                  kp_att: np.ndarray, 
                  kd_att: np.ndarray,
                  gravity: np.ndarray = np.zeros(3)):
@@ -16,15 +18,19 @@ class GuidanceController:
         Initializes the Guidance Controller with tunable gains.
         
         Args:
-            kp_pos: (3,) Proportional gains for position error.
-            kd_vel: (3,) Derivative gains for velocity error.
+            kp_pos_lateral: Proportional gain for lateral position error.
+            kp_pos_vertical: Proportional gain for vertical position error.
+            kd_vel_lateral: Derivative gain for lateral velocity error.
+            kd_vel_vertical: Derivative gain for vertical velocity error.
             kp_att: (3,) Proportional gains for attitude error.
             kd_att: (3,) Derivative gains for attitude error (angular velocity damping).
             gravity: (3,) Gravity vector in world frame (e.g. [0, 0, -9.81]). 
                      Used for feed-forward gravity compensation.
         """
-        self.kp_pos = np.array(kp_pos, dtype=float)
-        self.kd_vel = np.array(kd_vel, dtype=float)
+        self.kp_pos_lateral = float(kp_pos_lateral)
+        self.kp_pos_vertical = float(kp_pos_vertical)
+        self.kd_vel_lateral = float(kd_vel_lateral)
+        self.kd_vel_vertical = float(kd_vel_vertical)
         self.kp_att = np.array(kp_att, dtype=float)
         self.kd_att = np.array(kd_att, dtype=float)
         self.gravity = np.array(gravity, dtype=float)
@@ -41,6 +47,7 @@ class GuidanceController:
                        current_attitude: np.ndarray, 
                        mass: float, 
                        target_state: np.ndarray,
+                       up_vector: np.ndarray,
                        dt: float = 0.02) -> np.ndarray:
         """
         Computes the 6-DOF wrench required to move towards the target state 
@@ -70,25 +77,27 @@ class GuidanceController:
         pos_err = target_state[:3] - current_state[:3]
         vel_err = target_state[3:] - current_state[3:]
         
+        # Decompose errors into vertical (along up_vector) and lateral components
+        pos_err_vert = np.dot(pos_err, up_vector) * up_vector
+        pos_err_lat = pos_err - pos_err_vert
+        
+        vel_err_vert = np.dot(vel_err, up_vector) * up_vector
+        vel_err_lat = vel_err - vel_err_vert
+        
         # Commanded Acceleration Equation:
         # a_cmd = Kp_pos * e_pos + Kd_vel * e_vel - g
         # By subtracting the gravity vector (which typically points downwards, e.g. [0, 0, -9.81]),
         # we add an upward feed-forward acceleration to counteract it.
-        a_cmd_world = (self.kp_pos * pos_err) + (self.kd_vel * vel_err) - self.gravity
+        a_cmd_pos = (self.kp_pos_lateral * pos_err_lat) + (self.kp_pos_vertical * pos_err_vert)
+        a_cmd_vel = (self.kd_vel_lateral * vel_err_lat) + (self.kd_vel_vertical * vel_err_vert)
+        
+        a_cmd_world = a_cmd_pos + a_cmd_vel - self.gravity
         
         # ---------------------------------------------------------
         # 2. FRAME ROTATION (World -> Body)
         # ---------------------------------------------------------
-        # Convert scalar-first [w, x, y, z] to scalar-last [x, y, z, w] for SciPy Rotation
-        quat_scalar_last = np.array([
-            current_attitude[1], 
-            current_attitude[2], 
-            current_attitude[3], 
-            current_attitude[0]
-        ])
-        
-        # rot represents the rotation FROM body TO world frame
-        rot = R.from_quat(quat_scalar_last)
+        # kRPC provides the rotation quaternion in [x, y, z, w] format, which matches SciPy natively.
+        rot = R.from_quat(current_attitude)
         
         # We need the commanded acceleration in the BODY frame.
         # Since rot maps body -> world, rot.inv() maps world -> body.
@@ -100,21 +109,13 @@ class GuidanceController:
         # ---------------------------------------------------------
         # 3. ATTITUDE CONTROL (Body Frame)
         # ---------------------------------------------------------
-        # Our target attitude is assumed to be upright, which corresponds to the identity rotation.
-        # The rotation error R_err from the current body frame to the target frame is simply:
-        # R_err = R_current^-1 * R_target = R_current^-1 * I = R_current^-1
-        # Thus, the quaternion of R_err is simply the inverse of the current rotation quaternion.
-        q_err = rot.inv().as_quat()
+        # We want the vessel's Y-axis (nose) to align with the world `up_vector`.
+        # Map the world up_vector into the body frame:
+        target_up_body = rot.inv().apply(up_vector)
         
-        # A quaternion q = [x, y, z, w] represents a rotation of angle theta around axis v:
-        # q = [v_x*sin(theta/2), v_y*sin(theta/2), v_z*sin(theta/2), cos(theta/2)]
-        # We enforce the shortest path by ensuring the scalar part (w) is positive.
-        if q_err[3] < 0:
-            q_err = -q_err
-            
-        # The vector part provides a proportional error term since it scales with sin(theta/2).
-        # For small angles, sin(theta/2) ≈ theta/2.
-        err_axis = q_err[:3]
+        # The cross product between our current forward axis [0, 1, 0] and the target 
+        # up vector gives the rotation axis and magnitude required to align them.
+        err_axis = np.cross(np.array([0.0, 1.0, 0.0]), target_up_body)
         
         # We estimate the body angular velocity by numerically differentiating the error axis.
         d_err_axis = (err_axis - self.last_att_error) / dt

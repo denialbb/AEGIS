@@ -83,8 +83,10 @@ class MissionDirector:
         
         # Initialize Guidance Controller with gains from config and proper gravity vector
         self.guidance: GuidanceController = GuidanceController(
-            kp_pos=np.array(config.GUIDANCE_KP_POS),
-            kd_vel=np.array(config.GUIDANCE_KD_VEL),
+            kp_pos_lateral=config.GUIDANCE_KP_POS_LATERAL,
+            kp_pos_vertical=config.GUIDANCE_KP_POS_VERTICAL,
+            kd_vel_lateral=config.GUIDANCE_KD_VEL_LATERAL,
+            kd_vel_vertical=config.GUIDANCE_KD_VEL_VERTICAL,
             kp_att=np.array(config.GUIDANCE_KP_ATT),
             kd_att=np.array(config.GUIDANCE_KD_ATT),
             gravity=-self.up_vector * 9.81

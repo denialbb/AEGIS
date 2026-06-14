@@ -40,10 +40,12 @@ GLIDESLOPE_RATE_HOVER = 10.0            # [m/s]
 GLIDESLOPE_RATE_TERMINAL = 2.0          # [m/s] -- matches prior "2 m/s" intent
 
 # Guidance Controller Gains
-# KD_VEL Y-axis is increased to 40.0 to give the controller a much stronger reaction to falling speed,
-# allowing it to initiate a suicide burn earlier and overcome the 2-second physical engine spool-up.
-GUIDANCE_KP_POS = [1.0, 1.0, 1.0]
-GUIDANCE_KD_VEL = [10.0, 40.0, 10.0]
+# Translation gains are broken into lateral and vertical components to correctly
+# apply aggressive braking along the true gravity vector, regardless of latitude.
+GUIDANCE_KP_POS_LATERAL = 1.0
+GUIDANCE_KP_POS_VERTICAL = 1.0
+GUIDANCE_KD_VEL_LATERAL = 10.0
+GUIDANCE_KD_VEL_VERTICAL = 40.0
 GUIDANCE_KP_ATT = [10.0, 10.0, 10.0]
 GUIDANCE_KD_ATT = [5.0, 5.0, 5.0]
 GRAVITY = [0.0, 0.0, -9.81]
