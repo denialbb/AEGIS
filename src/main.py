@@ -100,6 +100,11 @@ class MissionDirector:
         
         while self.state != "HARD_ABORT":
             start_time = time.time()
+            # Timing and Frame Drop Handling
+            # KSP physics runs at 50Hz (20ms). If the game lags or pauses, 'actual_dt' spikes.
+            # A massive dt would cause the Kalman Filter's acceleration prediction step (0.5 * a * dt^2) 
+            # to overshoot wildly and diverge. If we detect a spike > 3x expected dt, we skip the 
+            # predict step entirely and only use the altimeter update to remain stable.
             if self.last_tick_time > 0:
                 actual_dt = start_time - self.last_tick_time
                 if actual_dt > 3 * dt:
@@ -159,7 +164,9 @@ class MissionDirector:
             
             target_state = np.zeros(6) # [x, y, z, vx, vy, vz]
             
-            # Simple state transition for demonstration
+            # Simple state transition cascade based on altitude above the landing pad.
+            # In a real system, these would also check velocity gates and fuel margins,
+            # but for this prototype we rely purely on altitude boundaries.
             if self.state == "DEORBIT_BURN" and est_alt < 10000:
                 logger.info("Transitioning from DEORBIT_BURN to HYPERSONIC_COAST")
                 self.writer.log_event({"type": "STATE_TRANSITION", "from": self.state, "to": "HYPERSONIC_COAST"})
@@ -179,11 +186,12 @@ class MissionDirector:
             elif self.state not in ["DEORBIT_BURN", "HYPERSONIC_COAST", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"]:
                 self.state = "HARD_ABORT"
                 
-            # Define target state based on phase
+            # Define instantaneous target kinematic state based on the current mission phase.
+            # The GuidanceController will attempt to reduce the error between this target and current_state to 0.
             if self.state == "TERMINAL_DESCENT":
-                target_state[5] = -2.0 # Descend at 2 m/s
+                target_state[5] = -2.0 # Target a constant descent velocity of 2 m/s downwards
             elif self.state == "HOVER_TARGETING":
-                target_state[2] = 50.0 # Maintain altitude at 50m
+                target_state[2] = 50.0 # Target a static position 50m above the pad
                 
             if self.state != "HARD_ABORT":
                 desired_wrench = self.guidance.compute_wrench(
