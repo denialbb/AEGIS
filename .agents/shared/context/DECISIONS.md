@@ -642,3 +642,29 @@ Option 2: Glide-slope target generation. `main.py` explicitly zeroes vertical po
 
 **Review Notes**
 Resolves ISS-011.
+
+---
+
+### ADR-023 — Explicit Throttle Setting with Independent Throttle
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Agent
+- **Module(s):** Control Allocator, Mission Director
+
+**Context**
+To modulate asymmetric thrust across multiple engines, we enable `independent_throttle = True` on each engine so it can be controlled independently of the main vessel throttle via its `thrust_limit`. However, when uncoupled from the main vessel throttle, the engine's internal throttle value defaults to 0.0. Modulating `thrust_limit` while `throttle = 0.0` yields zero actual thrust output, causing silent failures (e.g., vessel dropping like a rock despite "100%" thrust_limit commands).
+
+**Options Considered**
+1. Modulate `engine.throttle` directly instead of `thrust_limit` — Would require overhauling the existing architecture, and KSP sometimes clamps `engine.throttle` based on other UI interactions.
+2. Explicitly force `engine.throttle = 1.0` and modulate `thrust_limit` — Leaves the primary actuator mechanism (`thrust_limit`) intact while explicitly satisfying the API requirement for independent throttle.
+
+**Decision**
+Option 2: Whenever `independent_throttle` is enabled, explicitly force `engine.throttle = 1.0` in the same execution cycle. All fine-grained control continues to be routed through `engine.thrust_limit`.
+
+**Consequences**
+- ✅ Prevents silent 0.0 N thrust failures.
+- ✅ Requires no changes to the math inside the Control Allocator (which already outputs 0 to 1 thrust limits).
+- ⚠️ Adds one extra RPC call per engine during activation/configuration.
+
+**Review Notes**
+None yet.

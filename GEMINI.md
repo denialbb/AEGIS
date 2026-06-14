@@ -40,4 +40,5 @@ If you need architectural context, read `docs/architecture_design.md`.
   - Run python: `wsl -d Arch .venv/bin/python`
   - Run mypy: `wsl -d Arch .venv/bin/mypy`
   - Run pytest: `wsl -d Arch .venv/bin/pytest`
+  - **Run AEGIS**: Use the `./run.sh` script to run the main program (it handles dynamic KRPC host IP resolution).
 

@@ -24,6 +24,10 @@ __pycache__/
 .agents/CLAUDE_CONTEXT.md
 .agents/shared/reviews/
 .agents/shared/temp/
+.agents/scratch/
 
 # Telemetry logs
 logs/
+pytest.log
+run.log
+
