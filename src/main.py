@@ -397,6 +397,24 @@ class MissionDirector:
                         f"[FDI] Skipping detection during dt spike, holding stale expected_accel"
                     )
 
+                # Check if remaining engines can provide full 6-DOF control
+                sufficient, rank = self.allocator.is_rank_sufficient(active_engines)
+                if not sufficient:
+                    logger.error(
+                        f"B matrix rank {rank} < 6 with {len(active_engines)} active engines. "
+                        "Insufficient control authority. HARD ABORT triggered."
+                    )
+                    self.writer.log_event(
+                        {
+                            "type": "STATE_TRANSITION",
+                            "from": self.state,
+                            "to": "HARD_ABORT",
+                            "reason": "INSUFFICIENT_ENGINES",
+                        }
+                    )
+                    self.state = "HARD_ABORT"
+                    break
+
                 if not active_engines and len(self.engines) > 0:
                     # If we had engines and they all failed, trigger abort
                     self.state = "HARD_ABORT"
