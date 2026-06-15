@@ -6,4 +6,4 @@ echo "Starting AEGIS Optuna tuner. Targeting KRPC at $KRPC_ADDRESS"
 
 trap 'echo "Interrupted. Exiting..."; exit 130' SIGINT
 
-.venv/bin/python scripts/tune_config_optuna.py "$@"
+exec .venv/bin/python scripts/tune_config_optuna.py "$@"
