@@ -23,13 +23,13 @@ Contingencies:
 SAS is disabled during descent — the guidance controller handles attitude entirely via gimbal trim (inertia-scaled PD + gyroscopic feedforward per ADR-028). SAS prograde mode is used during ascent only for a stable test start.
 
 ### State Estimator (`src/estimation/estimator.py`)
-A linear Discrete-Time Kalman Filter (filterpy) fusing noisy altimeter and accelerometer streams into a clean 6-state vector `[x, y, z, vx, vy, vz]` in a target-relative Cartesian frame. Mass is treated as a clean external telemetry parameter. Uses a small-angle approximation (ADR-014): attitude telemetry is treated as perfect for rotating body-frame acceleration to world frame, and accelerometer noise variance is inflated to absorb the attitude uncertainty.
+A linear Discrete-Time Kalman Filter (filterpy) fusing noisy altimeter and accelerometer streams into a clean 6-state vector `[x, y, z, vx, vy, vz]` in a target-relative Cartesian frame. Mass is treated as a clean external telemetry parameter. Uses a small-angle approximation (ADR-014): attitude telemetry is treated as perfect for rotating body-frame acceleration to world frame, and accelerometer noise variance is inflated to absorb the attitude uncertainty. The Kalman filter formulation follows the standard prediction-update structure detailed in *Extended Kalman Filtering* (Cornman & Mei, Stanford University) — see References §8.
 
 ### Fault Detection & Isolation (`src/fdi/fdi.py`)
 Compares expected acceleration (from commanded throttle + known mass) against measured acceleration (from the State Estimator). If the deviation exceeds a configurable threshold (`FDI_THRESHOLD = 3.0`) persistently (50 ticks), it isolates the failing engine by brute-forcing failure combinations. Multiple simultaneous failures trigger a `HARD_ABORT`.
 
 ### Guidance & Control Allocation (`src/guidance/`)
-**Guidance Controller** (`controller.py`): A quaternion-based PD attitude controller (ADR-019) with inertia-scaled torque (ADR-028) using the vessel's full 3×3 inertia tensor. Translation uses a suicide-burn sqrt glideslope profile (ADR-022): `v_target = -sqrt(2 * a_avail * alt_above_floor)`, where `a_avail` is the vessel's actual TWR-derived net upward acceleration, computed each tick. An acceleration clamp (`ACCEL_CLAMP_FACTOR`) prevents attitude target flipping during saturating transients.
+**Guidance Controller** (`controller.py`): A quaternion-based PD attitude controller (ADR-019) with inertia-scaled torque (ADR-028) using the vessel's full 3×3 inertia tensor. The quaternion error definition and gain-selection via natural frequency/damping ratio (`Kp = ωₙ², Kd = 2ζωₙ`) follow *Quaternion-Based Tracking Control Law Design for Tracking Mode* (Elbeltagy et al.) — see References §8. Translation uses a suicide-burn sqrt glideslope profile (ADR-022): `v_target = -sqrt(2 * a_avail * alt_above_floor)`, where `a_avail` is the vessel's actual TWR-derived net upward acceleration, computed each tick. An acceleration clamp (`ACCEL_CLAMP_FACTOR`) prevents attitude target flipping during saturating transients.
 
 **Control Allocator** (`allocator.py`): Maps a 6-DOF wrench (3 forces + 3 torques) to surviving engine throttles and gimbal angles via pseudo-inverse (`numpy.linalg.pinv`). Condition number of the B matrix is checked on every solve — if > 1e4, raises `AllocationDegenerateError`. Individual engine gimbals are actuated via the **ModuleGimbalTrim** mod (ADR-024), allowing independent X/Y gimbal control per engine. Engines are discovered via `vessel.parts.with_tag("AegisEngine")` (ADR-016).
 
@@ -130,7 +130,7 @@ Code changes follow a structured review workflow:
 
 ## 6. Future: NN-ADRC Integration (Planned)
 
-The current PD guidance controller has no inherent disturbance rejection. The NN-ADRC roadmap upgrades the control architecture with an **Active Disturbance Rejection Controller** augmented by a **Neural Network compensator** to learn optimal counter-actions for any asymmetric failure pattern.
+The current PD guidance controller has no inherent disturbance rejection. The NN-ADRC roadmap upgrades the control architecture with an **Active Disturbance Rejection Controller** augmented by a **Neural Network compensator** to learn optimal counter-actions for any asymmetric failure pattern. The ESO equations, `fal()` nonlinearity, WSEF structure, and NN training approach are drawn from *NN Based Active Disturbance Rejection Controller for a Multi-Axis Gimbal System* (Leblebicioglu et al.) — see References §8.
 
 ### Architecture Constraint
 The Extended State Observer (ESO) lives in Guidance (`src/guidance/adrc.py`), not the State Estimator (ADR-027). The 6-state linear Kalman Filter remains unchanged (ADR-029 deferred). All cross-module signals are routed through the Mission Director (ADR-013 pattern) — no direct FDI↔Guidance data access.
@@ -169,3 +169,15 @@ The source gimbal paper validated the NN on smooth, continuous disturbance torqu
 - [Architecture Contracts](.agents/shared/context/ARCHITECTURE.md)
 - [Architecture Decision Log](.agents/shared/context/DECISIONS.md)
 - [Known Issues](.agents/shared/context/OPEN_ISSUES.md)
+- [NN-ADRC Integration Report](docs/NN-ADRC/NN-ADRC_integration.md)
+- [NN-ADRC Design Advisory](docs/NN-ADRC/NN_ADRC_DESIGN_ADVISORY.md)
+
+## 8. References
+
+The following works informed the mathematical foundations of the AEGIS guidance and estimation architecture. PDF copies are included under `docs/NN-ADRC/literature/`.
+
+| # | Source | Used In |
+|---|--------|---------|
+| [1] | Cornman, L. & Mei, G. *Extended Kalman Filtering*. Stanford University. | State Estimator — Kalman filter prediction/update structure, Q/R tuning methodology. |
+| [2] | Leblebicioglu, K. et al. *NN Based Active Disturbance Rejection Controller for a Multi-Axis Gimbal System*. | NN-ADRC roadmap — ESO equations, `fal()` nonlinearity, WSEF/TG structure, NN training via Levenberg-Marquardt. |
+| [3] | Elbeltagy, A. et al. *Quaternion-Based Tracking Control Law Design for Tracking Mode*. | Guidance controller — quaternion error definition, inertia-scaled PD torque, gain-selection via natural frequency and damping ratio. |
