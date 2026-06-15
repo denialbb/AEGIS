@@ -120,7 +120,7 @@ def run_simulation(trial: optuna.Trial) -> float:
 
 if __name__ == "__main__":
     db_path = "sqlite:///logs/optuna.db"
-    study_name = "aegis_full_tuning"
+    study_name = "aegis_tuning_v2"
     
     os.makedirs("logs", exist_ok=True)
     
