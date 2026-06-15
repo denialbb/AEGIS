@@ -19,6 +19,13 @@ KRPC_CLIENT_NAME = "AEGIS Mission Director"
 # Min: 20.0, Max: 100.0
 TARGET_HZ = 50.0
 
+# Use KSP stock SAS for attitude stabilisation.
+# When False, the guidance controller handles attitude entirely via gimbal trim
+# (inertia-scaled PD + gyroscopic feedforward per ADR-028).  SAS and our
+# controller fight for the same engine gimbals, so disabling SAS gives us
+# full authority — at the cost of requiring well-tuned attitude gains.
+USE_SAS = False
+
 # ---------------------------------------------------------
 # Landing Target (Default: KSC Launchpad)
 # ---------------------------------------------------------

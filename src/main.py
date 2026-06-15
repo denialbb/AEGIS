@@ -378,27 +378,27 @@ class MissionDirector:
             est_alt = float(np.dot(state_vector[:3], self.up_vector))
             est_vz = float(np.dot(state_vector[3:], self.up_vector))
 
-            sas_threshold = 40  # m/s TODO place in conf
-            # Manage SAS
-            if est_vz > sas_threshold and ves_orientation != "prograde":
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.prograde
-                )
-                ves_orientation = "prograde"
-            elif (
-                sas_threshold > est_vz
-                and est_vz > -sas_threshold
-                and ves_orientation != "stability"
-            ):
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.stability_assist
-                )
-                ves_orientation = "stability"
-            elif est_vz < -sas_threshold and ves_orientation != "retrograde":
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.retrograde
-                )
-                ves_orientation = "retrograde"
+            if config.USE_SAS:
+                sas_threshold = 40
+                if est_vz > sas_threshold and ves_orientation != "prograde":
+                    self.vessel.control.sas_mode = (
+                        self.conn.space_center.SASMode.prograde
+                    )
+                    ves_orientation = "prograde"
+                elif (
+                    sas_threshold > est_vz
+                    and est_vz > -sas_threshold
+                    and ves_orientation != "stability"
+                ):
+                    self.vessel.control.sas_mode = (
+                        self.conn.space_center.SASMode.stability_assist
+                    )
+                    ves_orientation = "stability"
+                elif est_vz < -sas_threshold and ves_orientation != "retrograde":
+                    self.vessel.control.sas_mode = (
+                        self.conn.space_center.SASMode.retrograde
+                    )
+                    ves_orientation = "retrograde"
 
             # Smart Activation Logic
             if self.state == "STANDBY":
@@ -408,7 +408,10 @@ class MissionDirector:
                 if activated:
                     logger.info("AEGIS Activated. Smart Routing initialized.")
                     self.writer.log_event({"type": "ACTIVATION"})
-                    self.vessel.control.sas = True
+                    if config.USE_SAS:
+                        self.vessel.control.sas = True
+                    else:
+                        self.vessel.control.sas = False
 
                     if est_vz > 0:
                         self.state = "ASCENT_COAST"
