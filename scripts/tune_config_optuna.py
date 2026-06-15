@@ -24,8 +24,9 @@ def run_simulation(trial: optuna.Trial) -> float:
     config.ALT_HOVER = trial.suggest_float("ALT_HOVER", 100.0, 1000.0)
     config.ALT_TERMINAL = trial.suggest_float("ALT_TERMINAL", 10.0, 200.0)
     
-    config.GLIDESLOPE_K_ALT = trial.suggest_float("GLIDESLOPE_K_ALT", 0.1, 0.8)
-    config.GLIDESLOPE_RATE_POWERED_DESCENT = trial.suggest_float("GLIDESLOPE_RATE_POWERED_DESCENT", 20.0, 150.0)
+    # GLIDESLOPE_K_ALT removed — sqrt suicide-burn profile self-tunes from TWR.
+    # Rate limits serve as structural caps; POWERED_DESCENT range widened.
+    config.GLIDESLOPE_RATE_POWERED_DESCENT = trial.suggest_float("GLIDESLOPE_RATE_POWERED_DESCENT", 20.0, 500.0)
     config.GLIDESLOPE_RATE_HOVER = trial.suggest_float("GLIDESLOPE_RATE_HOVER", 5.0, 30.0)
     config.GLIDESLOPE_RATE_TERMINAL = trial.suggest_float("GLIDESLOPE_RATE_TERMINAL", 0.5, 5.0)
     
@@ -34,11 +35,18 @@ def run_simulation(trial: optuna.Trial) -> float:
     config.GUIDANCE_KD_VEL_LATERAL = trial.suggest_float("GUIDANCE_KD_VEL_LATERAL", 2.0, 100.0)
     config.GUIDANCE_KD_VEL_VERTICAL = trial.suggest_float("GUIDANCE_KD_VEL_VERTICAL", 2.0, 100.0)
     
-    kp_att_val = trial.suggest_float("GUIDANCE_KP_ATT_SCALAR", 2.0, 50.0)
-    config.GUIDANCE_KP_ATT = [kp_att_val, kp_att_val, kp_att_val]
+    # Attitude control uses natural-frequency/damping-ratio parameterization
+    # (ADR-028). The MissionDirector derives Kp = ωₙ², Kd = 2ζωₙ internally.
+    # NOTE: the deprecated GUIDANCE_KP_ATT / GUIDANCE_KD_ATT are NOT read by
+    # the controller; tuning them via Optuna was a no-op.
+    nat_freq = trial.suggest_float("GUIDANCE_ATT_NATURAL_FREQ_SCALAR", 1.0, 6.0)
+    config.GUIDANCE_ATT_NATURAL_FREQ = [nat_freq, nat_freq, nat_freq]
+    damping = trial.suggest_float("GUIDANCE_ATT_DAMPING_RATIO_SCALAR", 0.5, 2.0)
+    config.GUIDANCE_ATT_DAMPING_RATIO = [damping, damping, damping]
     
-    kd_att_val = trial.suggest_float("GUIDANCE_KD_ATT_SCALAR", 1.0, 40.0)
-    config.GUIDANCE_KD_ATT = [kd_att_val, kd_att_val, kd_att_val]
+    # Acceleration clamp factor limits a_cmd_world to ACCEL_CLAMP_FACTOR × a_avail.
+    # Prevents attitude target flip during saturating transients.
+    config.ACCEL_CLAMP_FACTOR = trial.suggest_float("ACCEL_CLAMP_FACTOR", 1.0, 3.0)
     
     config.SIGMA_ALT = trial.suggest_float("SIGMA_ALT", 0.1, 10.0)
     config.SIGMA_ACCEL = trial.suggest_float("SIGMA_ACCEL", 0.05, 2.0)

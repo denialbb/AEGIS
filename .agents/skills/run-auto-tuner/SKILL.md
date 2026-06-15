@@ -30,7 +30,9 @@ None.
 
 ### 4. Update Configuration
 - Use the `replace_file_content` tool on `src/config.py`.
-- Replace the `GUIDANCE_KP_ATT` and `GUIDANCE_KD_ATT` lists with the winning values (e.g. `[10.0, 10.0, 10.0]`).
+- Replace `GUIDANCE_ATT_NATURAL_FREQ` (derived Kp = ωₙ²) and `GUIDANCE_ATT_DAMPING_RATIO` (derived Kd = 2ζωₙ) lists with the winning values (e.g. `[3.0, 3.0, 3.0]` and `[1.0, 1.0, 1.0]`).
+- Replace `ACCEL_CLAMP_FACTOR` with the winning value.
+- **NOTE:** The deprecated `GUIDANCE_KP_ATT` / `GUIDANCE_KD_ATT` are not read by the controller and should NOT be set from tuning results.
 - Present the winning combination and metrics to the user in a short summary.
 
 ## Common Mistakes
