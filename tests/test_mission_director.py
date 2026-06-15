@@ -38,7 +38,7 @@ class TestMissionDirector:
         vessel.orbit = orbit
         orbit.body = body
         body.reference_frame = Mock()
-        body.surface_position = Mock(return_value=[0.0, 0.0, 0.0])
+        body.surface_position = Mock(return_value=[0.0, 0.0, 600000.0])
         
         # Mock flight and inertia tensor
         flight = Mock()
@@ -91,39 +91,56 @@ class TestMissionDirector:
         """Test state transition logic based on altitude and velocity."""
         conn, vessel, space_center, body, flight, part = self.create_mock_connection()
         md = MissionDirector(conn)
-        
+
         # Test initial state
         assert md.state == "STANDBY"
-        
+
         # Mock sensors.poll to return specific values
-        md.sensors.poll = Mock(return_value=(0.0, np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]), 
+        md.sensors.poll = Mock(return_value=(0.0, np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]),
                                             1000.0, np.zeros(3), "flying", np.zeros(3)))
-        
+
         # Mock estimator to return specific state
         md.estimator.update = Mock(return_value=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
         md.estimator.get_state = Mock(return_value=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
-        
-        # Test that state remains STANDBY when not activated
-        md.run_loop()  # This would normally run the loop, but we'll test the logic directly
-        # Note: Full loop testing requires more complex mocking, but we can test transition logic
+
+        # The loop must reach a terminal state. With est_alt=0, est_vz=0,
+        # action_group=False, situation="flying", none of the exit paths
+        # (activation, emergency, landed/destroyed) trigger, so the loop
+        # would hang. Force an exit after one tick via _exit_requested.
+        original_poll = md.sensors.poll
+
+        def poll_once_then_exit(*args, **kwargs):
+            md._exit_requested = True
+            return original_poll(*args, **kwargs)
+
+        md.sensors.poll = poll_once_then_exit
+
+        success = md.run_loop()
+
+        # State should have transitioned to HARD_ABORT via the exit path
+        assert md.state == "HARD_ABORT"
+        assert success is False
 
     def test_safe_engine_access(self):
         """Test the _safe_engine_access helper function."""
-        conn, vessel, space_center, body, flight, part = self.create_mock_connection()
-        md = MissionDirector(conn)
-        
+        from src.main import _safe_engine_access
+
         # Test with valid part
-        result = md._safe_engine_access(part)
+        part = Mock()
+        part.engine = Mock()
+        result = _safe_engine_access(part)
         assert result == part.engine
-        
+
         # Test with None part
-        result = md._safe_engine_access(None)
+        result = _safe_engine_access(None)
         assert result is None
-        
+
         # Test with part that throws RuntimeError when accessing .engine
         bad_part = Mock()
-        bad_part.engine = Mock(side_effect=RuntimeError("No engine"))
-        result = md._safe_engine_access(bad_part)
+        type(bad_part).engine = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("No engine"))
+        )
+        result = _safe_engine_access(bad_part)
         assert result is None
 
     def test_compute_glideslope_target(self):
@@ -144,24 +161,16 @@ class TestMissionDirector:
         assert isinstance(target_state, np.ndarray)
         assert target_state.shape == (6,)
         
-        # The target should have the same x,y position as current (projected onto up vector)
-        # Since up_vector is [0,0,1] in our mock, x and y should be 0
+        # With up_vector = [0,0,1] (from mock surface_position=[0,0,600000]):
+        # est_alt = dot([0,0,100], [0,0,1]) = 100
+        # target_state[:3] = 100 * [0,0,1] = [0,0,100]
+        # alt_above_floor = max(100-50, 0) = 50
+        # desired_speed = min(20.0, sqrt(2*15*50)) = min(20.0, 38.7) = 20.0
+        # target_state[3:] = -[0,0,1] * 20.0 = [0,0,-20.0]
         assert target_state[0] == 0.0
         assert target_state[1] == 0.0
-        
-        # Z should be at floor_alt since we're computing a target for that altitude
-        # Actually, let's check the math:
-        # est_pos = [0,0,100], up_vector = [0,0,1] (from mock)
-        # est_alt = dot([0,0,100], [0,0,1]) = 100
-        # target_state[:3] = est_alt * up_vector = 100 * [0,0,1] = [0,0,100]
-        # But then we compute alt_above_floor = max(est_alt - floor_alt, 0) = max(100-50, 0) = 50
-        # desired_speed = min(max_descent_rate, sqrt(2 * a_avail * alt_above_floor))
-        # desired_speed = min(20.0, sqrt(2 * 15.0 * 50.0)) = min(20.0, sqrt(1500)) = min(20.0, 38.7) = 20.0
-        # target_state[3:] = -up_vector * desired_speed = -[0,0,1] * 20.0 = [0,0,-20.0]
-        
-        # So target_state should be [0,0,100,0,0,-20.0]
-        assert target_state[2] == 100.0  # Z position
-        assert target_state[5] == -20.0  # Z velocity
+        assert target_state[2] == 100.0
+        assert target_state[5] == -20.0
 
     def test_mission_director_handles_hard_abort(self):
         """Test that MissionDirector properly handles HARD_ABORT state."""

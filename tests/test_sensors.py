@@ -12,6 +12,7 @@ def test_sensor_models_noise_statistics():
     flight = MagicMock()
     
     vessel.flight.return_value = flight
+    vessel.angular_velocity.return_value = (0.0, 0.0, 0.0)
     
     # Define up_vector
     up_vector = np.array([0.0, 0.0, 1.0])
@@ -28,7 +29,7 @@ def test_sensor_models_noise_statistics():
         
     velocity_mock = MagicMock(side_effect=velocity_mock_func)
     ut_mock = MagicMock(side_effect=ut_mock_func)
-    attitude_mock = MagicMock(return_value=(1.0, 0.0, 0.0, 0.0))
+    attitude_mock = MagicMock(return_value=(0.0, 0.0, 0.0, 1.0))
     mass_mock = MagicMock(return_value=5000.0)
     angular_vel_mock = MagicMock(return_value=(0.0, 0.0, 0.0))
     aero_mock = MagicMock(return_value=(0.0, 0.0, 0.0))
@@ -81,7 +82,7 @@ def test_sensor_models_noise_statistics():
         accel_samples.append(noisy_accel)
         
         # Verify perfect values are passed through untouched where expected
-        np.testing.assert_array_equal(attitude, np.array([1.0, 0.0, 0.0, 0.0]))
+        np.testing.assert_array_equal(attitude, np.array([0.0, 0.0, 0.0, 1.0]))
         assert mass == 5000.0
         
         # Verify angular velocity is returned correctly
