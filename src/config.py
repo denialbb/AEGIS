@@ -26,6 +26,12 @@ TARGET_HZ = 50.0
 # full authority — at the cost of requiring well-tuned attitude gains.
 USE_SAS = False
 
+# Enable SAS in prograde mode during ascent for a stable test start.
+# Operates independently of USE_SAS — this is always active unless set False.
+# Ensures the vessel points prograde while climbing, preventing tumbling
+# before the guidance controller takes over on descent.
+SAS_PROGRADE_ASCENT = True
+
 # ---------------------------------------------------------
 # Landing Target (Default: KSC Launchpad)
 # ---------------------------------------------------------

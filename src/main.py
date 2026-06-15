@@ -378,6 +378,16 @@ class MissionDirector:
             est_alt = float(np.dot(state_vector[:3], self.up_vector))
             est_vz = float(np.dot(state_vector[3:], self.up_vector))
 
+            if config.SAS_PROGRADE_ASCENT and est_vz > 40 and ves_orientation != "prograde":
+                self.vessel.control.sas = True
+                self.vessel.control.sas_mode = (
+                    self.conn.space_center.SASMode.prograde
+                )
+                ves_orientation = "prograde"
+            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and est_vz < 0 and ves_orientation == "prograde":
+                self.vessel.control.sas = False
+                ves_orientation = "stability"
+
             if config.USE_SAS:
                 sas_threshold = 40
                 if est_vz > sas_threshold and ves_orientation != "prograde":
@@ -753,7 +763,10 @@ class MissionDirector:
                     self.expected_throttles = np.array(new_expected_throttles)
 
                     # Expected acceleration is total force (thrust + aerodynamic) divided by mass
-                    self.expected_accel = (expected_force + aero_body) / mass
+                    if mass > 0.0:
+                        self.expected_accel = (expected_force + aero_body) / mass
+                    else:
+                        self.expected_accel = np.zeros(3)
                 except AllocationDegenerateError as e:
                     print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event(
