@@ -9,13 +9,17 @@ logger = logging.getLogger(__name__)  # type: ignore
 class StateEstimator:
     def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise_alt: np.ndarray, measurement_noise_vel: np.ndarray, up_vector: np.ndarray = np.array([0.0, 0.0, 1.0])):
         """
-        Initializes the Discrete-Time Kalman Filter.
-        initial_state: shape (6,) [X, Y, Z, Vx, Vy, Vz]
-        initial_covariance: shape (6, 6)
-        process_noise: shape (6, 6)
-        measurement_noise_alt: shape (1, 1) (altitude measurement variance)
-        measurement_noise_vel: shape (3, 3) (velocity measurement covariance)
-        up_vector: vector pointing directly up from the planet surface
+        Initializes the Discrete-Time Kalman Filter for translational motion.
+        Estimates [X, Y, Z, Vx, Vy, Vz] in world frame.
+        Attitude and gyro biases are handled by external sensors/filters.
+        
+        Args:
+            initial_state: shape (6,) [X, Y, Z, Vx, Vy, Vz]
+            initial_covariance: shape (6, 6)
+            process_noise: shape (6, 6)
+            measurement_noise_alt: shape (1, 1) (altitude measurement variance)
+            measurement_noise_vel: shape (3, 3) (velocity measurement covariance)
+            up_vector: vector pointing directly up from the planet surface (used for altitude measurement)
         """
         self.kf = KalmanFilter(dim_x=6, dim_z=4)
         self.kf.x = initial_state.copy()
@@ -24,7 +28,8 @@ class StateEstimator:
         self.base_Q = process_noise.copy()
         
         self.up_vector = up_vector
-        self.gravity_world = -self.up_vector * 9.81
+        # Note: Full EKF with attitude and gyro biases in state would be dimension 10+
+        # For now, we estimate translation only and rely on external attitude estimation
         
         # H matrix: z = [alt, vx, vy, vz]
         # Altitude is the projection of the position state onto the up_vector.
@@ -42,18 +47,19 @@ class StateEstimator:
                 
         logger.info("Initialized StateEstimator (Kalman Filter with alt+vel)")
 
-    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float) -> None:
+    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float, gravity_world: np.ndarray) -> None:
         """
         Predicts the next state using the measured acceleration as the control input.
         noisy_accel_body: Accelerometer reading in vessel body frame.
         attitude: Vessel attitude required to rotate acceleration to world frame.
+        gravity_world: Gravitational acceleration in world frame (m/s^2).
         """
         rot = R.from_quat(attitude)
         proper_accel_world = rot.apply(noisy_accel_body)
         
         # IMU measures proper acceleration (includes normal force, excludes gravity).
         # We need kinematic acceleration for Newtonian physics: a_kinematic = a_proper + gravity
-        kinematic_accel_world = proper_accel_world + self.gravity_world
+        kinematic_accel_world = proper_accel_world + gravity_world
         
         # Update dynamic state transition matrix F.
         # This matrix represents the physics model x_next = F * x_current.

@@ -109,6 +109,34 @@ FDI_THRESHOLD = 3.0
 RANDOM_SEED = 42
 
 # ---------------------------------------------------------
+# IMU & Inertial Navigation Parameters
+# ---------------------------------------------------------
+# Standard deviation of gyroscope noise (rad/s).
+# Higher values make the attitude estimate more reliant on accelerometer (slower but less drift).
+# Min: 0.001 (High-end gyro), Max: 0.1 (Low-end gyro)
+SIGMA_GYRO = 0.01  # rad/s
+
+# Gyroscope bias instability (rad/s/sqrt(Hz)).
+# Models random walk of gyroscope bias over time.
+# Min: 1e-6 (Very stable), Max: 0.01 (Unstable)
+GYRO_BIAS_INSTABILITY = 0.0001  # rad/s/sqrt(Hz)
+
+# Standard deviation of accelerometer noise (m/s^2).
+# Already defined above as SIGMA_ACCEL, keeping for clarity
+# ACCEL_BIAS_INSTABILITY models random walk of accelerometer bias
+ACCEL_BIAS_INSTABILITY = 0.001  # m/s^2/sqrt(Hz)
+
+# Mahony filter proportional gain.
+# Higher values increase correction from accelerometer (reduces drift but increases noise sensitivity).
+# Min: 0.1 (Sluggish correction), Max: 10.0 (Aggressive correction)
+MAHONY_KP = 2.0
+
+# Mahony filter integral gain (for gyroscope bias estimation).
+# Higher values better estimate and remove gyroscope bias but can cause overshoot.
+# Min: 0.0 (No integral action), Max: 0.1 (Aggressive bias estimation)
+MAHONY_KI = 0.0
+
+# ---------------------------------------------------------
 # Glide-Slope Guidance
 # ---------------------------------------------------------
 # Vertical velocity target = -sqrt(2 * a_avail * alt_above_floor), where

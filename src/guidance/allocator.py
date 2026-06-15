@@ -248,14 +248,14 @@ class ControlAllocator:
 
             f_vec = axial_force * engine.thrust_direction + lateral_force_vec
 
+            f_mag = float(np.linalg.norm(f_vec))
             throttle = (
-                min(axial_force / engine.max_thrust, 1.0)
+                min(f_mag / engine.max_thrust, 1.0)
                 if engine.max_thrust > 0
                 else 0.0
             )
             throttles[i] = float(np.clip(throttle, 0.0, 1.0))
 
-            f_mag = float(np.linalg.norm(f_vec))
             if f_mag > 1e-6:
                 n = f_vec / f_mag
                 dot_prod = float(

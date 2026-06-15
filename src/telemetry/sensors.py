@@ -4,6 +4,11 @@ from typing import Tuple, Any
 import src.config as config
 from scipy.spatial.transform import Rotation as R  # type: ignore
 
+# Import the new sensor classes
+from src.estimation.gyro_sensor import GyroSensor
+from src.estimation.accelerometer_sensor import AccelerometerSensor
+from src.estimation.mahony_estimator import MahonyAttitudeEstimator
+
 logger = logging.getLogger(__name__)
 
 class SensorModels:
@@ -25,9 +30,8 @@ class SensorModels:
         self.ref_frame = ref_frame
         self.up_vector = up_vector
         
-        # Initialize kRPC streams
+        # Initialize kRPC streams for basic telemetry
         flight_world = self.vessel.flight(self.ref_frame)
-        flight_body = self.vessel.flight(self.vessel.reference_frame)
         
         self.altitude_stream = self.conn.add_stream(getattr, flight_world, 'surface_altitude')
         
@@ -37,7 +41,7 @@ class SensorModels:
         self.last_vel: np.ndarray | None = None
         self.last_ut: float | None = None
         
-        # Attitude (quaternion) in the target reference frame
+        # Attitude (quaternion) in the target reference frame (from kRPC, for backup/comparison)
         self.attitude_stream = self.conn.add_stream(getattr, flight_world, 'rotation')
         
         # Aerodynamic force in the target reference frame
@@ -49,17 +53,18 @@ class SensorModels:
         # Situation stream
         self.situation_stream = self.conn.add_stream(getattr, self.vessel, 'situation')
         
-        # Angular velocity stream (body rates) expressed in the mission reference frame
-        # This provides rotation rates relative to the landing‑pad frame rather than the vessel's own frame.
-        # Use a lambda to capture the reference frame argument for angular_velocity
-        # Attempt to stream angular velocity with reference frame (real kRPC usage).
-        # If the vessel method requires a reference frame argument, pass it.
-        # For testing mocks that expose angular_velocity without arguments, fall back to getattr.
-        try:
-            self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ref_frame)
-        except TypeError:
-            # Fallback for mocks (tests) that expect a simple attribute access.
-            self.angular_velocity_stream = self.conn.add_stream(getattr, self.vessel, 'angular_velocity')
+        # Initialize the new sensor classes
+        self.gyro_sensor = GyroSensor(conn, vessel, ref_frame, up_vector)
+        self.accel_sensor = AccelerometerSensor(conn, vessel, ref_frame, up_vector)
+        
+        # Initialize Mahony attitude estimator
+        self.attitude_estimator = MahonyAttitudeEstimator(
+            gyro_sensor=self.gyro_sensor,
+            accel_sensor=self.accel_sensor,
+            kp=config.MAHONY_KP if hasattr(config, 'MAHONY_KP') else 2.0,
+            ki=config.MAHONY_KI if hasattr(config, 'MAHONY_KI') else 0.0,
+            up_vector=up_vector
+        )
         
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT
@@ -70,21 +75,24 @@ class SensorModels:
         self.rng = np.random.default_rng(config.RANDOM_SEED)
         
         logger.info(f"Initialized SensorModels with sigma_alt={self.sigma_alt}, sigma_accel={self.sigma_accel}, sigma_vel={self.sigma_vel}")
+        logger.info("Initialized Mahony attitude estimator for IMU-based attitude estimation")
 
-    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str, np.ndarray, np.ndarray]:
+    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Samples the streams and applies zero-mean Gaussian noise.
+        Uses IMU-based attitude estimation from Mahony filter.
         Returns:
             noisy_alt (float)
-            noisy_accel (np.ndarray shape (3,))
-            attitude (np.ndarray shape (4,))
+            noisy_accel (np.ndarray shape (3,)) - body-frame specific force from accelerometer
+            attitude (np.ndarray shape (4,)) - estimated attitude quaternion [x, y, z, w] from Mahony filter
             mass (float)
-            aero_force_body (np.ndarray shape (3,))
+            aero_force_body (np.ndarray shape (3,)) - body-frame aerodynamic force
             situation (str)
-            angular_velocity (np.ndarray shape (3,)) body-frame angular rates (rad/s)
-            noisy_vel (np.ndarray shape (3,)) world-frame velocity in m/s
+            angular_velocity (np.ndarray shape (3,)) - body-frame angular rates (rad/s) from gyroscope
+            noisy_vel (np.ndarray shape (3,)) - world-frame velocity in m/s
+            gravity_world (np.ndarray shape (3,)) - gravitational acceleration in world frame (m/s^2)
         """
-        # Read perfect data
+        # Read perfect data for altitude and velocity (these are still needed)
         perfect_alt = self.altitude_stream()
         
         ut = self.ut_stream()
@@ -98,43 +106,55 @@ class SensorModels:
                 perfect_accel = (vel - self.last_vel) / dt
             else:
                 perfect_accel = np.zeros(3)
-                
+                 
         self.last_vel = vel
         self.last_ut = ut
-        attitude = np.array(self.attitude_stream())
+        
+        # Get mass and aerodynamic force
         mass = self.mass_stream()
         aero_world = np.array(self.aero_stream())
         situation = self.situation_stream().name
         
-        # KSP coordinate acceleration includes gravity when landed, but is g when falling.
-        # Proper acceleration (what an IMU measures and what engines produce) requires counteracting the gravity vector.
-        gravity_world = -self.up_vector * 9.81  # Simplified constant gravity aligned with up_vector
-        perfect_proper_accel = perfect_accel - gravity_world
-
-        # Rotate world proper acceleration to body frame
-        # attitude is [x, y, z, w] quaternion from kRPC (which matches scipy)
-        rot = R.from_quat(attitude)
-        perfect_accel_body = rot.inv().apply(perfect_proper_accel)
+        # Get IMU-based sensor readings
+        # Accelerometer gives us specific force (proper acceleration) in world frame and computes gravity
+        accel_world, gravity_world = self.accel_sensor.poll(np.zeros(3))  # Pass dummy gravity, will be computed inside
         
-        # Inject Gaussian Noise
-        noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
-        noisy_accel = perfect_accel_body + self.rng.normal(0, self.sigma_accel, size=3)
-        noisy_vel = vel + self.rng.normal(0, self.sigma_vel, size=3)
+        # Convert accelerometer reading from world frame to body frame for the EKF
+        # We need the current attitude estimate to do this conversion
+        current_attitude = self.attitude_estimator.get_attitude()
+        rot = R.from_quat(current_attitude)
+        accel_body = rot.inv().apply(accel_world)  # Convert world-frame specific force to body-frame
         
-        # Rotate aero force to body frame
+        # Get gyroscope reading (already in body frame)
+        angular_velocity = self.gyro_sensor.poll()
+        
+        # Update attitude estimate using gyroscope and accelerometer data
+        # We need to estimate dt - use a default or track time
+        # For now, we'll use a fixed small dt since poll() is called regularly
+        dt = 0.02  # 50Hz update rate, adjust if needed
+        estimated_attitude = self.attitude_estimator.update(dt)
+        
+        # Compute proper acceleration (specific force) - this is what accelerometers measure
+        # accel_world from accelerometer sensor IS the specific force (accelerometer reading)
+        # So perfect_proper_accel = accel_world (this is what we want to pass to estimator)
+        perfect_proper_accel = accel_world
+        
+        # Rotate aero force to body frame using estimated attitude
         aero_body = rot.inv().apply(aero_world)
         
-        # Retrieve angular velocity (body rates) in the mission reference frame
-        av_raw = self.angular_velocity_stream()
-        if hasattr(av_raw, "x"):
-            angular_velocity = np.array([av_raw.x, av_raw.y, av_raw.z])
-        else:
-            # Assume iterable of three numbers
-            angular_velocity = np.array(av_raw, dtype=float)
-        # Debug log the angular velocity components
-        logger.debug(
-            f"Angular velocity (frame): x={angular_velocity[0]:.3f}, y={angular_velocity[1]:.3f}, z={angular_velocity[2]:.3f}"
-        )
-
+        # Inject Gaussian Noise to simulate real sensor readings
+        noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
+        # Accelerometer noise is already added in the sensor class, but we add extra for realism if needed
+        noisy_accel = accel_body + self.rng.normal(0, self.sigma_accel, size=3)
+        noisy_vel = vel + self.rng.normal(0, self.sigma_vel, size=3)
         
-        return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation, angular_velocity, noisy_vel
+        # Debug logging
+        logger.debug(
+            f"Gyro: [{angular_velocity[0]:.3f}, {angular_velocity[1]:.3f}, {angular_velocity[2]:.3f}] "
+            f"Accel body: [{accel_body[0]:.3f}, {accel_body[1]:.3f}, {accel_body[2]:.3f}] "
+            f"Attitude: [{estimated_attitude[0]:.3f}, {estimated_attitude[1]:.3f}, {estimated_attitude[2]:.3f}, {estimated_attitude[3]:.3f}]"
+        )
+        logger.debug(f"Gravity world: [{gravity_world[0]:.3f}, {gravity_world[1]:.3f}, {gravity_world[2]:.3f}]")
+ 
+         
+        return noisy_alt, noisy_accel, estimated_attitude, float(mass), aero_body, situation, angular_velocity, noisy_vel, gravity_world

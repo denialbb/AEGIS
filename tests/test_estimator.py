@@ -41,8 +41,9 @@ def test_estimator_update():
     noisy_accel = np.array([0.0, 0.0, 9.81])
     dummy_attitude = np.array([0.0, 0.0, 0.0, 1.0])
     dt = 0.1
+    gravity_world = np.array([0.0, 0.0, -9.81])
 
-    estimator.predict(noisy_accel, dummy_attitude, dt)
+    estimator.predict(noisy_accel, dummy_attitude, dt, gravity_world)
 
     # Before update, the state should not have jumped to 10m
     pre_update_state = estimator.get_state()
@@ -85,6 +86,7 @@ def test_estimator_synthetic_fall():
     true_z = 100.0
     true_vz = -10.0
     gravity_z = -9.81
+    gravity_world = np.array([0.0, 0.0, gravity_z])
 
     for _ in range(steps):
         true_vz += gravity_z * dt
@@ -94,7 +96,7 @@ def test_estimator_synthetic_fall():
         noisy_alt = true_z + np.random.normal(0, np.sqrt(0.1))
         noisy_vel = np.array([0.0, 0.0, true_vz])
 
-        estimator.predict(noisy_accel, identity_att, dt)
+        estimator.predict(noisy_accel, identity_att, dt, gravity_world)
         estimator.update(noisy_alt, noisy_vel)
 
     state = estimator.get_state()
@@ -130,6 +132,7 @@ def test_estimator_noisy_update():
 
     errors = []
     identity_att = np.array([0.0, 0.0, 0.0, 1.0])
+    gravity_world = np.array([0.0, 0.0, -9.81])
 
     for _ in range(50):
         true_z += true_vz * dt
@@ -138,7 +141,7 @@ def test_estimator_noisy_update():
         noisy_alt = true_z + np.random.normal(0, sigma_alt)
         noisy_vel = np.array([0.0, 0.0, true_vz + np.random.normal(0, sigma_vel)])
 
-        estimator.predict(noisy_accel, identity_att, dt)
+        estimator.predict(noisy_accel, identity_att, dt, gravity_world)
         estimator.update(noisy_alt, noisy_vel)
 
         estimated_z = estimator.get_state()[2]

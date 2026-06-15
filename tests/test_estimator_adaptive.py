@@ -31,7 +31,8 @@ def test_predict_uses_base_Q():
     dt = 0.1
     noisy_accel = np.array([0.0, 0.0, 0.0])
     identity_att = np.array([0.0, 0.0, 0.0, 1.0])
-    est.predict(noisy_accel, identity_att, dt)
+    gravity_world = np.array([0.0, 0.0, 0.0])
+    est.predict(noisy_accel, identity_att, dt, gravity_world)
 
     # Q should be different from base_Q due to adaptive scaling
     assert np.any(est.kf.Q != base_Q)
@@ -51,8 +52,9 @@ def test_update_fuses_alt_and_vel():
     dt = 0.1
     noisy_accel = np.array([0.0, 0.0, 9.81])
     identity_att = np.array([0.0, 0.0, 0.0, 1.0])
+    gravity_world = np.array([0.0, 0.0, -9.81])
 
-    est.predict(noisy_accel, identity_att, dt)
+    est.predict(noisy_accel, identity_att, dt, gravity_world)
 
     noisy_alt = 95.0
     noisy_vel = np.array([1.0, -0.5, -12.0])

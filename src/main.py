@@ -115,8 +115,8 @@ class MissionDirector:
         initial_covariance = np.eye(6)
         process_noise = np.eye(6)
         measurement_noise_alt = np.eye(1)
-        measurement_noise_vel = np.eye(3) * (config.SIGMA_VEL ** 2)
-        
+        measurement_noise_vel = np.eye(3) * (config.SIGMA_VEL**2)
+
         self.estimator: StateEstimator = StateEstimator(
             initial_state,
             initial_covariance,
@@ -141,7 +141,8 @@ class MissionDirector:
         kp_att = omega_n**2
         kd_att = 2.0 * zeta * omega_n
 
-        # Initialize Guidance Controller with gains from config and proper gravity vector
+        # Initialize Guidance Controller with gains from config and placeholder gravity
+        # Gravity will be updated each loop with dynamic gravity from kRPC
         self.guidance: GuidanceController = GuidanceController(
             kp_pos_lateral=config.GUIDANCE_KP_POS_LATERAL,
             kp_pos_vertical=config.GUIDANCE_KP_POS_VERTICAL,
@@ -149,7 +150,7 @@ class MissionDirector:
             kd_vel_vertical=config.GUIDANCE_KD_VEL_VERTICAL,
             kp_att=kp_att,
             kd_att=kd_att,
-            gravity=-self.up_vector * 9.81,
+            gravity=np.zeros(3),
             inertia_tensor=self.inertia_tensor,
             accel_clamp_factor=config.ACCEL_CLAMP_FACTOR,
         )
@@ -243,10 +244,12 @@ class MissionDirector:
         ves_orientation = "stability"
 
         signal.signal(
-            signal.SIGINT, lambda sig, frame: setattr(self, "_exit_requested", True)
+            signal.SIGINT,
+            lambda sig, frame: setattr(self, "_exit_requested", True),
         )
         signal.signal(
-            signal.SIGTERM, lambda sig, frame: setattr(self, "_exit_requested", True)
+            signal.SIGTERM,
+            lambda sig, frame: setattr(self, "_exit_requested", True),
         )
 
         self.hud.start()
@@ -297,8 +300,12 @@ class MissionDirector:
                 situation,
                 angular_velocity,
                 noisy_vel,
+                gravity_world,
             ) = self.sensors.poll()
+            # Update guidance controller with dynamic gravity
+            self.guidance.gravity = gravity_world
             # Debug raw telemetry for diagnosis
+            # TODO
             logger.debug(
                 f"Poll: raw_alt={noisy_alt:.2f}, raw_ang_vel={np.linalg.norm(angular_velocity):.3f}"
             )
@@ -328,7 +335,9 @@ class MissionDirector:
 
             # 2. Update Estimator
             if not skip_predict:
-                self.estimator.predict(noisy_accel_body, attitude, dt)
+                self.estimator.predict(
+                    noisy_accel_body, attitude, dt, gravity_world
+                )
             state_vector = self.estimator.update(noisy_alt, noisy_vel)
 
             # 2.5 Check fuel state
@@ -367,12 +376,15 @@ class MissionDirector:
                 throttles_zero = (len(self.expected_throttles) == 0) or (
                     np.abs(self.expected_throttles).max() < 1e-6
                 )
-                expected_accel_zero = (
-                    np.linalg.norm(self.expected_accel) < 1e-6
-                )
+                expected_accel_zero = np.linalg.norm(self.expected_accel) < 1e-6
                 landed = situation in ("landed", "pre_launch", "splashed")
 
-                if not skip_predict and not throttles_zero and not expected_accel_zero and not landed:
+                if (
+                    not skip_predict
+                    and not throttles_zero
+                    and not expected_accel_zero
+                    and not landed
+                ):
                     fault_detected = self.fdi.detect_fault(
                         self.expected_accel, noisy_accel_body
                     )
@@ -419,7 +431,9 @@ class MissionDirector:
                     )
 
                 # Check if remaining engines can provide full 6-DOF control
-                sufficient, rank = self.allocator.is_rank_sufficient(active_engines)
+                sufficient, rank = self.allocator.is_rank_sufficient(
+                    active_engines
+                )
                 if not sufficient:
                     logger.error(
                         f"B matrix rank {rank} < 6 with {len(active_engines)} active engines. "
@@ -503,7 +517,9 @@ class MissionDirector:
                         self.conn.space_center.SASMode.stability_assist
                     )
                     ves_orientation = "stability"
-                elif est_vz < -sas_threshold and ves_orientation != "retrograde":
+                elif (
+                    est_vz < -sas_threshold and ves_orientation != "retrograde"
+                ):
                     self.vessel.control.sas_mode = (
                         self.conn.space_center.SASMode.retrograde
                     )
@@ -672,7 +688,7 @@ class MissionDirector:
             # Used by both the suicide-burn glideslope and the wrench clamp.
             if active_engines and mass > 0.0:
                 total_max_thrust = sum(e.max_thrust for e in active_engines)
-                g_mag = float(np.linalg.norm(config.GRAVITY))
+                g_mag = float(np.linalg.norm(gravity_world))
                 a_avail = max(total_max_thrust / mass - g_mag, 1.0)
             else:
                 a_avail = 1.0
@@ -781,7 +797,9 @@ class MissionDirector:
                                     module.trigger_event("Toggle Trim")
 
                 # Accumulate angular motion for Optuna rocking penalty
-                self.total_angular_motion += float(np.linalg.norm(angular_velocity)) * dt
+                self.total_angular_motion += (
+                    float(np.linalg.norm(angular_velocity)) * dt
+                )
 
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,
@@ -874,14 +892,20 @@ class MissionDirector:
                     self.current_gimbals = current_gimbals
                     self.expected_throttles = np.array(new_expected_throttles)
 
-                    self._alloc_cond = float(np.linalg.cond(self.allocator._build_B(active_engines)))
-                    self._saturated_engines_set = set(self.allocator._saturated_engines)
+                    self._alloc_cond = float(
+                        np.linalg.cond(self.allocator._build_B(active_engines))
+                    )
+                    self._saturated_engines_set = set(
+                        self.allocator._saturated_engines
+                    )
 
                     # Expected acceleration is total force (thrust + aerodynamic) divided by mass
                     # Guard: if mass is invalid (0 or NaN), keep the last valid expected_accel.
                     # A stale-nonzero value is safer than zero — zero produces FDI false positives.
                     if mass > 0.0:
-                        self.expected_accel = (expected_force + aero_body) / mass
+                        self.expected_accel = (
+                            expected_force + aero_body
+                        ) / mass
                 except AllocationDegenerateError as e:
                     logger.error(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event(
@@ -928,30 +952,55 @@ class MissionDirector:
 
             # 5.6. Update HUD
             if self.hud.is_active:
-                gimbals_deg = np.degrees(gimbals) if gimbals.ndim == 2 else np.zeros((max(len(self.engines), 1), 2))
-                self.hud.update({
-                    "state": self.state,
-                    "altitude": noisy_alt,
-                    "est_alt": est_alt,
-                    "vertical_vel": est_vz,
-                    "lateral_vel": state_vector[3:] - self.up_vector * est_vz,
-                    "position": state_vector[:3],
-                    "throttles": throttles,
-                    "gimbals_deg": gimbals_deg,
-                    "fuel_state": fuel_state,
-                    "fdi_deviation": float(np.linalg.norm(self.expected_accel - noisy_accel_body)) if np.linalg.norm(self.expected_accel) > 1e-6 else 0.0,
-                    "alloc_cond": self._alloc_cond,
-                    "saturated": self._saturated_engines_set,
-                    "kf_cov_pos": float(self.estimator.kf.P[2, 2]) if self.estimator.kf.P.shape[0] > 2 else 0.0,
-                    "kf_cov_vel": float(self.estimator.kf.P[5, 5]) if self.estimator.kf.P.shape[0] > 5 else 0.0,
-                    "dt_spike_count": self._dt_spike_count,
-                    "skip_predict": skip_predict,
-                    "active_engine_count": len(active_engines),
-                    "total_engine_count": len(self.engines),
-                    "mass": mass,
-                    "a_avail": a_avail,
-                    "angular_velocity_mag": float(np.linalg.norm(angular_velocity)),
-                })
+                gimbals_deg = (
+                    np.degrees(gimbals)
+                    if gimbals.ndim == 2
+                    else np.zeros((max(len(self.engines), 1), 2))
+                )
+                self.hud.update(
+                    {
+                        "state": self.state,
+                        "altitude": noisy_alt,
+                        "est_alt": est_alt,
+                        "vertical_vel": est_vz,
+                        "lateral_vel": state_vector[3:]
+                        - self.up_vector * est_vz,
+                        "position": state_vector[:3],
+                        "throttles": throttles,
+                        "gimbals_deg": gimbals_deg,
+                        "fuel_state": fuel_state,
+                        "fdi_deviation": (
+                            float(
+                                np.linalg.norm(
+                                    self.expected_accel - noisy_accel_body
+                                )
+                            )
+                            if np.linalg.norm(self.expected_accel) > 1e-6
+                            else 0.0
+                        ),
+                        "alloc_cond": self._alloc_cond,
+                        "saturated": self._saturated_engines_set,
+                        "kf_cov_pos": (
+                            float(self.estimator.kf.P[2, 2])
+                            if self.estimator.kf.P.shape[0] > 2
+                            else 0.0
+                        ),
+                        "kf_cov_vel": (
+                            float(self.estimator.kf.P[5, 5])
+                            if self.estimator.kf.P.shape[0] > 5
+                            else 0.0
+                        ),
+                        "dt_spike_count": self._dt_spike_count,
+                        "skip_predict": skip_predict,
+                        "active_engine_count": len(active_engines),
+                        "total_engine_count": len(self.engines),
+                        "mass": mass,
+                        "a_avail": a_avail,
+                        "angular_velocity_mag": float(
+                            np.linalg.norm(angular_velocity)
+                        ),
+                    }
+                )
 
             # 6. Timing Enforcement
             elapsed = time.time() - start_time

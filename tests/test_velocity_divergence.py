@@ -53,7 +53,7 @@ def test_velocity_divergence_free_fall_then_burn():
         noisy_alt = true_alt + np.random.normal(0, sigma_alt)
         noisy_vel = true_vel + np.random.normal(0, sigma_vel, 3)
 
-        est.predict(noisy_accel_body, identity_att, dt)
+        est.predict(noisy_accel_body, identity_att, dt, gravity_world)
         est.update(noisy_alt, noisy_vel)
 
         state = est.get_state()
