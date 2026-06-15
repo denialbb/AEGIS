@@ -392,20 +392,30 @@ class MissionDirector:
             est_alt = float(np.dot(state_vector[:3], self.up_vector))
             est_vz = float(np.dot(state_vector[3:], self.up_vector))
 
-            if config.SAS_PROGRADE_ASCENT and est_vz > 40 and ves_orientation != "prograde":
-                self.vessel.control.sas = True
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.prograde
-                )
-                ves_orientation = "prograde"
-            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and ves_orientation == "prograde" and est_vz <= 40:
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.stability_assist
-                )
-                ves_orientation = "stability"
-            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and ves_orientation == "stability" and est_vz < -5.0:
-                self.vessel.control.sas = False
-                ves_orientation = "off"
+            if config.SAS_PROGRADE_ASCENT:
+                if est_vz > 45 and ves_orientation != "prograde":
+                    self.vessel.control.sas = True
+                    self.vessel.control.sas_mode = (
+                        self.conn.space_center.SASMode.prograde
+                    )
+                    ves_orientation = "prograde"
+                elif (
+                    not config.USE_SAS
+                    and ves_orientation == "prograde"
+                    and est_vz <= 35
+                ):
+                    self.vessel.control.sas = True
+                    self.vessel.control.sas_mode = (
+                        self.conn.space_center.SASMode.stability_assist
+                    )
+                    ves_orientation = "stability"
+                elif (
+                    not config.USE_SAS
+                    and ves_orientation == "stability"
+                    and est_vz < -10.0
+                ):
+                    self.vessel.control.sas = False
+                    ves_orientation = "off"
 
             if config.USE_SAS:
                 sas_threshold = 40
