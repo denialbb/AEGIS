@@ -39,7 +39,7 @@ ALT_HYPERSONIC = 10000.0
 # Altitude to ignite engines for primary braking (POWERED_DESCENT).
 # CRITICAL: If set too low (e.g., 3000.0 suicide burn), the vessel will not have enough time to slow down and will crash.
 # If too high (e.g., 15000.0), it wastes fuel hovering down.
-ALT_POWERED_DESCENT = 1500.0
+ALT_POWERED_DESCENT = 4000.0
 
 # Altitude to enter HOVER_TARGETING and zero out lateral drift.
 # Gives the vessel a buffer to precisely align over the pad before final descent.
@@ -80,18 +80,23 @@ RANDOM_SEED = 42
 # ---------------------------------------------------------
 # Glide-Slope Guidance
 # ---------------------------------------------------------
-# Vertical position target = current altitude (zero vertical pos_err).
-# Vertical velocity target = -min(max_rate, K_ALT * (current_alt - floor_alt)).
-# These need empirical tuning against the vessel's actual TWR.
+# Vertical velocity target = -sqrt(2 * a_avail * alt_above_floor), where
+# a_avail is the vessel's net upward acceleration from actual TWR.  This is a
+# proper suicide-burn profile: at every altitude the target speed is exactly
+# the velocity a constant-deceleration trajectory would have, so the vehicle
+# reaches zero speed precisely at floor_alt.  Altitude above floor is capped
+# at max_descent_rate (structural/terminal-velocity limit).
 
-# Proportional multiplier for descent speed. Determines how sharply velocity drops as altitude drops.
-# e.g., 0.3 means at 100m above floor, target speed is 30m/s.
+# DEPRECATED — no longer used.  The sqrt suicide-burn profile replaces the
+# old linear k_alt * alt_above_floor profile.  Kept for backward compat only.
 # Min: 0.1 (Slow drop), Max: 0.8 (Aggressive drop)
 GLIDESLOPE_K_ALT = 0.8  # [1/s]
 
 # Max descent speed during initial braking phase (m/s).
-# Min: 20.0, Max: 150.0
-GLIDESLOPE_RATE_POWERED_DESCENT = 150.0  # [m/s]
+# With the suicide-burn sqrt profile, this is a structural/terminal-velocity
+# cap, not the guidance profile itself. Set high enough to not interfere.
+# Min: 20.0, Max: 500.0
+GLIDESLOPE_RATE_POWERED_DESCENT = 300.0  # [m/s]
 
 # Max descent speed while searching for the pad.
 # Slower speeds give the vessel more time to move laterally to the pad.
@@ -117,7 +122,7 @@ GUIDANCE_KP_POS_VERTICAL = 0.5
 # Vertical is typically higher than lateral to fight gravity aggressively.
 # Min: 2.0, Max: 100.0
 GUIDANCE_KD_VEL_LATERAL = 10.0
-GUIDANCE_KD_VEL_VERTICAL = 20.0
+GUIDANCE_KD_VEL_VERTICAL = 2.0
 
 # Attitude stiffness (Pitch, Yaw, Roll).
 # Higher values command more torque to point the nose. Too high causes thrust windup and allocator saturation.
@@ -143,6 +148,18 @@ GUIDANCE_ATT_NATURAL_FREQ = [3.0, 3.0, 3.0]
 # ζ < 1 = underdamped, ζ = 1 = critically damped, ζ > 1 = overdamped.
 # Min: 0.5, Max: 2.0
 GUIDANCE_ATT_DAMPING_RATIO = [1.0, 1.0, 1.0]
+
+# ---------------------------------------------------------
+# Acceleration Command Clamp
+# ---------------------------------------------------------
+# Multiplier on max_a_avail (the vessel's net upward acceleration from TWR)
+# used to cap a_cmd_world before it enters force_body and target_up_world.
+# A value of 1.5 means the guidance can command up to 150 % of the vessel's
+# physical accelerating capability.  Higher = more aggressive (risks attitude
+# flip during saturating transients); lower = more conservative (risks limp
+# response to large errors).
+# Min: 1.0, Max: 3.0
+ACCEL_CLAMP_FACTOR = 1.5
 
 GRAVITY = [0.0, 0.0, -9.81]
 

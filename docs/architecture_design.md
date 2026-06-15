@@ -49,6 +49,9 @@ The core engineering solution to asymmetric thrust.
 *   **The Problem:** If an off-center engine dies, simply throttling up the remaining engines will induce a catastrophic torque, spinning the vessel out of control.
 *   **The Solution:** The guidance algorithm does not command individual engines. Instead, it commands a desired 6-DOF "Wrench" (Forces $F_x, F_y, F_z$ and Torques $\tau_x, \tau_y, \tau_z$).
 *   **The Mapper:** The Allocator uses a pseudo-inverse matrix solver (`numpy.linalg.pinv`) to map the desired Wrench to the *surviving* engines. It will automatically throttle down engines opposite the failure to kill the torque, while throttling up adjacent engines to maintain the required vertical stopping force.
+*   **Guidance Enhancements:** The GuidanceController computes a commanded world-frame acceleration `a_cmd_world` from PD errors. Two safeguards prevent the guidance from demanding physically impossible acceleration:
+    1. **Suicide-burn glideslope** — target velocity is `-sqrt(2 * a_avail * alt_above_floor)` where `a_avail` is the vessel's actual TWR-derived net upward acceleration. This replaces the old linear `k_alt * alt` profile that saturated at high altitude, causing large velocity errors the PD law could not overcome.
+    2. **Acceleration clamp** — `a_cmd_world` is capped to `ACCEL_CLAMP_FACTOR × max_a_avail` before being rotated into the body frame. This prevents transient error spikes from flipping the attitude target (`target_up_world`) and lets the allocator's existing saturation handling work without attitude thrashing.
 
 ### E. Telemetry & Application Logger (Debugging Infrastructure)
 *   **The Problem:** The KSP physics loop runs at 50Hz. Interactive debugging or slow console printing breaks this real-time constraint.

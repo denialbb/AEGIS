@@ -1,3 +1,4 @@
+import math
 import time
 import os
 import krpc
@@ -142,6 +143,7 @@ class MissionDirector:
             kd_att=kd_att,
             gravity=-self.up_vector * 9.81,
             inertia_tensor=self.inertia_tensor,
+            accel_clamp_factor=config.ACCEL_CLAMP_FACTOR,
         )
 
         self.writer: TelemetryWriter = TelemetryWriter(
@@ -166,36 +168,28 @@ class MissionDirector:
         state_vector: np.ndarray,
         floor_alt: float,
         max_descent_rate: float,
-        k_alt_gain: float,
+        a_avail: float,
     ) -> np.ndarray:
         """
         Generates an instantaneous target_state for vertical descent guidance
-        (ISS-011 fix).
+        using a suicide-burn sqrt profile.
 
-        Rather than commanding a fixed waypoint far below the vehicle's current
-        position -- which produces position-error terms in the PD law far
-        beyond any realizable acceleration, and gets clipped to zero thrust by
-        the allocator (ISS-011) -- this:
+        Instead of a linear k_alt * alt_above_floor profile that saturates at
+        max_descent_rate at high altitude (producing a velocity error the PD
+        law cannot overcome), this uses:
 
-          1. Sets the vertical position target to the vehicle's CURRENT
-             altitude, so vertical pos_err is always ~0. (Lateral position
-             target remains the pad center, origin, so lateral drift is still
-             corrected.)
-          2. Sets the velocity target to an altitude-proportional descent rate
-             that shrinks to 0 as the vehicle approaches floor_alt, capped at
-             max_descent_rate.
+            v_target = sqrt(2 * a_avail * alt_above_floor)
 
-        The PD law's velocity-error term then dominates a_cmd, producing a
-        continuous, bounded deceleration profile instead of an emergent
-        coast-then-cliff behavior.
+        which is the exact velocity of a constant-deceleration trajectory that
+        reaches zero speed at floor_alt.  a_avail is the vessel's net upward
+        acceleration (from actual TWR), so the target always matches the
+        vehicle's braking capability.
 
         Args:
             state_vector: (6,) current estimated [x, y, z, vx, vy, vz]
-            floor_alt: altitude [m] this phase is descending toward (the
-                altitude at which desired descent rate should reach ~0)
-            max_descent_rate: cap on commanded descent speed [m/s] (positive)
-            k_alt_gain: proportional gain [1/s] mapping altitude-above-floor
-                to desired descent speed
+            floor_alt: altitude [m] this phase is descending toward
+            max_descent_rate: structural/terminal-velocity cap [m/s]
+            a_avail: net upward acceleration available from TWR [m/s^2]
 
         Returns:
             target_state: (6,) [x, y, z, vx, vy, vz]
@@ -205,12 +199,12 @@ class MissionDirector:
 
         target_state = np.zeros(6)
 
-        # Vertical pos target == current altitude -> zero vertical pos_err.
-        # Lateral pos target == origin (pad center) -> still corrects drift.
         target_state[:3] = est_alt * self.up_vector
 
         alt_above_floor = max(est_alt - floor_alt, 0.0)
-        desired_speed = min(max_descent_rate, k_alt_gain * alt_above_floor)
+        desired_speed = min(
+            max_descent_rate, math.sqrt(2.0 * a_avail * alt_above_floor)
+        )
         target_state[3:] = -self.up_vector * desired_speed
 
         return target_state
@@ -219,10 +213,11 @@ class MissionDirector:
         """
         Executes the main loop at 10Hz to 50Hz, polling telemetry,
         updating the estimator, running the FDI, computing control wrench,
-        allocating thrust, and transitioning states.
+        allocating thrust, controlling SAS and transitioning states.
         """
         target_hz = config.TARGET_HZ
         dt = 1.0 / target_hz
+        ves_orientation = "stability"
 
         while self.state not in ["HARD_ABORT", "LANDED"]:
             start_time = time.time()
@@ -260,6 +255,7 @@ class MissionDirector:
                 angular_velocity,
             ) = self.sensors.poll()
 
+            # NOTE: I think player throttle has priority
             # Ensure vessel main throttle is at 100% so our individual engine limits work
             if self.state not in [
                 "STANDBY",
@@ -379,6 +375,28 @@ class MissionDirector:
             est_alt = float(np.dot(state_vector[:3], self.up_vector))
             est_vz = float(np.dot(state_vector[3:], self.up_vector))
 
+            sas_threshold = 25  # m/s
+            # Manage SAS
+            if est_vz > sas_threshold and ves_orientation != "prograde":
+                self.vessel.control.sas_mode = (
+                    self.conn.space_center.SASMode.prograde
+                )
+                ves_orientation = "prograde"
+            elif (
+                sas_threshold > est_vz
+                and est_vz > -sas_threshold
+                and ves_orientation != "stability"
+            ):
+                self.vessel.control.sas_mode = (
+                    self.conn.space_center.SASMode.stability_assist
+                )
+                ves_orientation = "stability"
+            elif est_vz < -sas_threshold and ves_orientation != "retrograde":
+                self.vessel.control.sas_mode = (
+                    self.conn.space_center.SASMode.retrograde
+                )
+                ves_orientation = "retrograde"
+
             # Smart Activation Logic
             if self.state == "STANDBY":
                 activated = self.conn.space_center.active_vessel.control.get_action_group(
@@ -387,18 +405,11 @@ class MissionDirector:
                 if activated:
                     logger.info("AEGIS Activated. Smart Routing initialized.")
                     self.writer.log_event({"type": "ACTIVATION"})
-
                     self.vessel.control.sas = True
-                    self.vessel.control.sas_mode = (
-                        self.conn.space_center.SASMode.stability_assist
-                    )
 
                     if est_vz > 0:
                         self.state = "ASCENT_COAST"
                     else:
-                        self.vessel.control.sas_mode = (
-                            self.conn.space_center.SASMode.retrograde
-                        )
 
                         if est_alt > config.ALT_HYPERSONIC:
                             self.state = "DEORBIT_BURN"
@@ -413,6 +424,11 @@ class MissionDirector:
                             "to": self.state,
                         }
                     )
+                elif est_alt < 5000 and est_vz < 0:
+                    logger.info("AEGIS emergency switch.")
+                    self.vessel.control.set_action_group(
+                        config.ACTIVATION_ACTION_GROUP, True
+                    )
 
             target_state = np.zeros(6)  # [x, y, z, vx, vy, vz]
 
@@ -421,9 +437,6 @@ class MissionDirector:
             # but for this prototype we rely purely on altitude boundaries.
             if self.state == "ASCENT_COAST" and est_vz < 0:
                 logger.info("Apex reached. Transitioning from ASCENT_COAST.")
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.retrograde
-                )
 
                 if est_alt > config.ALT_HYPERSONIC:
                     self.state = "HYPERSONIC_COAST"
@@ -476,9 +489,6 @@ class MissionDirector:
                         "to": "HOVER_TARGETING",
                     }
                 )
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.stability_assist
-                )
                 self.state = "HOVER_TARGETING"
             elif (
                 self.state == "HOVER_TARGETING"
@@ -494,14 +504,8 @@ class MissionDirector:
                         "to": "TERMINAL_DESCENT",
                     }
                 )
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.retrograde
-                )
                 self.state = "TERMINAL_DESCENT"
             elif self.state == "TERMINAL_DESCENT":
-                self.vessel.control.sas_mode = (
-                    self.conn.space_center.SASMode.retrograde
-                )
                 if situation in ("landed", "splashed"):
                     logger.info("Touchdown detected. Transitioning to LANDED")
                     self.writer.log_event(
@@ -537,6 +541,15 @@ class MissionDirector:
             ]:
                 self.state = "HARD_ABORT"
 
+            # Compute available net upward acceleration from actual TWR.
+            # Used by both the suicide-burn glideslope and the wrench clamp.
+            if active_engines and mass > 0.0:
+                total_max_thrust = sum(e.max_thrust for e in active_engines)
+                g_mag = float(np.linalg.norm(config.GRAVITY))
+                a_avail = max(total_max_thrust / mass - g_mag, 1.0)
+            else:
+                a_avail = 1.0
+
             # Define instantaneous target kinematic state based on the current mission phase.
             # The GuidanceController will attempt to reduce the error between this target and current_state to 0.
             if self.state in [
@@ -548,20 +561,18 @@ class MissionDirector:
                 # Unguided phases in this prototype. Zero out control authority.
                 pass
             elif self.state == "POWERED_DESCENT":
-                # ISS-011: glide-slope target instead of static up_vector*500.0
                 target_state = self._compute_glideslope_target(
                     state_vector,
                     floor_alt=config.ALT_HOVER,
                     max_descent_rate=config.GLIDESLOPE_RATE_POWERED_DESCENT,
-                    k_alt_gain=config.GLIDESLOPE_K_ALT,
+                    a_avail=a_avail,
                 )
             elif self.state == "HOVER_TARGETING":
-                # ISS-011: glide-slope target instead of static up_vector*50.0
                 target_state = self._compute_glideslope_target(
                     state_vector,
                     floor_alt=config.ALT_TERMINAL,
                     max_descent_rate=config.GLIDESLOPE_RATE_HOVER,
-                    k_alt_gain=config.GLIDESLOPE_K_ALT,
+                    a_avail=a_avail,
                 )
             elif self.state == "TERMINAL_DESCENT":
                 if situation in ("landed", "splashed"):
@@ -577,12 +588,11 @@ class MissionDirector:
                     )
                     self.state = "LANDED"
                 else:
-                    # ISS-011: glide-slope target instead of static pos=0 / vel=-2
                     target_state = self._compute_glideslope_target(
                         state_vector,
                         floor_alt=0.0,
                         max_descent_rate=config.GLIDESLOPE_RATE_TERMINAL,
-                        k_alt_gain=config.GLIDESLOPE_K_ALT,
+                        a_avail=a_avail,
                     )
             elif self.state == "LANDED":
                 logger.info(
@@ -643,6 +653,7 @@ class MissionDirector:
                     up_vector=self.up_vector,
                     dt=dt,
                     angular_velocity=angular_velocity,
+                    max_a_avail=a_avail,
                 )
             else:
                 desired_wrench = np.zeros(6)

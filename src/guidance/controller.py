@@ -24,7 +24,8 @@ class GuidanceController:
                  inertia_tensor: np.ndarray | None = None,
                  adrc: ADRCController | None = None,
                  ctm_calculator: CTMCalculator | None = None,
-                 nn_model: NNFeedforward | None = None):
+                 nn_model: NNFeedforward | None = None,
+                 accel_clamp_factor: float = 1.5):
         """
         Initializes the Guidance Controller with tunable gains.
 
@@ -50,6 +51,9 @@ class GuidanceController:
             nn_model: Optional NNFeedforward for learned disturbance compensation
                       (Phase 4). The NN correction is added to the CTM feedforward
                       in torque space. Requires adrc and inertia_tensor.
+            accel_clamp_factor: Multiplier on max_a_avail used to cap
+                a_cmd_world before force and attitude target computation.
+                Default 1.5 (see config.ACCEL_CLAMP_FACTOR).
         """
         self.kp_pos_lateral = float(kp_pos_lateral)
         self.kp_pos_vertical = float(kp_pos_vertical)
@@ -58,6 +62,7 @@ class GuidanceController:
         self.kp_att = np.array(kp_att, dtype=float)
         self.kd_att = np.array(kd_att, dtype=float)
         self.gravity = np.array(gravity, dtype=float)
+        self.accel_clamp_factor = float(accel_clamp_factor)
 
         self.inertia_tensor: np.ndarray | None = None
         if inertia_tensor is not None:
@@ -88,7 +93,8 @@ class GuidanceController:
                        target_state: np.ndarray,
                        up_vector: np.ndarray,
                        dt: float = 0.02,
-                       angular_velocity: np.ndarray | None = None) -> np.ndarray:
+                       angular_velocity: np.ndarray | None = None,
+                       max_a_avail: float | None = None) -> np.ndarray:
         """
         Computes the 6-DOF wrench required to move towards the target state
         and an upright attitude.
@@ -134,6 +140,17 @@ class GuidanceController:
         a_cmd_vel = (self.kd_vel_lateral * vel_err_lat) + (self.kd_vel_vertical * vel_err_vert)
 
         a_cmd_world = a_cmd_pos + a_cmd_vel - self.gravity
+
+        # Clamp a_cmd_world magnitude to prevent the guidance from commanding
+        # accelerations far beyond the vehicle's physical capability. This keeps
+        # the attitude target (target_up_world) from flipping wildly and lets the
+        # allocator's existing saturation handling do its job without the
+        # attitude-thrashing side effect.
+        if max_a_avail is not None and max_a_avail > 0.0:
+            a_norm = np.linalg.norm(a_cmd_world)
+            limit = self.accel_clamp_factor * max_a_avail
+            if a_norm > limit:
+                a_cmd_world = (a_cmd_world / a_norm) * limit
 
         # ---------------------------------------------------------
         # 2. FRAME ROTATION (World -> Body)

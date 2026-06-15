@@ -45,10 +45,18 @@ Used by the Kalman Filter to fuse noisy telemetry.
 These parameters dictate the target velocities during descent.
 | Parameter | Description | Practical Effect | Min/Max Examples |
 |-----------|-------------|------------------|------------------|
-| `GLIDESLOPE_K_ALT` | Proportional multiplier for descent speed. | Determines how sharply velocity drops as altitude drops. e.g., `0.3` means at 100m, target speed is 30m/s. | **Min:** 0.1 (Slow drop)<br>**Max:** 0.8 (Aggressive) |
-| `GLIDESLOPE_RATE_POWERED_DESCENT` | Max descent speed during initial braking (m/s). | Higher values mean faster falling during the braking phase. | **Min:** 20.0<br>**Max:** 150.0 |
-| `GLIDESLOPE_RATE_HOVER` | Max descent speed while searching for the pad. | Slower speeds give the vessel more time to move laterally to the pad. | **Min:** 5.0<br>**Max:** 30.0 |
+| `GLIDESLOPE_K_ALT` | **DEPRECATED** — no longer used. The sqrt suicide-burn profile replaces the old linear profile. | Kept for backward compat only. | — |
+| `GLIDESLOPE_RATE_POWERED_DESCENT` | Structural/terminal-velocity cap for powered descent (m/s). | With the sqrt profile, this is a hard upper bound, not the guidance profile itself. Set high enough (e.g., 300) so the sqrt formula dominates over the altitude range of interest. | **Min:** 20.0<br>**Max:** 500.0 |
+| `GLIDESLOPE_RATE_HOVER` | Max descent speed while searching for the pad (m/s). | Slower speeds give the vessel more time to move laterally to the pad. | **Min:** 5.0<br>**Max:** 30.0 |
 | `GLIDESLOPE_RATE_TERMINAL` | Touchdown speed (m/s). | **Critical:** Must be lower than the landing leg destruction limit. | **Min:** 0.5<br>**Max:** 5.0 |
+
+The target profile is now `v_target = -sqrt(2 * a_avail * alt_above_floor)`, where
+`a_avail = total_max_thrust / mass - g` is computed each tick from the vessel's
+actual TWR.  This is a proper suicide-burn that matches the target speed to the
+vehicle's braking capability at every altitude, eliminating the PD saturation
+that occurred with the old linear profile at high altitude.  `GLIDESLOPE_RATE_*`
+serve as structural/terminal-velocity caps to protect against the sqrt producing
+unreachably high speeds for a particular vessel design.
 
 ## 6. Proportional-Derivative (PD) Guidance Gains
 These tune the vessel's translation and attitude behavior. If the vessel is sluggish or oscillates, these need tuning.
@@ -58,3 +66,4 @@ These tune the vessel's translation and attitude behavior. If the vessel is slug
 | `GUIDANCE_KD_VEL_LATERAL` / `_VERTICAL` | Velocity dampening (Derivative). | Higher values prevent overshoot and strictly enforce speed limits. Vertical is typically higher than lateral to fight gravity aggressively. | **Min:** 2.0<br>**Max:** 100.0 |
 | `GUIDANCE_KP_ATT` | Attitude stiffness (Pitch, Yaw, Roll). | Higher values command more torque to point the nose. Too high causes thrust windup and allocator saturation. | **Min:** 2.0<br>**Max:** 50.0 |
 | `GUIDANCE_KD_ATT` | Attitude dampening (Gimbal oscillation control). | **Critical for Gimbals:** Higher values heavily dampen "wobbling" or "rocking" by resisting rotational speed. | **Min:** 1.0 (Wobbly)<br>**Max:** 40.0 (Stiff) |
+| `ACCEL_CLAMP_FACTOR` | Multiplier on `max_a_avail` to cap `a_cmd_world` magnitude. | Clamps the commanded acceleration before it is projected into force and attitude target. A value of 1.5 means up to 150% of the vessel's net TWR acceleration. Prevents the attitude target from flipping during saturating transients. | **Min:** 1.0 (Conservative)<br>**Max:** 3.0 (Aggressive) |

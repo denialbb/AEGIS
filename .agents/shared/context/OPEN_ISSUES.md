@@ -352,15 +352,18 @@ so the Kalman-estimated velocity is invisible in telemetry.
   target (a few seconds, not the whole descent).
 - `TelemetryFrame.velocity` reflects `state_vector[3:]` so the estimator's
   velocity output is visible for verification.
-- GLIDESLOPE_K_ALT and per-phase max descent rates are documented as tunable
-  parameters requiring empirical calibration against the vessel's actual
-  thrust-to-weight ratio (similar caveat to ISS-001/ISS-003).
+- _Removed:_ GLIDESLOPE_K_ALT empirical calibration — the sqrt suicide-burn
+  profile (`v_target = -sqrt(2 * a_avail * alt_above_floor)`) derives the
+  target directly from the vessel's actual TWR each tick, eliminating the
+  need for open-loop gain tuning against TWR.
 - ARCHITECTURE.md / a new ADR documents the glide-slope target-generation
   algorithm (suggest ADR-022, following the ADR-021 precedent for ISS-010).
 
 **Resolution**
 
 Implemented `_compute_glideslope_target` to dynamically track velocity while zeroing vertical position error, avoiding actuator saturation.
+
+Later upgraded to a suicide-burn sqrt profile: `v_target = -sqrt(2 * a_avail * alt_above_floor)`, where `a_avail` is derived from the vessel's actual TWR each tick. This eliminates the linear `k_alt * alt` profile that saturated at high altitude and required empirical tuning against TWR. The guidance's `a_cmd_world` is also clamped to `ACCEL_CLAMP_FACTOR × a_avail` to prevent attitude target flipping during saturating transients.
 
 ---
 
