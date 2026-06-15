@@ -107,7 +107,9 @@ class MissionDirector:
         )
 
         # Initialize submodules
+        # Query vessel velocity for Kalman filter initial state (one-time startup, not stream)
         initial_state = np.zeros(6)
+        initial_state[3:] = np.array(vessel.flight(self.ref_frame).velocity)
         initial_covariance = np.eye(6)
         process_noise = np.eye(6)
         measurement_noise = np.eye(1)
@@ -470,6 +472,8 @@ class MissionDirector:
                     self.writer.log_event({"type": "ACTIVATION"})
                     if config.USE_SAS:
                         self.vessel.control.sas = True
+                    elif config.SAS_PROGRADE_ASCENT:
+                        pass  # SAS_PROGRADE_ASCENT block independently manages SAS
                     else:
                         self.vessel.control.sas = False
 
