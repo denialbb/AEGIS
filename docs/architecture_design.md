@@ -54,6 +54,27 @@ The core engineering solution to asymmetric thrust.
     2. **Acceleration clamp** — `a_cmd_world` is capped to `ACCEL_CLAMP_FACTOR × max_a_avail` before being rotated into the body frame. This prevents transient error spikes from flipping the attitude target (`target_up_world`) and lets the allocator's existing saturation handling work without attitude thrashing.
 
 ### E. Telemetry & Application Logger (Debugging Infrastructure)
+
+---
+
+### ADR-029 (Planned) — Reaction Wheel Attitude Augmentation
+
+Gimbal trim (±5°) is the sole torque actuator during powered descent.
+Two cases where it falls short:
+
+1. **Low-throttle transients** — gimbal authority is proportional to engine
+   thrust; near-zero throttle means near-zero torque.
+2. **Large inertia imbalance** — a long-armed asymmetrical lander may saturate
+   gimbal deflection before producing enough torque.
+
+**Option A**: Map `torque_body` to stock `vessel.control.{pitch,roll,yaw}`
+via a single tunable gain `RW_AUGMENT_GAIN`. Reaction wheels act in parallel
+with gimbal trim without conflict since `ModuleGimbalTrim` intercepts gimbal
+response for trimmed engines, leaving reaction wheels as independent torque.
+
+**Caveat**: The gain converts N·m to the stock [-1, 1] range and is entirely
+empirical.  It must be validated in a scenario with gimbals disabled (throttle
+~0) to avoid double-counting torque.
 *   **The Problem:** The KSP physics loop runs at 50Hz. Interactive debugging or slow console printing breaks this real-time constraint.
 *   **The Telemetry Solution:** A dual-file logging strategy. A high-density CSV logs the complete system state at every tick, while a JSONL file records discrete state changes and faults. I/O is heavily buffered to ensure the control loop never blocks.
 *   **The Application Logging Solution:** Standard `print()` statements are replaced by a global `logging` configuration (`src/common/logger.py`) that strictly avoids the 50Hz inner loop. It outputs runtime information (startup, state transitions, isolated faults) to the console and/or file, toggled via `DEBUG_LOGGING` and `LOG_TO_FILE` in `config.py`.

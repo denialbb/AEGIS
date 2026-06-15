@@ -723,6 +723,14 @@ class MissionDirector:
                             # EMA 'expected_throttle' here, or it artificially double-spools!
                             engine_obj.thrust_limit = float(throttles[i])
 
+                            # TODO(ADR-029): Augment torque with reaction wheels.
+                            # When gimbal authority is weak (low throttle, small
+                            # moment arms), map torque_body to stock inputs:
+                            #   vessel.control.pitch = clip(desired_wrench[3] * RW_GAIN, -1, 1)
+                            #   vessel.control.roll  = clip(desired_wrench[4] * RW_GAIN, -1, 1)
+                            #   vessel.control.yaw   = clip(desired_wrench[5] * RW_GAIN, -1, 1)
+                            # RW_GAIN converts N·m to [-1, 1]; tune empirically.
+
                             # Apply independent gimbal trimming via the mod
                             for module in engine.part.modules:
                                 if module.name == "ModuleGimbalTrim":

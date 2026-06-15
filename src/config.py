@@ -174,6 +174,15 @@ ACCEL_CLAMP_FACTOR = 2.5
 GRAVITY = [0.0, 0.0, -9.81]
 
 # ---------------------------------------------------------
+# Reaction Wheel Attitude Augmentation (TODO: ADR-029)
+# ---------------------------------------------------------
+# Gain that maps torque_body (N·m) to the stock [-1, 1] pitch/yaw/roll
+# range for reaction wheels.  Only active when gimbal authority is weak
+# (low throttle, small moment arms).  Tune empirically.
+# Min: 0.0 (Off), Max: 1e-3 (Very aggressive)
+# RW_AUGMENT_GAIN = 0.0
+
+# ---------------------------------------------------------
 # Application Logging
 # ---------------------------------------------------------
 DEBUG_LOGGING = False
