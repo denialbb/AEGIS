@@ -22,8 +22,8 @@ If you need architectural context, read `docs/architecture_design.md`.
 - **Reviewer:** Code written by the agent is reviewed by Claude.
 - **Communication Directory:** Exchanged under the `.agents/shared/` directory.
   - `.agents/shared/context/`: Stores contracts, architectural decisions, and open issues. Keep these files (`ARCHITECTURE.md`, `DECISIONS.md`, `OPEN_ISSUES.md`) continuously updated with the latest context.
-  - `.agents/shared/queue/PENDING_REVIEW.md`: Used to queue completed code and branch details for review. The coding agent MUST follow the [PENDING_REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/PENDING_REVIEW_TEMPLATE.md) format.
-  - `.agents/shared/reviews/REVIEW_[timestamp].md`: Reviewer (Claude) writes here following the [REVIEW_TEMPLATE.md](file:///c:/Projects/AEGIS/.agents/shared/context/REVIEW_TEMPLATE.md) format detailing blockers, major issues, and minor comments.
+  - `.agents/shared/queue/PENDING_REVIEW.md`: Used to queue completed code and branch details for review. The coding agent MUST follow the [PENDING_REVIEW_TEMPLATE.md](.agents/shared/context/PENDING_REVIEW_TEMPLATE.md) format.
+  - `.agents/shared/reviews/REVIEW_[timestamp].md`: Reviewer (Claude) writes here following the [REVIEW_TEMPLATE.md](.agents/shared/context/PENDING_REVIEW_TEMPLATE.md) format detailing blockers, major issues, and minor comments.
 - **Grilling:** You will recommend the `/grill-me` slash command to the user to align on design and implementation choices when needed.
 
 
@@ -35,7 +35,7 @@ If you need architectural context, read `docs/architecture_design.md`.
 
 # Python Environment & Tooling
 - **Execution Environment:** The project runs in a Linux environment inside the Arch WSL distribution (`wsl -d Arch`).
-- **Package Manager:** Dependency management is handled using `uv` (located at `.\bin\uv` or via WSL).
+- **Package Manager:** Dependency management is handled using `uv` (via WSL Arch).
 - **Virtual Environment:** Python execution, type-checking (`mypy`), and tests should be run using `.venv` inside WSL:
   - Run python: `wsl -d Arch .venv/bin/python`
   - Run mypy: `wsl -d Arch .venv/bin/mypy`
