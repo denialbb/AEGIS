@@ -67,9 +67,9 @@ A symlink `logs/latest/` always points to the most recent run. The agent can con
 ### The Events Log
 One JSON object per line, written only when something significant happens:
 ```json
-{"t_ksp": 312.4, "type": "STATE_TRANSITION", "from": "POWERED_DESCENT", "to": "TERMINAL_DESCENT", "alt": 48.2}
-{"t_ksp": 319.1, "type": "GREMLIN_KILL", "engine_index": 2, "alt": 31.7, "mission_state": "TERMINAL_DESCENT"}
-{"t_ksp": 319.2, "type": "FAULT_DETECTED", "accel_deviation": 4.31, "threshold": 0.5, "mission_state": "TERMINAL_DESCENT"}
+{"type": "STATE_TRANSITION", "from": "POWERED_DESCENT", "to": "TERMINAL_DESCENT"}
+{"type": "FAULT_DETECTED", "engine_index": 2}
+{"type": "STATE_TRANSITION", "from": "TERMINAL_DESCENT", "to": "HARD_ABORT", "reason": "VESSEL_DESTROYED"}
 ```
 This is the high-signal view. The agent reads this file after a run to understand the timeline, and dips into `telemetry.csv` for high-resolution tick data around specific moments (e.g., exactly when an engine failed).
 

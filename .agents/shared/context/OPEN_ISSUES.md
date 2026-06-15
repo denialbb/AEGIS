@@ -61,15 +61,15 @@ What does "fixed" look like? What test or condition proves this is resolved?
 
 ### ISS-001 — FDI noise threshold not yet empirically calibrated
 
-- **Severity:** 🔴 CRITICAL
-- **Status:** OPEN
+- **Severity:** 🟡 MAJOR
+- **Status:** IN PROGRESS
 - **Date opened:** 2026-06-13
 - **Module(s):** FDI
 - **Related ADR:** ADR-004
 - **Related Review:** None
 
 **Description**
-The FDI compares expected vs measured acceleration to detect engine failure. The deviation threshold that triggers a fault flag is currently a placeholder value. It has not been calibrated against actual Kalman filter output variance for this vessel. Too tight a threshold produces false positives during normal burn transients. Too loose a threshold means a dead engine goes undetected until the vessel is already spinning.
+The FDI compares expected vs measured acceleration to detect engine failure. The deviation threshold that triggers a fault flag must be calibrated against actual Kalman filter output variance for this vessel. Too tight a threshold produces false positives during normal burn transients. Too loose a threshold means a dead engine goes undetected until the vessel is already spinning.
 
 **Acceptance Criteria**
 
@@ -79,7 +79,7 @@ The FDI compares expected vs measured acceleration to detect engine failure. The
 
 **Resolution**
 
-<!-- Fill in when resolved -->
+The hardcoded placeholder (9999.0) was replaced with `config.FDI_THRESHOLD = 3.0` (commit 88d8853). The default 3.0 value is within the recommended [1.5, 5.0] range from `config.py`. Empirical calibration against KF output variance is still pending — downgraded from CRITICAL to MAJOR since the hardcoded-bypass bug is fixed.
 
 ---
 

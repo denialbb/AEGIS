@@ -703,50 +703,28 @@ Option 2: We use the Gimbal Trim mod (`ModuleGimbalTrim`).
 None yet.
 
 
- 
- # # #   A D R - 0 2 5      A u t o m a t e d   C o n f i g u r a t i o n   T u n i n g   F r a m e w o r k 
- 
- -   * * S t a t u s : * *   A C C E P T E D 
- 
- -   * * D a t e : * *   2 0 2 6 - 0 6 - 1 4 
- 
- -   * * A u t h o r : * *   A g e n t 
- 
- -   * * M o d u l e ( s ) : * *   s c r i p t s / t u n e _ c o n f i g . p y 
- 
- 
- 
- * * C o n t e x t * * 
- 
- T h e   A E G I S   f l i g h t   s o f t w a r e   r e l i e s   o n   c a r e f u l l y   t u n e d   c o n f i g u r a t i o n   p a r a m e t e r s   ( e . g . ,   P D   g a i n s   f o r   p o s i t i o n   a n d   a t t i t u d e ) .   T u n i n g   t h e s e   m a n u a l l y   t a k e s   t o o   l o n g .   W e   n e e d   a n   a u t o m a t e d   w a y   t o   r e p e a t e d l y   r u n   t e s t   f l i g h t s   u n d e r   v a r y i n g   c o n f i g u r a t i o n s   a n d   e v a l u a t e   t h e i r   p e r f o r m a n c e   ( l a n d i n g   a c c u r a c y ,   f u e l   c o n s u m e d ,   i m p a c t   v e l o c i t y )   t o   e l i m i n a t e   r o c k i n g   a n d   o v e r s h o o t . 
- 
- 
- 
- * * D e c i s i o n * * 
- 
- W e   u s e   a   g r i d - s e a r c h   t u n i n g   s c r i p t   ( ` s c r i p t s / t u n e _ c o n f i g . p y ` )   t h a t   u t i l i z e s   t h e   k R P C   ` s p a c e _ c e n t e r . l o a d ( ) `   A P I .   T h e   s c r i p t   i t e r a t e s   o v e r   p a r a m e t e r   p e r m u t a t i o n s   ( f o c u s i n g   i n i t i a l l y   o n   ` G U I D A N C E _ K P _ A T T `   a n d   ` G U I D A N C E _ K D _ A T T ` ) ,   l o a d s   a   s t a n d a r d i z e d   s t a r t i n g   s t a t e   ( e . g . ,   ` a e g i s _ t u n e _ s t a r t ` ) ,   i n j e c t s   t h e   p a r a m e t e r s   d y n a m i c a l l y ,   t r i g g e r s   t h e   M i s s i o n   D i r e c t o r ,   a n d   l o g s   t h e   l a n d i n g   m e t r i c s   t o   a   C S V . 
- 
- 
- 
- * * C o n s e q u e n c e s * * 
- 
- -   '  A u t o m a t e d   p e r f o r m a n c e   c h a r a c t e r i z a t i o n . 
- 
- -   '  E n a b l e s   f i n d i n g   t h e   o p t i m a l   a t t i t u d e   d a m p e n i n g   t o   p r e v e n t   s i d e - t o - s i d e   r o c k i n g . 
- 
- -    &þ  R e q u i r e s   c r e a t i n g   a n d   m a i n t a i n i n g   a   s t a n d a r d i z e d   " a e g i s _ t u n e _ s t a r t "   s a v e   f i l e . 
- 
- -    &þ  O v e r w r i t e s   P y t h o n   m o d u l e   s t a t e   i n - m e m o r y   d u r i n g   t e s t i n g . 
- 
- 
- 
- * * R e v i e w   N o t e s * * 
- 
- N o n e   y e t . 
- 
- 
- 
- 
+### ADR-025 — Automated Configuration Tuning Framework
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Agent
+- **Module(s):** scripts/tune_config.py
+
+**Context**
+The AEGIS flight software relies on carefully tuned configuration parameters (e.g., PD gains for position and attitude). Tuning these manually takes too long. We need an automated way to repeatedly run test flights under varying configurations and evaluate their performance (landing accuracy, fuel consumed, impact velocity) to eliminate rocking and overshoot.
+
+**Decision**
+We use a grid-search tuning script (`scripts/tune_config.py`) that utilizes the kRPC `space_center.load()` API. The script iterates over parameter permutations, loads a standardized starting state (e.g., `aegis_tune_start`), injects the parameters dynamically, triggers the Mission Director, and logs the landing metrics to a CSV.
+
+**Consequences**
+- ☑️ Automated performance characterization.
+- ☑️ Enables finding the optimal attitude damping to prevent side-to-side rocking.
+- ⚠️ Requires creating and maintaining a standardized "aegis_tune_start" save file.
+- ⚠️ Overwrites Python module state in-memory during testing.
+
+**Review Notes**
+Superseded by ADR-026 (Optuna).
+
+---
 
 ### ADR-026 - Optuna Hyperparameter Tuning
 - **Status:** ACCEPTED
