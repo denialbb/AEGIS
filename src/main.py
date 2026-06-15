@@ -158,6 +158,9 @@ class MissionDirector:
         self.expected_throttles: np.ndarray = np.array([])
         self.expected_accel: np.ndarray = np.zeros(3)
 
+        # Accumulated angular motion penalty metric for Optuna tuning
+        self.total_angular_motion: float = 0.0
+
         # Ensure the activation action group is toggled OFF when starting
         self.vessel.control.set_action_group(
             config.ACTIVATION_ACTION_GROUP, False
@@ -541,6 +544,13 @@ class MissionDirector:
             ]:
                 self.state = "HARD_ABORT"
 
+            # Refresh max_thrust from kRPC so a_avail and the allocator both use
+            # the current atmospheric-pressure-adjusted thrust (ISS-012).
+            for e in active_engines:
+                engine_obj = _safe_engine_access(e.part)
+                if engine_obj:
+                    e.max_thrust = engine_obj.max_thrust
+
             # Compute available net upward acceleration from actual TWR.
             # Used by both the suicide-burn glideslope and the wrench clamp.
             if active_engines and mass > 0.0:
@@ -644,6 +654,9 @@ class MissionDirector:
                                     and "Gimbal X" not in module.fields
                                 ):
                                     module.trigger_event("Toggle Trim")
+
+                # Accumulate angular motion for Optuna rocking penalty
+                self.total_angular_motion += float(np.linalg.norm(angular_velocity)) * dt
 
                 desired_wrench = self.guidance.compute_wrench(
                     current_state=state_vector,

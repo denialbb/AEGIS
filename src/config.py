@@ -154,12 +154,15 @@ GUIDANCE_ATT_DAMPING_RATIO = [1.0, 1.0, 1.0]
 # ---------------------------------------------------------
 # Multiplier on max_a_avail (the vessel's net upward acceleration from TWR)
 # used to cap a_cmd_world before it enters force_body and target_up_world.
-# A value of 1.5 means the guidance can command up to 150 % of the vessel's
-# physical accelerating capability.  Higher = more aggressive (risks attitude
-# flip during saturating transients); lower = more conservative (risks limp
-# response to large errors).
-# Min: 1.0, Max: 3.0
-ACCEL_CLAMP_FACTOR = 1.5
+# A value of 2.5 means the guidance can command up to 250 % of the vessel's
+# net upward accelerating capability (a_avail).  The sqrt profile requires
+# a_avail NET deceleration, so the clamp must satisfy:
+#   clamp_factor >= 1 + g / a_avail
+# For TWR=2 (a_avail ~ g) this requires clamp_factor >= 2.0.
+# Higher = more aggressive (risks attitude flip during saturating transients);
+# lower = more conservative (risks the vehicle always lagging the profile).
+# Min: 2.0, Max: 4.0
+ACCEL_CLAMP_FACTOR = 2.5
 
 GRAVITY = [0.0, 0.0, -9.81]
 

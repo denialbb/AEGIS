@@ -104,17 +104,22 @@ def run_simulation(trial: optuna.Trial) -> float:
     
     conn.close()
 
+    # Angular motion penalty (rocking): penalizes attitude oscillation.
+    # Weight 0.01 means 100 rad of total rotation ≡ 1 m of distance error.
+    angular_penalty = 0.01 * director.total_angular_motion
+
     if director.state != "LANDED":
         # Vessel crashed or aborted.  Penalty scales with how much simulation
         # time was wasted — a trial that survives 200 s and nearly reaches
         # the pad is punished less than one that falls out of the sky in 10 s.
         elapsed = min(end_time - start_time, max_duration)
         time_bonus = elapsed * 10.0  # subtract ~1/s of survival
-        return max(1e4, 1e5 + distance_to_pad - time_bonus)
+        return max(1e4, 1e5 + distance_to_pad - time_bonus + angular_penalty)
 
     # Fitness: Primary minimize distance. Secondary minimize fuel.
     # 1 kg of fuel is penalized equivalent to 0.1 meters of distance error.
-    fitness = distance_to_pad + (fuel_used * 0.1)
+    # Angular penalty discourages gains that produce attitude oscillation.
+    fitness = distance_to_pad + (fuel_used * 0.1) + angular_penalty
     trial.report(fitness, step=0)
     return fitness
 

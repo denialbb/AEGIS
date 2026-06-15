@@ -445,3 +445,29 @@ Deferred to future Phase 5 (FDI adaptation). Phase 5 is not yet implemented.
 
 **Resolution**
 Docstring fixed to scalar-last `[x, y, z, w]`. Quaternion unit test implemented and passing. The mismatch was a docstring error; code was always correct.
+
+---
+
+### ISS-016 — `max_thrust` queried once at init; stale value affects a_avail and allocator at altitude
+
+- **Severity:** 🔴 CRITICAL
+- **Status:** RESOLVED
+- **Date opened:** 2026-06-15
+- **Module(s):** Mission Director, Control Allocator
+- **Related ADR:** None
+
+**Description**
+`Engine.max_thrust` is queried once during `MissionDirector.__init__` and stored in `e.max_thrust`. In kRPC, `part.engine.max_thrust` changes with atmospheric pressure — engines produce more thrust in thin air. The stale sea-level value causes two problems:
+
+1. **`a_avail` underestimation** — `total_max_thrust = sum(e.max_thrust)` is too low → sqrt profile computes a slower target speed than the vehicle can actually brake to → the vehicle appears "too fast" relative to the profile → commands maximum braking.
+2. **Allocator throttle overestimation** — `throttle = f_mag / engine.max_thrust` divides by the lower stale value → actual physical thrust exceeds commanded → vehicle brakes harder than expected → overshoots target speed → stops and reverses.
+
+**Acceptance Criteria**
+- `e.max_thrust` is refreshed from `part.engine.max_thrust` on every tick before `a_avail` and allocator run.
+- `a_avail` reflects actual atmospheric conditions at current altitude.
+- Allocator throttle correctly represents the fraction of available thrust at current altitude.
+
+**Resolution**
+Added a `max_thrust` refresh loop in `main.py` before the `a_avail` computation (lines 547-552): each tick, `e.max_thrust = engine_obj.max_thrust` is queried fresh from kRPC for all active engines. This ensures both the sqrt profile target speed and the allocator throttle calculation use the altitude-correct thrust.
+
+In tandem, `ACCEL_CLAMP_FACTOR` raised from 1.5 to 2.5 so the clamp satisfies `clamp >= 1 + g / a_avail` for TWR >= 1.5 vehicles, allowing the profile's required `a_avail` net deceleration to be achieved through the clamp.
