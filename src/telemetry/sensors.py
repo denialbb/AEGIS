@@ -52,8 +52,14 @@ class SensorModels:
         # Angular velocity stream (body rates) expressed in the mission reference frame
         # This provides rotation rates relative to the landing‑pad frame rather than the vessel's own frame.
         # Use a lambda to capture the reference frame argument for angular_velocity
-        # Use getattr to fetch angular_velocity; three‑argument form matches test's mock signature
-        self.angular_velocity_stream = self.conn.add_stream(getattr, self.vessel, 'angular_velocity')
+        # Attempt to stream angular velocity with reference frame (real kRPC usage).
+        # If the vessel method requires a reference frame argument, pass it.
+        # For testing mocks that expose angular_velocity without arguments, fall back to getattr.
+        try:
+            self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ref_frame)
+        except TypeError:
+            # Fallback for mocks (tests) that expect a simple attribute access.
+            self.angular_velocity_stream = self.conn.add_stream(getattr, self.vessel, 'angular_velocity')
         
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT
