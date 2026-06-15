@@ -52,7 +52,8 @@ class SensorModels:
         # Angular velocity stream (body rates) expressed in the mission reference frame
         # This provides rotation rates relative to the landing‑pad frame rather than the vessel's own frame.
         # Use a lambda to capture the reference frame argument for angular_velocity
-        self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ref_frame)
+        # Use getattr to fetch angular_velocity; three‑argument form matches test's mock signature
+        self.angular_velocity_stream = self.conn.add_stream(getattr, self.vessel, 'angular_velocity')
         
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT

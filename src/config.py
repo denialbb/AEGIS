@@ -188,7 +188,13 @@ GUIDANCE_ATT_DAMPING_RATIO = [1.0, 1.0, 1.0]
 # Higher = more aggressive (risks attitude flip during saturating transients);
 # lower = more conservative (risks the vehicle always lagging the profile).
 # Min: 2.0, Max: 4.0
-ACCEL_CLAMP_FACTOR = 2.5
+ACCEL_CLAMP_FACTOR = 2.5  # multiplier on max_a_avail, see GuidanceController
+
+# Scale factor for adaptive process noise in the StateEstimator.
+# Larger value makes the filter increase velocity‑noise covariance when the
+# commanded acceleration magnitude grows (helps during high‑thrust phases).
+# Recommended range: 0.05 – 0.2 (tune experimentally).
+PROCESS_NOISE_THRUST_COEF = 0.1  # (1/(m/s)^2) scaling of Q based on |a|^2
 
 GRAVITY = [0.0, 0.0, -9.81]
 

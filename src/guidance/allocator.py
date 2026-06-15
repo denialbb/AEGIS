@@ -154,10 +154,10 @@ class ControlAllocator:
         for i in newly_saturated_indices:
             engine = active_engines[i]
             f_mag = np.linalg.norm(f_actual[i])
-            logger.debug(
-                f"Engine {engine.index} thrust saturated "
-                f"(requested: {f_mag:.2f}, max: {engine.max_thrust:.2f})"
-            )
+        logger.warning(
+            f"Engine {engine.index} thrust saturated "
+            f"(requested: {f_mag:.2f}, max: {engine.max_thrust:.2f})"
+        )
         
         return throttles, gimbals
 
