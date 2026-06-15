@@ -13,6 +13,7 @@ class AllocationDegenerateError(Exception):
 class ControlAllocator:
     def __init__(self, engines: List[Engine]):
         self.engines: List[Engine] = engines
+        self._saturated_engines: set[int] = set()
 
     def _build_B(self, active_engines: List[Engine]) -> np.ndarray:
         """Build the control effectiveness matrix B of shape (6, 3N)."""
@@ -49,27 +50,48 @@ class ControlAllocator:
         Solves the control allocation problem using an iterative saturation-aware approach.
         This method redistributes demand from saturated engines to minimize wrench error
         while respecting hard thrust limits.
-        
+    
         Args:
             desired_wrench: Desired 6DOF wrench [fx, fy, fz, tx, ty, tz] in body frame
             active_engines: List of currently active engines
-            
+        
         Returns:
             throttles: array of shape (N,) bounded between 0.0 and 1.0.
             gimbals: array of shape (N, 2) representing X/Y gimbal angles in radians.
+        Raises:
+            AllocationDegenerateError: If the B matrix is rank deficient or ill-conditioned.
         """
         if not active_engines:
             return np.array([]), np.empty((0, 2))
         
+        # Check for rank deficiency and condition number (same as original implementation)
+        B = self._build_B(active_engines)
+        rank = np.linalg.matrix_rank(B)
+        if rank < 6:
+            logger.error("B matrix does not have full row rank (rank < 6).")
+            raise AllocationDegenerateError(
+                "B matrix does not have full row rank (rank < 6)."
+            )
+        
+        cond = np.linalg.cond(B)
+        logger.debug(f"Allocator B matrix cond: {cond}")
+        if cond > 1e4:
+            logger.error(
+                f"[Allocator] Degenerate allocation! Condition number: {cond:.2f} > 1e4"
+            )
+            raise AllocationDegenerateError(
+                f"B ill-conditioned: cond={cond:.2f}, active_engines={len(active_engines)}"
+            )
+    
         # Initialize working arrays
         N = len(active_engines)
         f_desired = np.zeros((N, 3))  # Desired force per engine (before clamping)
         f_actual = np.zeros((N, 3))   # Actual force per engine (after clamping)
         saturated = np.zeros(N, dtype=bool)  # Tracks saturation per engine
-        
+    
         # Build B matrix once (constant across iterations)
         B = self._build_B(active_engines)  # Shape (6, 3N)
-        
+    
         # Residual wrench to satisfy (starts as desired_wrench)
         residual_wrench = desired_wrench.copy()
         
@@ -125,9 +147,10 @@ class ControlAllocator:
         throttles, gimbals = self._forces_to_controls(f_actual, active_engines)
         
         # Log saturation events (once per engine per allocation to avoid spam)
-        newly_saturated_this_call = saturated & ~self._saturated_engines
-        self._saturated_engines = set(np.where(saturated)[0])
-        for i in np.where(newly_saturated_this_call)[0]:
+        newly_saturated_mask = saturated & ~np.isin(np.arange(N), list(self._saturated_engines))
+        newly_saturated_indices = np.where(newly_saturated_mask)[0]
+        self._saturated_engines.update(newly_saturated_indices.tolist())
+        for i in newly_saturated_indices:
             engine = active_engines[i]
             f_mag = np.linalg.norm(f_actual[i])
             logger.warning(
@@ -221,26 +244,46 @@ class ControlAllocator:
                 if dot_prod < 0:
                     # The requested force opposes the physical mounting of the engine.
                     # We cannot fire this engine to push backwards.
-                    angle = np.pi  # 180 degrees - but throttle will be 0 above
+                    throttle = 0.0
+                    f_mag = 0.0
                 else:
-                    angle = np.arccos(dot_prod)
+                    # Compute throttle normally
+                    throttle = (
+                        float(f_mag / engine.max_thrust)
+                        if engine.max_thrust > 0
+                        else 0.0
+                    )
+                    # Clamp to [0, 1] range
+                    throttle = float(np.clip(throttle, 0.0, 1.0))
                 
-                # The cross product gives the axis of rotation perpendicular to both vectors.
-                c = np.cross(engine.thrust_direction, n)
-                s = np.linalg.norm(c)
-                if s > 1e-6:
-                    # Scale the normalized rotation axis by the angle to get a compact rotation vector.
-                    rot_vec = (c / s) * angle
-                    gimbals[i, 0] = rot_vec[0]
-                    gimbals[i, 1] = rot_vec[1]
+                # Only compute gimbal angles if we have thrust
+                if f_mag > 1e-6:
+                    angle = np.arccos(dot_prod)
+                    
+                    # The cross product gives the axis of rotation perpendicular to both vectors.
+                    c = np.cross(engine.thrust_direction, n)
+                    s = np.linalg.norm(c)
+                    if s > 1e-6:
+                        # Scale the normalized rotation axis by the angle to get a compact rotation vector.
+                        rot_vec = (c / s) * angle
+                        gimbals[i, 0] = rot_vec[0]
+                        gimbals[i, 1] = rot_vec[1]
+                    else:
+                        # Vectors are parallel - no rotation needed
+                        gimbals[i, 0] = 0.0
+                        gimbals[i, 1] = 0.0
                 else:
-                    # Vectors are parallel - no rotation needed
+                    # Zero force/throttle - no gimbal deflection needed
                     gimbals[i, 0] = 0.0
                     gimbals[i, 1] = 0.0
             else:
                 # Zero force - no gimbal deflection needed
+                throttle = 0.0
                 gimbals[i, 0] = 0.0
                 gimbals[i, 1] = 0.0
+            
+            # Store the final throttle value
+            throttles[i] = throttle
         
         return throttles, gimbals
 

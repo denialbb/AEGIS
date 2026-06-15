@@ -48,8 +48,6 @@ class FaultDetectionIsolation:
             force_i = engine.thrust_direction * engine.max_thrust * expected_throttles[i]
             expected_force += force_i
             
-        expected_accel = expected_force / mass
-        
         # We assume isolate_fault is only called AFTER detect_fault has returned True.
         # We do not call detect_fault again here to avoid double-incrementing the persistence counter.
 
