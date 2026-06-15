@@ -5,7 +5,7 @@
 - **Always use `.venv` from Arch Linux with `uv`** for running, typechecking, and testing:
 - Python: `.venv/bin/python src/main.py`
 - mypy: `.venv/bin/mypy .`
-- pytest: `.venv/bin/pytest`
+- pytest: `.venv/bin/pytest tests/` — always specify a test file or directory; never run from the root folder.
 - Do not use system Python or run from Windows directly.
 - The virtual environment is managed by `uv`, the modern Python package manager, ensuring fast, reliable dependency resolution in the Arch Linux WSL2 environment.
 

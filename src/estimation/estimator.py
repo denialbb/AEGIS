@@ -7,31 +7,40 @@ import src.config as config
 logger = logging.getLogger(__name__)  # type: ignore
 
 class StateEstimator:
-    def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise: np.ndarray, up_vector: np.ndarray = np.array([0.0, 0.0, 1.0])):
+    def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise_alt: np.ndarray, measurement_noise_vel: np.ndarray, up_vector: np.ndarray = np.array([0.0, 0.0, 1.0])):
         """
         Initializes the Discrete-Time Kalman Filter.
         initial_state: shape (6,) [X, Y, Z, Vx, Vy, Vz]
         initial_covariance: shape (6, 6)
         process_noise: shape (6, 6)
-        measurement_noise: shape (1, 1) (altitude measurement variance)
+        measurement_noise_alt: shape (1, 1) (altitude measurement variance)
+        measurement_noise_vel: shape (3, 3) (velocity measurement covariance)
         up_vector: vector pointing directly up from the planet surface
         """
-        self.kf = KalmanFilter(dim_x=6, dim_z=1)
+        self.kf = KalmanFilter(dim_x=6, dim_z=4)
         self.kf.x = initial_state.copy()
         self.kf.P = initial_covariance.copy()
         self.kf.Q = process_noise.copy()
-        self.base_Q = process_noise.copy()  # Preserve original Q for dynamic scaling
-        self.kf.R = measurement_noise.copy()
+        self.base_Q = process_noise.copy()
         
         self.up_vector = up_vector
         self.gravity_world = -self.up_vector * 9.81
         
-        # H matrix: z = [alt]
+        # H matrix: z = [alt, vx, vy, vz]
         # Altitude is the projection of the position state onto the up_vector.
-        self.kf.H = np.zeros((1, 6))
+        # Velocity components are directly mapped from state indices 3,4,5.
+        self.kf.H = np.zeros((4, 6))
         self.kf.H[0, :3] = self.up_vector
+        self.kf.H[1, 3] = 1.0
+        self.kf.H[2, 4] = 1.0
+        self.kf.H[3, 5] = 1.0
+        
+        # Measurement noise covariance: R = diag(sigma_alt^2, sigma_vel^2, sigma_vel^2, sigma_vel^2)
+        sigma_alt = float(np.sqrt(measurement_noise_alt[0, 0]))
+        sigma_vel = float(np.sqrt(measurement_noise_vel[0, 0]))
+        self.kf.R = np.diag([sigma_alt**2, sigma_vel**2, sigma_vel**2, sigma_vel**2])
                 
-        logger.info("Initialized StateEstimator (Kalman Filter)")
+        logger.info("Initialized StateEstimator (Kalman Filter with alt+vel)")
 
     def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float) -> None:
         """
@@ -81,13 +90,12 @@ class StateEstimator:
         # Predict step using kinematic_accel_world as the control input
         self.kf.predict(u=kinematic_accel_world, B=B)
         
-    def update(self, noisy_alt: float) -> np.ndarray:
+    def update(self, noisy_alt: float, noisy_vel: np.ndarray) -> np.ndarray:
         """
-        Fuses noisy altimeter data to correct the Z-axis state.
+        Fuses noisy altimeter and velocity data to correct the state.
         Returns the updated state vector.
         """
-        # Update step using alt as measurement
-        z = np.array([noisy_alt])
+        z = np.array([noisy_alt, noisy_vel[0], noisy_vel[1], noisy_vel[2]])
         self.kf.update(z)
         
         return self.kf.x.copy()

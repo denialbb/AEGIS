@@ -64,13 +64,14 @@ class SensorModels:
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT
         self.sigma_accel = config.SIGMA_ACCEL
+        self.sigma_vel = config.SIGMA_VEL
         
         # Isolated RNG for determinism
         self.rng = np.random.default_rng(config.RANDOM_SEED)
         
-        logger.info(f"Initialized SensorModels with sigma_alt={self.sigma_alt}, sigma_accel={self.sigma_accel}")
+        logger.info(f"Initialized SensorModels with sigma_alt={self.sigma_alt}, sigma_accel={self.sigma_accel}, sigma_vel={self.sigma_vel}")
 
-    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str, np.ndarray]:
+    def poll(self) -> Tuple[float, np.ndarray, np.ndarray, float, np.ndarray, str, np.ndarray, np.ndarray]:
         """
         Samples the streams and applies zero-mean Gaussian noise.
         Returns:
@@ -81,6 +82,7 @@ class SensorModels:
             aero_force_body (np.ndarray shape (3,))
             situation (str)
             angular_velocity (np.ndarray shape (3,)) body-frame angular rates (rad/s)
+            noisy_vel (np.ndarray shape (3,)) world-frame velocity in m/s
         """
         # Read perfect data
         perfect_alt = self.altitude_stream()
@@ -117,6 +119,7 @@ class SensorModels:
         # Inject Gaussian Noise
         noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
         noisy_accel = perfect_accel_body + self.rng.normal(0, self.sigma_accel, size=3)
+        noisy_vel = vel + self.rng.normal(0, self.sigma_vel, size=3)
         
         # Rotate aero force to body frame
         aero_body = rot.inv().apply(aero_world)
@@ -134,4 +137,4 @@ class SensorModels:
         )
 
         
-        return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation, angular_velocity
+        return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation, angular_velocity, noisy_vel

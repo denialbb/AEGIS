@@ -89,6 +89,11 @@ SIGMA_ALT = 2.0  # meters
 # Min: 0.05 (High-end IMU), Max: 2.0 (Cheap IMU)
 SIGMA_ACCEL = 0.5  # m/s^2
 
+# Standard deviation of velocity noise (m/s).
+# Higher values make the estimator trust the altitude sensor more for velocity.
+# Min: 0.1 (High-end GPS), Max: 5.0 (Noisy GPS)
+SIGMA_VEL = 1.0  # m/s
+
 # ---------------------------------------------------------
 # Fault Detection & Isolation
 # ---------------------------------------------------------

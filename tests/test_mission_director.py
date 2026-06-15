@@ -97,7 +97,7 @@ class TestMissionDirector:
 
         # Mock sensors.poll to return specific values
         md.sensors.poll = Mock(return_value=(0.0, np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]),
-                                            1000.0, np.zeros(3), "flying", np.zeros(3)))
+                                             1000.0, np.zeros(3), "flying", np.zeros(3), np.array([0.0, 0.0, 0.0])))
 
         # Mock estimator to return specific state
         md.estimator.update = Mock(return_value=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))

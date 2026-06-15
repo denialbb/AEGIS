@@ -1,11 +1,20 @@
 import numpy as np
 from typing import Any
 
+
 class Engine:
-    def __init__(self, index: int, position: np.ndarray, thrust_direction: np.ndarray, max_thrust: float, part: Any = None):
+    def __init__(
+        self,
+        index: int,
+        position: np.ndarray,
+        thrust_direction: np.ndarray,
+        max_thrust: float,
+        max_gimbal_deg: float = 0.0,
+        part: Any = None,
+    ):
         """
         Represents an individual propulsion unit on the vessel.
-        
+
         Args:
             index: Unique identifier for the engine.
             position: 3D position vector relative to Center of Mass [m]
@@ -18,5 +27,10 @@ class Engine:
         self.thrust_direction: np.ndarray = thrust_direction
         self.max_thrust: float = max_thrust
         self.active: bool = True  # Status flag managed by FDI
-        self.expected_throttle: float = 0.0 # EMA filtered throttle representing current physical state
-        self.part: Any = part # Reference to the underlying kRPC part for actuation
+        self.expected_throttle: float = (
+            0.0  # EMA filtered throttle representing current physical state
+        )
+        self.max_gimbal_deg: float = max_gimbal_deg
+        self.part: Any = (
+            part  # Reference to the underlying kRPC part for actuation
+        )

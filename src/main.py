@@ -94,6 +94,7 @@ class MissionDirector:
                     position=pos,
                     thrust_direction=thrust_dir,
                     max_thrust=part.engine.max_thrust,
+                    max_gimbal_deg=part.engine.gimbal_range,
                     part=part,
                 )
                 part.engine.thrust_limit = 1.0  # Reset thrust limit to 100% in case a previous run set it to 0
@@ -113,13 +114,15 @@ class MissionDirector:
         initial_state[3:] = np.array(vessel.flight(self.ref_frame).velocity)
         initial_covariance = np.eye(6)
         process_noise = np.eye(6)
-        measurement_noise = np.eye(1)
-
+        measurement_noise_alt = np.eye(1)
+        measurement_noise_vel = np.eye(3) * (config.SIGMA_VEL ** 2)
+        
         self.estimator: StateEstimator = StateEstimator(
             initial_state,
             initial_covariance,
             process_noise,
-            measurement_noise,
+            measurement_noise_alt,
+            measurement_noise_vel,
             self.up_vector,
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(
@@ -293,6 +296,7 @@ class MissionDirector:
                 aero_body,
                 situation,
                 angular_velocity,
+                noisy_vel,
             ) = self.sensors.poll()
             # Debug raw telemetry for diagnosis
             logger.debug(
@@ -325,7 +329,7 @@ class MissionDirector:
             # 2. Update Estimator
             if not skip_predict:
                 self.estimator.predict(noisy_accel_body, attitude, dt)
-            state_vector = self.estimator.update(noisy_alt)
+            state_vector = self.estimator.update(noisy_alt, noisy_vel)
 
             # 2.5 Check fuel state
             for e in self.engines:
