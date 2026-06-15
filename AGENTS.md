@@ -2,21 +2,21 @@
 
 ## Critical Execution Rules
 
-- **Always use `.venv` from WSL Arch with `uv`** for running, typechecking, and testing:
-- Python: `wsl -d Arch .venv/bin/python src/main.py`
-- mypy: `wsl -d Arch .venv/bin/mypy .`
-- pytest: `wsl -d Arch .venv/bin/pytest`
+- **Always use `.venv` from Arch Linux with `uv`** for running, typechecking, and testing:
+- Python: `.venv/bin/python src/main.py`
+- mypy: `.venv/bin/mypy .`
+- pytest: `.venv/bin/pytest`
 - Do not use system Python or run from Windows directly.
 - The virtual environment is managed by `uv`, the modern Python package manager, ensuring fast, reliable dependency resolution in the Arch Linux WSL2 environment.
 
 ## Architecture (4 Strictly Decoupled Modules)
 
-| Module | Location | Responsibility |
-|--------|----------|----------------|
-| Mission Director | `src/main.py` | State machine, orchestrator |
-| State Estimator | `src/estimation/estimator.py` | Kalman filter on noisy telemetry |
-| FDI | `src/fdi/fdi.py` | Fault detection & isolation |
-| Control Allocator | `src/guidance/allocator.py` | 6-DOF wrench → engine throttles via pseudo-inverse |
+| Module            | Location                      | Responsibility                                     |
+| ----------------- | ----------------------------- | -------------------------------------------------- |
+| Mission Director  | `src/main.py`                 | State machine, orchestrator                        |
+| State Estimator   | `src/estimation/estimator.py` | Kalman filter on noisy telemetry                   |
+| FDI               | `src/fdi/fdi.py`              | Fault detection & isolation                        |
+| Control Allocator | `src/guidance/allocator.py`   | 6-DOF wrench → engine throttles via pseudo-inverse |
 
 **No module may read another module's internal state.** All data flows through interfaces defined in `.agents/shared/context/ARCHITECTURE.md`.
 
@@ -41,6 +41,7 @@
 ## Known Issues
 
 Tracked in `.agents/shared/context/OPEN_ISSUES.md`:
+
 - **ISS-001**: FDI threshold placeholder (uncalibrated)
 - **ISS-002**: Allocator condition number threshold
 - **ISS-003**: Estimator attitude handling (TODO in `predict()`)
@@ -65,3 +66,4 @@ Code goes to `.agents/shared/queue/PENDING_REVIEW.md` following the template. Re
 - Design decisions: `.agents/shared/context/DECISIONS.md`
 - Open issues: `.agents/shared/context/OPEN_ISSUES.md`
 - Architecture doc: `docs/architecture_design.md`
+
