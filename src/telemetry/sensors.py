@@ -48,7 +48,9 @@ class SensorModels:
         
         # Situation stream
         # Angular velocity in vessel reference frame (body rates, rad/s)
-        self.angular_vel_stream = self.conn.add_stream(getattr, flight_body, 'angular_velocity')
+        # We'll store the vessel and reference frame for direct calls in poll
+        self._vessel = vessel
+        self._angular_velocity_ref = self.vessel.reference_frame
         
         self.situation_stream = self.conn.add_stream(getattr, self.vessel, 'situation')
         
@@ -112,6 +114,6 @@ class SensorModels:
         # Rotate aero force to body frame
         aero_body = rot.inv().apply(aero_world)
         
-        angular_velocity = np.array(self.angular_vel_stream())
+        angular_velocity = np.array(self._vessel.angular_velocity(self._angular_velocity_ref))
         
         return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation, angular_velocity
