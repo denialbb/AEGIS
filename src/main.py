@@ -384,9 +384,14 @@ class MissionDirector:
                     self.conn.space_center.SASMode.prograde
                 )
                 ves_orientation = "prograde"
-            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and est_vz < 0 and ves_orientation == "prograde":
-                self.vessel.control.sas = False
+            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and ves_orientation == "prograde" and est_vz <= 40:
+                self.vessel.control.sas_mode = (
+                    self.conn.space_center.SASMode.stability_assist
+                )
                 ves_orientation = "stability"
+            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and ves_orientation == "stability" and est_vz < 0:
+                self.vessel.control.sas = False
+                ves_orientation = "off"
 
             if config.USE_SAS:
                 sas_threshold = 40
