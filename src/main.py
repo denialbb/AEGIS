@@ -341,13 +341,17 @@ class MissionDirector:
                 # looks like multiple engine failures). Hold last known good expected_accel.
                 # Also skip FDI when commanded throttles are zero - expected_accel=[0,0,0] but gravity
                 # is ~9.8 m/s² which would always trip the fault threshold during coasting.
+                # Also skip if expected_accel is zero despite non-zero throttles (stale/initialization).
                 # Finally, skip FDI if the vessel is touching the ground (normal force triggers false positive).
                 throttles_zero = (len(self.expected_throttles) == 0) or (
                     np.abs(self.expected_throttles).max() < 1e-6
                 )
+                expected_accel_zero = (
+                    np.linalg.norm(self.expected_accel) < 1e-6
+                )
                 landed = situation in ("landed", "pre_launch", "splashed")
 
-                if not skip_predict and not throttles_zero and not landed:
+                if not skip_predict and not throttles_zero and not expected_accel_zero and not landed:
                     fault_detected = self.fdi.detect_fault(
                         self.expected_accel, noisy_accel_body
                     )
@@ -805,10 +809,10 @@ class MissionDirector:
                     self.expected_throttles = np.array(new_expected_throttles)
 
                     # Expected acceleration is total force (thrust + aerodynamic) divided by mass
+                    # Guard: if mass is invalid (0 or NaN), keep the last valid expected_accel.
+                    # A stale-nonzero value is safer than zero — zero produces FDI false positives.
                     if mass > 0.0:
                         self.expected_accel = (expected_force + aero_body) / mass
-                    else:
-                        self.expected_accel = np.zeros(3)
                 except AllocationDegenerateError as e:
                     logger.error(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event(
