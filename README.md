@@ -174,7 +174,7 @@ The source gimbal paper validated the NN on smooth, continuous disturbance torqu
 
 ## 8. References
 
-The following works informed the mathematical foundations of the AEGIS guidance and estimation architecture. PDF copies are included under `docs/NN-ADRC/literature/`.
+The following works informed the mathematical foundations of the AEGIS guidance and estimation architecture.
 
 | # | Source | Used In |
 |---|--------|---------|
