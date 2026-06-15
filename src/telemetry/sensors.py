@@ -47,12 +47,12 @@ class SensorModels:
         self.mass_stream = self.conn.add_stream(getattr, self.vessel, 'mass')
         
         # Situation stream
-        # Angular velocity in vessel reference frame (body rates, rad/s)
-        # We'll store the vessel and reference frame for direct calls in poll
-        self._vessel = vessel
-        self._angular_velocity_ref = self.vessel.reference_frame
-        
         self.situation_stream = self.conn.add_stream(getattr, self.vessel, 'situation')
+        
+        # Angular velocity stream (body rates) expressed in the mission reference frame
+        # This provides rotation rates relative to the landing‑pad frame rather than the vessel's own frame.
+        # Use a lambda to capture the reference frame argument for angular_velocity
+        self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ref_frame)
         
         # Noise parameters (Standard Deviations) from config
         self.sigma_alt = config.SIGMA_ALT
@@ -114,6 +114,17 @@ class SensorModels:
         # Rotate aero force to body frame
         aero_body = rot.inv().apply(aero_world)
         
-        angular_velocity = np.array(self._vessel.angular_velocity(self._angular_velocity_ref))
+        # Retrieve angular velocity (body rates) in the mission reference frame
+        av_raw = self.angular_velocity_stream()
+        if hasattr(av_raw, "x"):
+            angular_velocity = np.array([av_raw.x, av_raw.y, av_raw.z])
+        else:
+            # Assume iterable of three numbers
+            angular_velocity = np.array(av_raw, dtype=float)
+        # Debug log the angular velocity components
+        logger.debug(
+            f"Angular velocity (frame): x={angular_velocity[0]:.3f}, y={angular_velocity[1]:.3f}, z={angular_velocity[2]:.3f}"
+        )
+
         
         return noisy_alt, noisy_accel, attitude, float(mass), aero_body, situation, angular_velocity
