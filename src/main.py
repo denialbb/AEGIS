@@ -403,7 +403,7 @@ class MissionDirector:
                     self.conn.space_center.SASMode.stability_assist
                 )
                 ves_orientation = "stability"
-            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and ves_orientation == "stability" and est_vz < 0:
+            elif config.SAS_PROGRADE_ASCENT and not config.USE_SAS and ves_orientation == "stability" and est_vz < -5.0:
                 self.vessel.control.sas = False
                 ves_orientation = "off"
 
