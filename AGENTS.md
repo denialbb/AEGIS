@@ -67,3 +67,21 @@ Code goes to `.agents/shared/queue/PENDING_REVIEW.md` following the template. Re
 - Open issues: `.agents/shared/context/OPEN_ISSUES.md`
 - Architecture doc: `docs/architecture_design.md`
 
+## Current Task: EKF with Gyro Integration and Gravity Modeling
+
+### Goal
+Implement an Extended Kalman Filter (EKF) that integrates gyroscope data for attitude estimation and properly models gravity using kRPC's `vessel.flight.g_force` and `body.gravitational_parameter` instead of hardcoded values.
+
+### Tasks
+- [ ] Review current use of gravity in the codebase (estimator, sensors, etc.)
+- [ ] Modify `src/telemetry/sensors.py` to output raw gyroscope readings (3D) with noise
+- [ ] Add IMU noise parameters to `src/config.py` (gyro noise, bias instability, etc.)
+- [ ] Design EKF state vector to include attitude (quaternion), gyro biases, position, velocity
+- [ ] Implement EKF prediction step using gyroscope integration and acceleration measurements
+- [ ] Implement EKF update step using altimeter, velocimeter, and possibly magnetometer (if available)
+- [ ] Replace hardcoded gravity values with dynamic gravity from kRPC
+- [ ] Update `src/main.py` to pass IMU data to the estimator and use estimated attitude for control
+- [ ] Ensure FDI module can monitor IMU health
+- [ ] Update all relevant unit tests
+- [ ] Verify the estimator still passes existing tests and improves robustness
+
