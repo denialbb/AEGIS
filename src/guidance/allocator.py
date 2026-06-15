@@ -121,7 +121,7 @@ class ControlAllocator:
                     )
                     if throttle > 1.0:
                         if not hasattr(self, "_saturated_engines"):
-                            self._saturated_engines = set()
+                            self._saturated_engines: set[int] = set()
 
                         if engine.index not in self._saturated_engines:
                             logger.warning(

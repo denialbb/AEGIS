@@ -6,6 +6,7 @@ import krpc
 import logging
 import numpy as np
 import argparse
+import sys
 from typing import Any, List
 
 import src.config as config
@@ -215,18 +216,25 @@ class MissionDirector:
 
         return target_state
 
-    def run_loop(self) -> None:
+    def run_loop(self) -> bool:
         """
         Executes the main loop at 10Hz to 50Hz, polling telemetry,
         updating the estimator, running the FDI, computing control wrench,
         allocating thrust, controlling SAS and transitioning states.
+
+        Returns:
+            True if the mission landed successfully, False on HARD_ABORT or failure.
         """
         target_hz = config.TARGET_HZ
+        success = False
         dt = 1.0 / target_hz
         ves_orientation = "stability"
 
         signal.signal(
             signal.SIGINT, lambda sig, frame: setattr(self, "_exit_requested", True)
+        )
+        signal.signal(
+            signal.SIGTERM, lambda sig, frame: setattr(self, "_exit_requested", True)
         )
 
         while self.state not in ["HARD_ABORT", "LANDED"]:
@@ -271,6 +279,19 @@ class MissionDirector:
                 situation,
                 angular_velocity,
             ) = self.sensors.poll()
+
+            # Universal vessel-destroyed check — must be handled for ALL states, not just TERMINAL_DESCENT
+            if situation == "destroyed":
+                logger.error("Vessel destroyed. Transitioning to HARD_ABORT.")
+                self.writer.log_event(
+                    {
+                        "type": "STATE_TRANSITION",
+                        "from": self.state,
+                        "to": "HARD_ABORT",
+                        "reason": "VESSEL_DESTROYED",
+                    }
+                )
+                self.state = "HARD_ABORT"
 
             # NOTE: I think player throttle has priority
             # Ensure vessel main throttle is at 100% so our individual engine limits work
@@ -561,19 +582,6 @@ class MissionDirector:
                         }
                     )
                     self.state = "LANDED"
-                elif situation == "destroyed":
-                    logger.error(
-                        "Vessel destroyed during terminal descent. Transitioning to HARD_ABORT"
-                    )
-                    self.writer.log_event(
-                        {
-                            "type": "STATE_TRANSITION",
-                            "from": self.state,
-                            "to": "HARD_ABORT",
-                            "reason": "VESSEL_DESTROYED",
-                        }
-                    )
-                    self.state = "HARD_ABORT"
             elif self.state not in [
                 "STANDBY",
                 "ASCENT_COAST",
@@ -655,6 +663,7 @@ class MissionDirector:
                     if engine_obj:
                         engine_obj.thrust_limit = 0.0
                         engine_obj.independent_throttle = False
+                success = True
                 break  # Exit the control loop gracefully
 
             if self.state == "HARD_ABORT":
@@ -797,7 +806,7 @@ class MissionDirector:
                     else:
                         self.expected_accel = np.zeros(3)
                 except AllocationDegenerateError as e:
-                    print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
+                    logger.error(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event(
                         {
                             "type": "STATE_TRANSITION",
@@ -848,6 +857,7 @@ class MissionDirector:
 
         # Cleanup when loop ends
         self.writer.close()
+        return success
 
 
 if __name__ == "__main__":
@@ -876,8 +886,9 @@ if __name__ == "__main__":
         conn = krpc.connect(name=config.KRPC_CLIENT_NAME, address=address)
         logger.info("Connected. Starting Mission Director...")
         director = MissionDirector(conn)
+        success = False
         try:
-            director.run_loop()
+            success = director.run_loop()
         except krpc.error.RPCError as e:
             logger.error(
                 f"kRPC Error: {str(e)}. Vessel may have been destroyed. Exiting gracefully."
@@ -887,7 +898,10 @@ if __name__ == "__main__":
         finally:
             logger.info("Mission Director shutdown. Closing telemetry streams.")
             director.writer.close()
+        if not success:
+            sys.exit(1)
     except ConnectionError:
         logger.error(
             f"Failed to connect to KSP at {address}. Ensure the server is running and KRPC_ADDRESS is set."
         )
+        sys.exit(1)
