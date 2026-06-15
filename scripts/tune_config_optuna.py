@@ -1,9 +1,12 @@
+import math
 import os
 import time
 import sys
 sys.path.insert(0, os.path.abspath('.'))
 
 import optuna
+from optuna.samplers import CmaEsSampler
+from optuna.pruners import MedianPruner
 import krpc
 import numpy as np
 
@@ -32,8 +35,6 @@ def run_simulation(trial: optuna.Trial) -> float:
     
     config.GUIDANCE_KP_POS_LATERAL = trial.suggest_float("GUIDANCE_KP_POS_LATERAL", 0.1, 5.0)
     config.GUIDANCE_KP_POS_VERTICAL = trial.suggest_float("GUIDANCE_KP_POS_VERTICAL", 0.1, 5.0)
-    config.GUIDANCE_KD_VEL_LATERAL = trial.suggest_float("GUIDANCE_KD_VEL_LATERAL", 2.0, 100.0)
-    config.GUIDANCE_KD_VEL_VERTICAL = trial.suggest_float("GUIDANCE_KD_VEL_VERTICAL", 2.0, 100.0)
     
     # Attitude control uses natural-frequency/damping-ratio parameterization
     # (ADR-028). The MissionDirector derives Kp = ωₙ², Kd = 2ζωₙ internally.
@@ -48,9 +49,14 @@ def run_simulation(trial: optuna.Trial) -> float:
     # Prevents attitude target flip during saturating transients.
     config.ACCEL_CLAMP_FACTOR = trial.suggest_float("ACCEL_CLAMP_FACTOR", 1.0, 3.0)
     
-    config.SIGMA_ALT = trial.suggest_float("SIGMA_ALT", 0.1, 10.0)
-    config.SIGMA_ACCEL = trial.suggest_float("SIGMA_ACCEL", 0.05, 2.0)
+    # Log-scale for params spanning 1+ order of magnitude
+    config.SIGMA_ALT = trial.suggest_float("SIGMA_ALT", 0.1, 10.0, log=True)
+    config.SIGMA_ACCEL = trial.suggest_float("SIGMA_ACCEL", 0.05, 2.0, log=True)
     config.FDI_THRESHOLD = trial.suggest_float("FDI_THRESHOLD", 1.5, 5.0)
+    
+    # Kd spans 2 orders — log scale helps find the right neighborhood faster
+    config.GUIDANCE_KD_VEL_LATERAL = trial.suggest_float("GUIDANCE_KD_VEL_LATERAL", 2.0, 100.0, log=True)
+    config.GUIDANCE_KD_VEL_VERTICAL = trial.suggest_float("GUIDANCE_KD_VEL_VERTICAL", 2.0, 100.0, log=True)
 
     # 2. Connect to kRPC and load save
     address = os.environ.get("KRPC_ADDRESS", config.KRPC_DEFAULT_ADDRESS)
@@ -99,12 +105,17 @@ def run_simulation(trial: optuna.Trial) -> float:
     conn.close()
 
     if director.state != "LANDED":
-        # Vessel crashed or aborted
-        return 1e5 + distance_to_pad
+        # Vessel crashed or aborted.  Penalty scales with how much simulation
+        # time was wasted — a trial that survives 200 s and nearly reaches
+        # the pad is punished less than one that falls out of the sky in 10 s.
+        elapsed = min(end_time - start_time, max_duration)
+        time_bonus = elapsed * 10.0  # subtract ~1/s of survival
+        return max(1e4, 1e5 + distance_to_pad - time_bonus)
 
     # Fitness: Primary minimize distance. Secondary minimize fuel.
     # 1 kg of fuel is penalized equivalent to 0.1 meters of distance error.
     fitness = distance_to_pad + (fuel_used * 0.1)
+    trial.report(fitness, step=0)
     return fitness
 
 if __name__ == "__main__":
@@ -114,12 +125,22 @@ if __name__ == "__main__":
     os.makedirs("logs", exist_ok=True)
     
     print(f"Starting Optuna hyperparameter optimization. Database: {db_path}")
+    print(f"Sampler: CMA-ES (n_startup_trials=15 random init), Pruner: Median")
     
     study = optuna.create_study(
         study_name=study_name, 
         storage=db_path, 
         load_if_exists=True,
-        direction="minimize"
+        direction="minimize",
+        sampler=CmaEsSampler(
+            seed=config.RANDOM_SEED,
+            n_startup_trials=15,
+            consider_pruned_trials=True,
+        ),
+        pruner=MedianPruner(
+            n_startup_trials=10,
+            n_warmup_steps=0,
+        ),
     )
     
     try:
