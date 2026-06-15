@@ -64,6 +64,19 @@ ALT_HOVER = 200.0
 ALT_TERMINAL = 20.0
 
 # ---------------------------------------------------------
+# Landed Timer Parameters
+# ---------------------------------------------------------
+# Vertical velocity threshold (m/s) below which the vessel counts as "landed"
+# The timer only accumulates when |vertical_velocity| < LANDED_VEL_THRESHOLD.
+# Min: 0.01, Max: 5.0
+LANDED_VEL_THRESHOLD = 0.5  # m/s
+
+# Altitude above ground threshold (m) within which the vessel counts as "at land level"
+# The timer only accumulates when altitude < LANDED_ALT_THRESHOLD.
+# Min: 0.01, Max: 10.0
+LANDED_ALT_THRESHOLD = 1.0  # m
+
+# ---------------------------------------------------------
 # Sensor Noise Modeling (Standard Deviations)
 # ---------------------------------------------------------
 # Standard deviation of altitude noise (meters).
@@ -194,3 +207,13 @@ GRAVITY = [0.0, 0.0, -9.81]
 DEBUG_LOGGING = False
 LOG_TO_FILE = False
 LOG_FILE_PATH = "logs/aegis.log"
+
+# ---------------------------------------------------------
+# HUD Display
+# ---------------------------------------------------------
+# Enable the in-terminal heads-up display that updates in-place
+# without scrolling. Automatically disabled if stdout is not a TTY.
+HUD_ENABLED = True
+# HUD refresh rate in Hz. Decoupled from the control loop to reduce
+# terminal overhead. 10 Hz is smooth enough for monitoring.
+HUD_REFRESH_HZ = 10.0

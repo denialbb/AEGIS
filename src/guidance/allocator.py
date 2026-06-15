@@ -133,7 +133,8 @@ class ControlAllocator:
             # Build reduced B matrix for unsaturated engines only
             if np.any(~saturated):
                 unsaturated_indices = np.where(~saturated)[0]
-                B_reduced = B[:, 3*unsaturated_indices[:, None] + np.arange(3)]
+                indices = (3 * unsaturated_indices[:, None] + np.arange(3)).ravel()
+                B_reduced = B[:, indices]
                 # Solve for unsaturated engines only
                 u_reduced = np.linalg.pinv(B_reduced, rcond=1e-4) @ residual_wrench
                 # Update f_desired for unsaturated engines
@@ -153,7 +154,7 @@ class ControlAllocator:
         for i in newly_saturated_indices:
             engine = active_engines[i]
             f_mag = np.linalg.norm(f_actual[i])
-            logger.warning(
+            logger.debug(
                 f"Engine {engine.index} thrust saturated "
                 f"(requested: {f_mag:.2f}, max: {engine.max_thrust:.2f})"
             )

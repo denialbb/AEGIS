@@ -33,6 +33,7 @@ from src.guidance.controller import GuidanceController
 from src.telemetry.frame import TelemetryFrame
 from src.telemetry.writer import TelemetryWriter
 from src.telemetry.sensors import SensorModels
+from src.common.hud import HudDisplay
 
 
 class MissionDirector:
@@ -172,6 +173,12 @@ class MissionDirector:
 
         self._exit_requested: bool = False
 
+        self._dt_spike_count: int = 0
+        self._alloc_cond: float = 0.0
+        self._saturated_engines_set: set[int] = set()
+
+        self.hud: HudDisplay = HudDisplay(max(len(self.engines), 1))
+
     def _compute_glideslope_target(
         self,
         state_vector: np.ndarray,
@@ -239,6 +246,11 @@ class MissionDirector:
             signal.SIGTERM, lambda sig, frame: setattr(self, "_exit_requested", True)
         )
 
+        self.hud.start()
+
+        # Landing timer: accumulates while vessel is low and slow, decays when not
+        self._landed_timer = 0.0
+
         while self.state not in ["HARD_ABORT", "LANDED"]:
             start_time = time.time()
 
@@ -265,6 +277,7 @@ class MissionDirector:
                     )
                     skip_predict = True
                     self.guidance.reset()
+                    self._dt_spike_count += 1
                 else:
                     skip_predict = False
             else:
@@ -281,6 +294,10 @@ class MissionDirector:
                 situation,
                 angular_velocity,
             ) = self.sensors.poll()
+            # Debug raw telemetry for diagnosis
+            logger.debug(
+                f"Poll: raw_alt={noisy_alt:.2f}, raw_ang_vel={np.linalg.norm(angular_velocity):.3f}"
+            )
 
             # Universal vessel-destroyed check — must be handled for ALL states, not just TERMINAL_DESCENT
             if situation == "destroyed":
@@ -436,7 +453,11 @@ class MissionDirector:
             # Altitude is the projection of the state vector onto the up_vector
             est_alt = float(np.dot(state_vector[:3], self.up_vector))
             est_vz = float(np.dot(state_vector[3:], self.up_vector))
-
+            # Debug KF estimates and up vector sanity
+            logger.debug(
+                f"KF: est_alt={est_alt:.2f}, est_vz={est_vz:.2f}, "
+                f"pos_norm={np.linalg.norm(state_vector[:3]):.2f}, up_norm={np.linalg.norm(self.up_vector):.3f}"
+            )
             if config.SAS_PROGRADE_ASCENT:
                 if est_vz > 45 and ves_orientation != "prograde":
                     self.vessel.control.sas = True
@@ -598,14 +619,30 @@ class MissionDirector:
                 )
                 self.state = "TERMINAL_DESCENT"
             elif self.state == "TERMINAL_DESCENT":
-                if situation in ("landed", "splashed"):
-                    logger.info("Touchdown detected. Transitioning to LANDED")
+                # Determine if the vessel is low and slow enough to count toward landing
+                vel_landed = abs(est_vz) < config.LANDED_VEL_THRESHOLD
+                alt_landed = abs(noisy_alt) < config.LANDED_ALT_THRESHOLD
+                if vel_landed and alt_landed:
+                    self._landed_timer += dt
+                    # Log the timer progress for HUD visibility
+                    logger.debug(
+                        f"Landed timer advancing: {self._landed_timer:.3f}s"
+                    )
+                else:
+                    # Decay the timer when conditions are not met
+                    self._landed_timer = max(0.0, self._landed_timer - dt)
+                # Check if the vessel has been low and slow for the required duration
+                if self._landed_timer >= 5.0:
                     self.writer.log_event(
                         {
                             "type": "STATE_TRANSITION",
                             "from": self.state,
                             "to": "LANDED",
                         }
+                    )
+                    logger.info(
+                        f"Transitioning from {self.state} to LANDED. "
+                        f"Touchdown confirmed (timer={self._landed_timer:.3f}s)."
                     )
                     self.state = "LANDED"
             elif self.state not in [
@@ -661,7 +698,13 @@ class MissionDirector:
                     a_avail=a_avail,
                 )
             elif self.state == "TERMINAL_DESCENT":
-                if situation in ("landed", "splashed"):
+                vel_landed = abs(est_vz) < config.LANDED_VEL_THRESHOLD
+                alt_landed = abs(noisy_alt) < config.LANDED_ALT_THRESHOLD
+                if vel_landed and alt_landed:
+                    self._landed_timer += dt
+                else:
+                    self._landed_timer = max(0.0, self._landed_timer - dt)
+                if self._landed_timer >= 5.0:
                     self.writer.log_event(
                         {
                             "type": "STATE_TRANSITION",
@@ -670,7 +713,8 @@ class MissionDirector:
                         }
                     )
                     logger.info(
-                        f"Transitioning from {self.state} to LANDED. Touchdown confirmed."
+                        f"Transitioning from {self.state} to LANDED. "
+                        f"Touchdown confirmed (timer={self._landed_timer:.3f}s)."
                     )
                     self.state = "LANDED"
                 else:
@@ -826,6 +870,9 @@ class MissionDirector:
                     self.current_gimbals = current_gimbals
                     self.expected_throttles = np.array(new_expected_throttles)
 
+                    self._alloc_cond = float(np.linalg.cond(self.allocator._build_B(active_engines)))
+                    self._saturated_engines_set = set(self.allocator._saturated_engines)
+
                     # Expected acceleration is total force (thrust + aerodynamic) divided by mass
                     # Guard: if mass is invalid (0 or NaN), keep the last valid expected_accel.
                     # A stale-nonzero value is safer than zero — zero produces FDI false positives.
@@ -875,6 +922,33 @@ class MissionDirector:
             )
             self.writer.log_tick(frame)
 
+            # 5.6. Update HUD
+            if self.hud.is_active:
+                gimbals_deg = np.degrees(gimbals) if gimbals.ndim == 2 else np.zeros((max(len(self.engines), 1), 2))
+                self.hud.update({
+                    "state": self.state,
+                    "altitude": noisy_alt,
+                    "est_alt": est_alt,
+                    "vertical_vel": est_vz,
+                    "lateral_vel": state_vector[3:] - self.up_vector * est_vz,
+                    "position": state_vector[:3],
+                    "throttles": throttles,
+                    "gimbals_deg": gimbals_deg,
+                    "fuel_state": fuel_state,
+                    "fdi_deviation": float(np.linalg.norm(self.expected_accel - noisy_accel_body)) if np.linalg.norm(self.expected_accel) > 1e-6 else 0.0,
+                    "alloc_cond": self._alloc_cond,
+                    "saturated": self._saturated_engines_set,
+                    "kf_cov_pos": float(self.estimator.kf.P[2, 2]) if self.estimator.kf.P.shape[0] > 2 else 0.0,
+                    "kf_cov_vel": float(self.estimator.kf.P[5, 5]) if self.estimator.kf.P.shape[0] > 5 else 0.0,
+                    "dt_spike_count": self._dt_spike_count,
+                    "skip_predict": skip_predict,
+                    "active_engine_count": len(active_engines),
+                    "total_engine_count": len(self.engines),
+                    "mass": mass,
+                    "a_avail": a_avail,
+                    "angular_velocity_mag": float(np.linalg.norm(angular_velocity)),
+                })
+
             # 6. Timing Enforcement
             elapsed = time.time() - start_time
             sleep_time = dt - elapsed
@@ -882,6 +956,7 @@ class MissionDirector:
                 time.sleep(sleep_time)
 
         # Cleanup when loop ends
+        self.hud.stop()
         self.writer.close()
         return success
 
