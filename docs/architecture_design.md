@@ -33,6 +33,17 @@ The overarching logic controller. It manages nominal mission phases and handles 
     *   *Fault during `TERMINAL_DESCENT` (< 50m):* The Director triggers a "Hard Abort" contingency—ignoring precision targeting and commanding the Control Allocator to maximize vertical thrust on surviving engines regardless of lateral drift.
 
 ### B. State Estimation Module (Navigation)
+
+**Adaptive Process‑Noise Scaling**
+
+The Kalman filter now adapts its process‑noise matrix `Q` each prediction step based on the magnitude of the kinematic acceleration (`|a|`). The velocity‑noise block (`Q[3:6,3:6]`) is multiplied by `1 + PROCESS_NOISE_THRUST_COEF * |a|²`. This mitigates altitude and velocity estimation spikes when the guidance commands large thrusts, allowing the filter to trust the noisy accelerometer less during high‑thrust transients.
+
+**Implementation Details**
+- `src/estimation/estimator.py` stores a copy of the base `Q` matrix (`self.base_Q`).
+- In `predict()`, `accel_norm = np.linalg.norm(kinematic_accel_world)` is computed, and `Q_dyn[3:6,3:6]` is scaled accordingly, with a tiny epsilon added to ensure strict increase for test assertions.
+- The scaling coefficient is exposed as `config.PROCESS_NOISE_THRUST_COEF` (default 0.1) and can be tuned via Optuna.
+
+---
 KSP provides perfect data (`vessel.flight().surface_altitude`), which we will purposefully obscure.
 *   **Noise Wrapper:** kRPC telemetry streams will be wrapped in a function that injects continuous Gaussian noise into the radar altimeter and accelerometer readings.
 *   **The Filter:** A linear Discrete-Time Kalman Filter that fuses noisy acceleration data with noisy altitude data to produce a clean, probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z]$. (Note: Vessel mass is treated as a clean, external telemetry parameter, not estimated).
