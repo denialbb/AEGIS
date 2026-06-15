@@ -1,6 +1,7 @@
 import math
 import time
 import os
+import signal
 import krpc
 import logging
 import numpy as np
@@ -166,6 +167,8 @@ class MissionDirector:
             config.ACTIVATION_ACTION_GROUP, False
         )
 
+        self._exit_requested: bool = False
+
     def _compute_glideslope_target(
         self,
         state_vector: np.ndarray,
@@ -222,8 +225,19 @@ class MissionDirector:
         dt = 1.0 / target_hz
         ves_orientation = "stability"
 
+        signal.signal(
+            signal.SIGINT, lambda sig, frame: setattr(self, "_exit_requested", True)
+        )
+
         while self.state not in ["HARD_ABORT", "LANDED"]:
             start_time = time.time()
+
+            if self._exit_requested:
+                logger.info("SIGINT received. Requesting graceful shutdown.")
+                self.writer.log_event({"type": "USER_ABORT"})
+                self.state = "HARD_ABORT"
+                break
+
             # Timing and Frame Drop Handling
             # KSP physics runs at 50Hz (20ms). If the game lags or pauses, 'actual_dt' spikes.
             # A massive dt would cause the Kalman Filter's acceleration prediction step (0.5 * a * dt^2)
