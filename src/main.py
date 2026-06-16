@@ -26,7 +26,7 @@ def _safe_engine_access(part: Any) -> Any:
         return None
 
 
-from src.estimation.estimator import StateEstimator
+from src.estimation.ekf import ErrorStateEKF
 from src.fdi.fdi import FaultDetectionIsolation
 from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
 from src.guidance.controller import GuidanceController
@@ -108,25 +108,25 @@ class MissionDirector:
             self.conn, vessel, self.ref_frame, self.up_vector
         )
 
-        # Initialize submodules
-        # Query vessel velocity for Kalman filter initial state (one-time startup, not stream)
-        initial_state = np.zeros(6)
-        initial_state[3:] = np.array(vessel.flight(self.ref_frame).velocity)
-        initial_covariance = np.eye(6)
-        process_noise = np.eye(6)
-        measurement_noise_alt = np.eye(1)
-        measurement_noise_vel = np.eye(3) * (config.SIGMA_VEL**2)
+        # Initialize submodules — Error-State EKF (12-dim error state: pos, vel, gyro_bias, accel_bias)
+        initial_pos: np.ndarray = np.zeros(3)
+        initial_vel: np.ndarray = np.array(
+            vessel.flight(self.ref_frame).velocity
+        )
+        initial_covariance: np.ndarray = np.eye(12)
+        initial_covariance[0:3, 0:3] *= 1.0   # position uncertainty
+        initial_covariance[3:6, 3:6] *= 1.0   # velocity uncertainty
+        initial_covariance[6:9, 6:9] *= config.EKF_INITIAL_GYRO_BIAS_UNCERTAINTY**2   # gyro bias uncertainty
+        initial_covariance[9:12, 9:12] *= config.EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY**2   # accel bias uncertainty
 
-        self.estimator: StateEstimator = StateEstimator(
-            initial_state,
+        self.estimator: ErrorStateEKF = ErrorStateEKF(
+            initial_pos,
+            initial_vel,
             initial_covariance,
-            process_noise,
-            measurement_noise_alt,
-            measurement_noise_vel,
             self.up_vector,
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(
-            threshold=config.FDI_THRESHOLD
+            threshold=config.FDI_THRESHOLD, ekf=self.estimator
         )
 
         # Query inertia tensor from kRPC (ADR-028), reshape from row-major list to 3x3
@@ -293,12 +293,12 @@ class MissionDirector:
             # 1. Poll Telemetry
             (
                 noisy_alt,
-                noisy_accel_body,
-                attitude,
+                sf_body,  # body-frame specific force
+                attitude,  # Mahony quaternion
                 mass,
                 aero_body,
                 situation,
-                angular_velocity,
+                omega_body,  # body-frame angular velocity
                 noisy_vel,
                 gravity_world,
             ) = self.sensors.poll()
@@ -307,7 +307,7 @@ class MissionDirector:
             # Debug raw telemetry for diagnosis
             # TODO
             logger.debug(
-                f"Poll: raw_alt={noisy_alt:.2f}, raw_ang_vel={np.linalg.norm(angular_velocity):.3f}"
+                f"Poll: raw_alt={noisy_alt:.2f}, raw_ang_vel={np.linalg.norm(omega_body):.3f}"
             )
 
             # Universal vessel-destroyed check — must be handled for ALL states, not just TERMINAL_DESCENT
@@ -336,9 +336,21 @@ class MissionDirector:
             # 2. Update Estimator
             if not skip_predict:
                 self.estimator.predict(
-                    noisy_accel_body, attitude, dt, gravity_world
+                    sf_body,  # body-frame specific force
+                    omega_body,  # body-frame angular velocity
+                    attitude,  # mahony_attitude: from complementary filter
+                    gravity_world,
+                    dt,
                 )
             state_vector = self.estimator.update(noisy_alt, noisy_vel)
+
+            # 2.6 Check IMU health via FDI
+            imu_fault_detected = self.fdi.detect_imu_fault()
+            if imu_fault_detected:
+                logger.warning(
+                    "IMU fault detected via EKF innovation monitoring"
+                )
+                # Optional: could increase filter noise or take other corrective action here
 
             # 2.5 Check fuel state
             for e in self.engines:
@@ -386,44 +398,44 @@ class MissionDirector:
                     and not landed
                 ):
                     fault_detected = self.fdi.detect_fault(
-                        self.expected_accel, noisy_accel_body
+                        self.expected_accel, sf_body
                     )
                     if fault_detected and len(active_engines) > 0:
                         failed_indices = self.fdi.isolate_fault(
                             active_engines,
                             self.expected_throttles,
-                            noisy_accel_body,
+                            sf_body,
                             mass,
                         )
 
-                        # ISS-004: Handle multiple simultaneous failures
-                        if len(failed_indices) >= 2:
-                            logger.error(
-                                f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered."
-                            )
-                            self.writer.log_event(
-                                {
-                                    "type": "STATE_TRANSITION",
-                                    "from": self.state,
-                                    "to": "HARD_ABORT",
-                                    "reason": "MULTIPLE_FAILURES",
-                                }
-                            )
-                            self.state = "HARD_ABORT"
+                    # ISS-004: Handle multiple simultaneous failures
+                    if len(failed_indices) >= 2:
+                        logger.error(
+                            f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered."
+                        )
+                        self.writer.log_event(
+                            {
+                                "type": "STATE_TRANSITION",
+                                "from": self.state,
+                                "to": "HARD_ABORT",
+                                "reason": "MULTIPLE_FAILURES",
+                            }
+                        )
+                        self.state = "HARD_ABORT"
 
-                        for e in self.engines:
-                            if e.index in failed_indices:
-                                if e.active:
-                                    self.writer.log_event(
-                                        {
-                                            "type": "FAULT_DETECTED",
-                                            "engine_index": e.index,
-                                        }
-                                    )
-                                    e.active = False
+                    for e in self.engines:
+                        if e.index in failed_indices:
+                            if e.active:
+                                self.writer.log_event(
+                                    {
+                                        "type": "FAULT_DETECTED",
+                                        "engine_index": e.index,
+                                    }
+                                )
+                                e.active = False
 
-                        # Re-evaluate active engines
-                        active_engines = [e for e in self.engines if e.active]
+                    # Re-evaluate active engines
+                    active_engines = [e for e in self.engines if e.active]
 
                 else:
                     logger.debug(
@@ -796,23 +808,21 @@ class MissionDirector:
                                 ):
                                     module.trigger_event("Toggle Trim")
 
-                # Accumulate angular motion for Optuna rocking penalty
-                self.total_angular_motion += (
-                    float(np.linalg.norm(angular_velocity)) * dt
-                )
+            # Accumulate angular motion for Optuna rocking penalty
+            self.total_angular_motion += float(np.linalg.norm(omega_body)) * dt
 
-                desired_wrench = self.guidance.compute_wrench(
-                    current_state=state_vector,
-                    current_attitude=attitude,
-                    mass=mass,
-                    target_state=target_state,
-                    up_vector=self.up_vector,
-                    dt=dt,
-                    angular_velocity=angular_velocity,
-                    max_a_avail=a_avail,
-                )
-            else:
-                desired_wrench = np.zeros(6)
+            desired_wrench = self.guidance.compute_wrench(
+                current_state=state_vector,
+                current_attitude=attitude,
+                mass=mass,
+                target_state=target_state,
+                up_vector=self.up_vector,
+                dt=dt,
+                angular_velocity=omega_body,
+                max_a_avail=a_avail,
+            )
+        else:
+            desired_wrench = np.zeros(6)
 
             # 5. Allocate Thrust
             if active_engines and self.state not in [
@@ -981,8 +991,8 @@ class MissionDirector:
                         "alloc_cond": self._alloc_cond,
                         "saturated": self._saturated_engines_set,
                         "kf_cov_pos": (
-                            float(self.estimator.kf.P[2, 2])
-                            if self.estimator.kf.P.shape[0] > 2
+                            float(self.estimator.P[2, 2])
+                            if self.estimator.P.shape[0] > 2
                             else 0.0
                         ),
                         "kf_cov_vel": (

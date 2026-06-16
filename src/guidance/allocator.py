@@ -114,17 +114,34 @@ class ControlAllocator:
             f_actual[:] = f_desired  # Start with desired forces
 
             for i, engine in enumerate(active_engines):
-                axial_f = float(np.dot(f_desired[i], engine.thrust_direction))
-                if axial_f > engine.max_thrust + 1e-6 or axial_f < -1e-6:
+                thrust_dir = engine.thrust_direction
+
+                axial_f = float(np.dot(f_desired[i], thrust_dir))
+
+                lateral_f_vec = f_desired[i] - axial_f * thrust_dir
+                lat_mag = np.linalg.norm(lateral_f_vec)
+
+                # --- clamp axial first ---
+                axial_f_clamped = np.clip(axial_f, 0.0, engine.max_thrust)
+
+                # --- recompute gimbal limit based on clamped axial ---
+                max_lat = axial_f_clamped * np.tan(
+                    np.deg2rad(engine.max_gimbal_deg)
+                )
+
+                if lat_mag > max_lat and lat_mag > 1e-8:
                     newly_saturated[i] = True
-                    if axial_f > 0:
-                        f_actual[i] = (
-                            engine.thrust_direction * engine.max_thrust
-                        )
-                    else:
-                        f_actual[i] = np.zeros(3)
+                    lateral_f_vec = lateral_f_vec / lat_mag * max_lat
+
+                # recombine
+                f_sat = axial_f_clamped * thrust_dir + lateral_f_vec
+
+                # if axial was invalid (reverse thrust case)
+                if axial_f < 0:
+                    newly_saturated[i] = True
+                    f_actual[i] = np.zeros(3)
                 else:
-                    f_actual[i] = f_desired[i]
+                    f_actual[i] = f_sat
 
             # If no new saturation, we've converged
             if not np.any(newly_saturated):
@@ -238,6 +255,7 @@ class ControlAllocator:
                 - float(np.dot(f_vec, engine.thrust_direction))
                 * engine.thrust_direction
             )
+
             lat_mag = float(np.linalg.norm(lateral_force_vec))
 
             max_lat = axial_force * np.tan(np.radians(5))

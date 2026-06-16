@@ -1,6 +1,20 @@
+"""
+Mahony complementary attitude filter.
+
+Decoupled from the EKF — this filter owns attitude estimation using
+gyro integration (short-term) and accelerometer gravity-reference
+correction (long-term).  Gyroscope bias is supplied by the EKF
+via the ``set_gyro_bias()`` callback so the Mahony filter integrates
+bias-corrected rates.
+
+Usage
+─────
+    mahony = MahonyAttitudeEstimator(kp=2.0, ki=0.1)
+    mahony.set_gyro_bias(bg_from_ekf)      # optional, each tick
+    q = mahony.update(omega_body, f_body, gravity_world_mag, dt)
+"""
 import numpy as np
 import logging
-from typing import Any
 import src.config as config
 from scipy.spatial.transform import Rotation as R  # type: ignore
 
@@ -9,143 +23,144 @@ logger = logging.getLogger(__name__)
 
 class MahonyAttitudeEstimator:
     """
-    Mahony attitude estimator (complementary filter) that fuses gyroscope
-    and accelerometer data to estimate vessel attitude.
-    
-    The filter uses:
-    - Gyroscope data for short-term precision (integration)
-    - Accelerometer data for long-term stability (gravity vector reference)
+    Standalone Mahony complementary filter for attitude.
+
+    Does **not** poll sensors — accepts raw IMU data via ``update()``.
+    Gyro bias comes from the EKF via ``set_gyro_bias()``.
     """
-    
-    def __init__(self, 
-                 gyro_sensor: Any, 
-                 accel_sensor: Any,
-                 kp: float = 2.0, 
-                 ki: float = 0.0,
-                 up_vector: np.ndarray = np.array([0.0, 0.0, 1.0])):
+
+    def __init__(
+        self,
+        kp: float | None = None,
+        ki: float | None = None,
+        up_vector: np.ndarray = np.array([0.0, 0.0, 1.0]),
+        gravity_magnitude: float = 9.81,
+    ) -> None:
+        self.kp: float = kp if kp is not None else config.MAHONY_KP
+        self.ki: float = ki if ki is not None else config.MAHONY_KI
+        self.up_vector: np.ndarray = up_vector / np.linalg.norm(up_vector)
+        self.g_mag: float = gravity_magnitude
+
+        self.quaternion: np.ndarray = np.array([0.0, 0.0, 0.0, 1.0])
+        self.integral_error: np.ndarray = np.zeros(3)
+
+        self._external_bg: np.ndarray = np.zeros(3)
+
+        logger.info(f"Initialized MahonyAttitudeEstimator kp={self.kp} ki={self.ki}")
+
+    # ────────────────────────────────────────────────────────────────
+    #  BIAS FEEDBACK FROM EKF
+    # ────────────────────────────────────────────────────────────────
+
+    def set_gyro_bias(self, bg: np.ndarray) -> None:
+        """Accept gyroscope bias estimate from the EKF [rad/s]."""
+        self._external_bg = bg.copy()
+
+    # ────────────────────────────────────────────────────────────────
+    #  MAIN UPDATE
+    # ────────────────────────────────────────────────────────────────
+
+    def update(
+        self,
+        omega_body: np.ndarray,
+        f_body: np.ndarray,
+        gravity_world: np.ndarray,
+        dt: float,
+    ) -> np.ndarray:
         """
-        Initializes the Mahony attitude estimator.
-        
-        Args:
-            gyro_sensor: GyroSensor instance
-            accel_sensor: AccelerometerSensor instance
-            kp: Proportional gain for acceleration error
-            ki: Integral gain for acceleration error (applied to gyroscope bias)
-            up_vector: Reference up vector for initialization
+        Propagate and correct the attitude estimate.
+
+        Parameters
+        ----------
+        omega_body : ndarray (3,)
+            Raw gyroscope reading in body frame [rad/s].
+        f_body : ndarray (3,)
+            Raw specific-force reading in body frame [m/s²].
+        gravity_world : ndarray (3,)
+            Gravity vector in world frame [m/s²].
+        dt : float
+            Time step [s].
+
+        Returns
+        -------
+        quaternion : ndarray (4,)
+            Updated attitude [x, y, z, w] (body→world).
         """
-        self.gyro_sensor = gyro_sensor
-        self.accel_sensor = accel_sensor
-        self.kp = kp
-        self.ki = ki
-        self.up_vector = up_vector / np.linalg.norm(up_vector)  # Normalize
-        
-        # Estimated attitude quaternion [x, y, z, w] (scalar-last, matches kRPC/scipy)
-        self.quaternion = np.array([0.0, 0.0, 0.0, 1.0])  # Start with identity (no rotation)
-        
-        # Integral error terms for bias estimation
-        self.integral_error = np.zeros(3)
-        
-        # Timestamp for dt calculation
-        self.last_update_time = None
-        
-        logger.info(f"Initialized MahonyAttitudeEstimator with kp={kp}, ki={ki}")
-    
-    def update(self, dt: float) -> np.ndarray:
-        """
-        Updates the attitude estimate using gyroscope and accelerometer data.
-        
-        Args:
-            dt: Time step since last update (seconds)
-            
-        Returns:
-            quaternion: Estimated attitude quaternion [x, y, z, w]
-        """
-        # Get sensor readings
-        omega = self.gyro_sensor.poll()  # Angular velocity in body frame (rad/s)
-        accel_world, gravity_world = self.accel_sensor.poll(np.zeros(3))  # Specific force in world frame
-        
-        # Normalize accelerometer reading (should align with gravity when stationary)
-        accel_norm = np.linalg.norm(accel_world)
-        if accel_norm > 0.1:  # Only use accelerometer if we have reasonable signal
-            accel_normalized = accel_world / accel_norm
-        else:
-            # If accelerometer data is unreliable, skip correction
-            accel_normalized = None
-        
-        # Current estimated gravity vector in body frame (from quaternion)
-        # In body frame, gravity should be [0, 0, -1] when level
-        gravity_estimate_body = R.from_quat(self.quaternion).inv().apply(np.array([0.0, 0.0, -9.81]))
-        gravity_estimate_body_unit = gravity_estimate_body / np.linalg.norm(gravity_estimate_body)
-        
-        # Compute error between measured acceleration and expected gravity
-        error = np.zeros(3)
-        if accel_normalized is not None:
-            # Expected accelerometer reading in body frame when level: [0, 0, -1] (gravity down)
-            expected_accel_body = np.array([0.0, 0.0, -1.0])
-            
-            # Rotate expected acceleration to world frame using current estimate
-            expected_accel_world = R.from_quat(self.quaternion).apply(expected_accel_body)
-            
-            # Error is cross product between expected and measured directions
-            error = np.cross(expected_accel_world, accel_normalized)
-        
-        # Apply proportional and integral gains
-        if self.ki > 0:
+        # ── 1. Subtract EKF-estimated gyro bias ─────────────────────
+        omega_corr: np.ndarray = omega_body - self._external_bg
+
+        # ── 2. Gravity-reference correction ─────────────────────────
+        #   The accelerometer measures specific force f = a − g.
+        #   When stationary, f = −g  →  normalised f should align
+        #   with the expected gravity direction in body frame.
+        g_mag: float = float(np.linalg.norm(gravity_world))
+        g_world_unit: np.ndarray = gravity_world / g_mag if g_mag > 1e-6 else self.up_vector
+
+        #   Expected gravity in body frame given current quaternion.
+        #   gravity_world is world-frame → rotate to body via q⁻¹.
+        g_expected_body: np.ndarray = R.from_quat(self.quaternion).inv().apply(g_world_unit)
+
+        #   Measured gravity direction in body frame (inverted specific force)
+        f_norm: float = float(np.linalg.norm(f_body))
+        error: np.ndarray = np.zeros(3)
+        if f_norm > 1e-3:
+            f_unit_body: np.ndarray = -f_body / f_norm
+            error = np.cross(g_expected_body, f_unit_body)
+
+        # ── 3. PI correction on gyro ────────────────────────────────
+        if self.ki > 0.0:
             self.integral_error += error * dt
-            # Apply integral feedback to gyroscope
-            omega_corrected = omega + (self.kp * error) + (self.ki * self.integral_error)
+            omega_corr = omega_corr + self.kp * error + self.ki * self.integral_error
         else:
-            omega_corrected = omega + (self.kp * error)
-        
-        # Convert quaternion to rate of change
+            omega_corr = omega_corr + self.kp * error
+
+        # ── 4. Quaternion integration ──────────────────────────────
+        angle = float(np.linalg.norm(omega_corr))
         q = self.quaternion
-        omega_q = np.array([omega_corrected[0], omega_corrected[1], omega_corrected[2], 0.0])
-        
-        # Quaternion derivative: q_dot = 0.5 * q ⊗ omega
-        q_dot = 0.5 * self._quaternion_multiply(q, omega_q)
-        
-        # Integrate to get new quaternion
-        q_new = q + q_dot * dt
-        
-        # Normalize quaternion
-        self.quaternion = q_new / np.linalg.norm(q_new)
-        
-        # Store timestamp for next iteration
-        self.last_update_time = dt
-        
+        if angle < 1e-12:
+            self.quaternion = q / np.linalg.norm(q)
+        else:
+            axis = omega_corr / angle
+            ha = 0.5 * angle * dt
+            dq = np.array([
+                axis[0] * np.sin(ha),
+                axis[1] * np.sin(ha),
+                axis[2] * np.sin(ha),
+                np.cos(ha),
+            ])
+            q_new = _quat_mul(q, dq)
+            self.quaternion = q_new / np.linalg.norm(q_new)
+
         logger.debug(
-            f"Mahony: omega=[{omega[0]:.3f}, {omega[1]:.3f}, {omega[2]:.3f}] "
-            f"error=[{error[0]:.3f}, {error[1]:.3f}, {error[2]:.3f}] "
-            f"omega_corrected=[{omega_corrected[0]:.3f}, {omega_corrected[1]:.3f}, {omega_corrected[2]:.3f}] "
-            f"q=[{self.quaternion[0]:.3f}, {self.quaternion[1]:.3f}, {self.quaternion[2]:.3f}, {self.quaternion[3]:.3f}]"
+            f"Mahony: ω=[{omega_body[0]:.3f},{omega_body[1]:.3f},{omega_body[2]:.3f}] "
+            f"err=[{error[0]:.3f},{error[1]:.3f},{error[2]:.3f}] "
+            f"q=[{self.quaternion[0]:.3f},{self.quaternion[1]:.3f},"
+            f"{self.quaternion[2]:.3f},{self.quaternion[3]:.3f}]"
         )
-        
         return self.quaternion.copy()
-    
-    def _quaternion_multiply(self, q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
-        """
-        Multiply two quaternions.
-        Args:
-            q1, q2: Quaternions as [x, y, z, w]
-        Returns:
-            Result quaternion [x, y, z, w]
-        """
-        x1, y1, z1, w1 = q1
-        x2, y2, z2, w2 = q2
-        
-        x = w1*x2 + x1*w2 + y1*z2 - z1*y2
-        y = w1*y2 - x1*z2 + y1*w2 + z1*x2
-        z = w1*z2 + x1*y2 - y1*x2 + z1*w2
-        w = w1*w2 - x1*x2 - y1*y2 - z1*z2
-        
-        return np.array([x, y, z, w])
-    
+
+    # ────────────────────────────────────────────────────────────────
+    #  ACCESSORS
+    # ────────────────────────────────────────────────────────────────
+
     def get_attitude(self) -> np.ndarray:
-        """Returns the current estimated attitude quaternion."""
+        """Return current attitude quaternion (4,) [x,y,z,w]."""
         return self.quaternion.copy()
-    
-    def reset(self):
-        """Resets the estimator to initial state."""
+
+    def reset(self) -> None:
+        """Reset to identity attitude."""
         self.quaternion = np.array([0.0, 0.0, 0.0, 1.0])
         self.integral_error = np.zeros(3)
-        self.last_update_time = None
+        self._external_bg = np.zeros(3)
+
+
+def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """Hamilton product of two [x,y,z,w] quaternions."""
+    x1, y1, z1, w1 = q1
+    x2, y2, z2, w2 = q2
+    return np.array([
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+    ])

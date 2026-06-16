@@ -1,18 +1,50 @@
 import numpy as np
 import logging
 from typing import List, Dict, Any
+import src.config as config
 from src.common.engine import Engine
 
 logger = logging.getLogger(__name__)
 
 class FaultDetectionIsolation:
-    def __init__(self, threshold: float = 0.5):
+    def __init__(self, threshold: float = 0.5, ekf=None):
         """
         threshold: Deviation in m/s^2 above which a fault is declared.
+        ekf: Optional ErrorStateEKF instance for IMU health monitoring.
         """
         self.threshold: float = threshold
         self.persistence_ticks: int = 50  # 1 second at 50Hz to allow for engine spool up
         self.consecutive_faults: int = 0
+        self.ekf = ekf
+        
+        # IMU health monitoring parameters
+        self.imu_fault_threshold: float = config.EKF_INNOVATION_FAULT_THRESHOLD if hasattr(config, 'EKF_INNOVATION_FAULT_THRESHOLD') else 5.0
+        self.imu_persistence_ticks: int = 10  # Shorter persistence for IMU faults
+        self.imu_consecutive_faults: int = 0
+
+    def detect_imu_fault(self) -> bool:
+        """
+        Check if the EKF innovation norm exceeds the threshold, indicating
+        potential IMU sensor issues.
+        
+        Returns
+        -------
+        bool
+            True if IMU fault detected, False otherwise.
+        """
+        if self.ekf is None:
+            return False
+             
+        innovation_norm = self.ekf.get_innovation_norm()
+        if innovation_norm > self.imu_fault_threshold:
+            self.imu_consecutive_faults += 1
+            if self.imu_consecutive_faults >= self.imu_persistence_ticks:
+                logger.warning(f"[FDI-IMU] Persistent IMU Fault Confirmed! Innovation norm: {innovation_norm:.3f} > {self.imu_fault_threshold}")
+                return True
+        else:
+            self.imu_consecutive_faults = 0
+             
+        return False
 
     def detect_fault(self, expected_accel: np.ndarray, measured_accel: np.ndarray) -> bool:
         """

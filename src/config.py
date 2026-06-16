@@ -137,6 +137,27 @@ MAHONY_KP = 2.0
 MAHONY_KI = 0.0
 
 # ---------------------------------------------------------
+# Error-State EKF Parameters
+# ---------------------------------------------------------
+# Initial attitude uncertainty (rad, 1-σ).
+# Controls how quickly the EKF trusts accelerometer-based attitude correction.
+# Min: 0.01 (Well-known attitude), Max: 1.0 (Large initial error)
+EKF_INITIAL_ATT_UNCERTAINTY = 0.1  # rad
+
+# Initial gyroscope bias uncertainty (rad/s, 1-σ).
+# Min: 1e-5 (Factory-calibrated), Max: 0.1 (Uncalibrated)
+EKF_INITIAL_GYRO_BIAS_UNCERTAINTY = 0.01  # rad/s
+
+# Initial accelerometer bias uncertainty (m/s², 1-σ).
+# Min: 1e-4, Max: 1.0
+EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY = 0.1  # m/s²
+
+# Innovation magnitude threshold for IMU health monitoring.
+# When the normalised innovation exceeds this, an sensor anomaly is flagged.
+# Min: 3.0 (Sensitive), Max: 10.0 (Tolerant)
+EKF_INNOVATION_FAULT_THRESHOLD = 5.0
+
+# ---------------------------------------------------------
 # Glide-Slope Guidance
 # ---------------------------------------------------------
 # Vertical velocity target = -sqrt(2 * a_avail * alt_above_floor), where
