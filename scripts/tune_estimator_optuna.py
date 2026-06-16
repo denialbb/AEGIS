@@ -143,7 +143,8 @@ def _trial_result(
     best_score: float,
     elapsed: float,
 ) -> None:
-    improved = " ★ NEW BEST" if score <= best_score else ""
+    improved = "NEW BEST" if score <= best_score else ""
+    _dashboard.report_trial()
     print(f"  ┌─ Trial {trial_num + 1} result{improved}")
     print(f"  │  Score    = {_fmt(score)}")
     print(f"  │  RMSE pos = {_fmt(rmse_pos)}")
@@ -157,9 +158,7 @@ def _trial_result(
 def objective(trial: optuna.trial.Trial) -> float:
     ekf = _build_ekf(trial)
     trial_num = trial.number
-
     _trial_banner(trial, trial_num, _N_TOTAL, trial.params)
-
     t0 = time.perf_counter()
     total_rmse_pos = 0.0
     total_rmse_vel = 0.0
@@ -171,16 +170,8 @@ def objective(trial: optuna.trial.Trial) -> float:
         total_rmse_pos += metrics["rmse_pos"]
         total_rmse_vel += metrics["rmse_vel"]
         total_nis += metrics["nis"]
-        test_n = i + (trial_num - 1) * n_flights
-        if "pbar" in globals():
-            percent_complete = (
-                ((test_n + 1) / _N_TOTAL * 100) if _N_TOTAL else 0
-            )
-            globals()["pbar"].update(1)
-            globals()["pbar"].refresh()
-            # globals()["pbar"].write(
-            #     #    f"  Trial progress: {test_n + 1}/{_N_TOTAL} ({percent_complete:.1f}%)"
-            # )
+        if _dashboard is not None:
+            _dashboard.advance(1)
 
     if n_flights == 0:
         score = 1e6
@@ -201,7 +192,16 @@ def objective(trial: optuna.trial.Trial) -> float:
         best_so_far,
         elapsed,
     )
-
+    if _dashboard is not None:
+        _dashboard.report_trial(
+            trial_num,
+            score,
+            avg_rmse_pos,
+            avg_rmse_vel,
+            avg_nis,
+            best_so_far,
+            elapsed,
+        )
     return score
 
 
@@ -278,9 +278,18 @@ if __name__ == "__main__":
             if _stop[0]:
                 study.stop()
 
-        study.optimize(
-            objective, n_trials=n_trials_arg, n_jobs=1, callbacks=[_should_stop]
-        )
+        with TrialDashboard(
+            total_steps=_N_TOTAL,
+            history_rows=10,
+            title="EKF Hyperparameter Search",
+        ) as dash:
+            globals()["_dashboard"] = dash
+            study.optimize(
+                objective,
+                n_trials=n_trials_arg,
+                n_jobs=1,
+                callbacks=[_should_stop],
+            )
 
     except KeyboardInterrupt:
         print("\n  interrupted.")

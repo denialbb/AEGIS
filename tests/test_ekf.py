@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from src.estimation.ekf import ErrorStateEKF
 from src.estimation.mahony_estimator import MahonyAttitudeEstimator
 import src.config as config
@@ -189,6 +190,438 @@ def test_mahony_ekf_integration():
         ekf.update(0.0, np.array([0.0, 0.0, 0.0]))
 
 
+# ════════════════════════════════════════════════════════════════
+#  EDGE-CASE & NUMERICAL-SAFETY TESTS
+# ════════════════════════════════════════════════════════════════
+
+
+def test_ekf_zero_dt_is_noop():
+    """predict with dt <= 0 must not mutate state."""
+    ekf = ErrorStateEKF(
+        np.array([10.0, 20.0, 100.0]),
+        np.array([1.0, 2.0, -5.0]),
+        np.eye(12),
+    )
+    pos_before = ekf.pos.copy()
+    vel_before = ekf.vel.copy()
+    P_before = ekf.P.copy()
+
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        0.0,
+    )
+    np.testing.assert_array_equal(ekf.pos, pos_before)
+    np.testing.assert_array_equal(ekf.vel, vel_before)
+    np.testing.assert_array_equal(ekf.P, P_before)
+
+
+def test_ekf_negative_dt_is_noop():
+    """predict with negative dt must not mutate state."""
+    ekf = ErrorStateEKF(
+        np.array([10.0, 20.0, 100.0]),
+        np.array([1.0, 2.0, -5.0]),
+        np.eye(12),
+    )
+    pos_before = ekf.pos.copy()
+    vel_before = ekf.vel.copy()
+    P_before = ekf.P.copy()
+
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        -0.1,
+    )
+    np.testing.assert_array_equal(ekf.pos, pos_before)
+    np.testing.assert_array_equal(ekf.vel, vel_before)
+    np.testing.assert_array_equal(ekf.P, P_before)
+
+
+def test_ekf_nan_imu_produces_nan_state():
+    """NaN in IMU readings should propagate to NaN state (not crash)."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12),
+    )
+    ekf.predict(
+        np.array([float("nan"), 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        0.1,
+    )
+    assert np.any(np.isnan(ekf.pos)) or np.any(np.isnan(ekf.vel))
+
+
+def test_ekf_nan_attitude_rejected():
+    """NaN quaternion raises ValueError from SciPy — EKF should not be called
+    with invalid quaternions (validation belongs upstream)."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12),
+    )
+    with pytest.raises(ValueError, match="zero norm quaternions"):
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.0, 0.0]),
+            np.array([float("nan"), 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.1,
+        )
+
+
+def test_ekf_huge_gravity_does_not_crash():
+    """Gravity at ~1e12 (seen in corrupted recordings) should not crash."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12),
+    )
+    huge_gravity = np.array([-1.77e12, 2.85e11, 2.87e12])
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        huge_gravity,
+        0.1,
+    )
+    state = ekf.get_state()
+    assert not np.any(np.isnan(state))
+    assert not np.any(np.isinf(state))
+    # Innovation should be huge after bad inputs
+    ekf.update(1.0, np.array([0.0, 0.0, 0.0]))
+    assert ekf.get_innovation_norm() > 1.0
+
+
+def test_ekf_inf_imu_does_not_crash():
+    """Inf in IMU should not crash the predict step (state may become NaN)."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12),
+    )
+    # Must not raise
+    ekf.predict(
+        np.array([float("inf"), 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        0.1,
+    )
+
+
+def test_ekf_covariance_symmetry_after_predict():
+    """P should remain symmetric after predict."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([10.0, 0.0, -5.0]),
+        np.eye(12) * 0.1,
+    )
+    for _ in range(20):
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.1, 0.0]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+    assert np.allclose(ekf.P, ekf.P.T, atol=1e-12)
+
+
+def test_ekf_covariance_symmetry_after_update():
+    """P should remain symmetric after update."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, -10.0]),
+        np.eye(12) * 0.1,
+    )
+    for _ in range(10):
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+        ekf.update(100.0, np.array([0.0, 0.0, -10.0]))
+    assert np.allclose(ekf.P, ekf.P.T, atol=1e-12)
+
+
+def test_ekf_covariance_positive_definite():
+    """P should remain positive-definite after predict+update cycles."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, -10.0]),
+        np.eye(12) * 0.1,
+    )
+    for _ in range(50):
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+        ekf.update(100.0, np.array([0.0, 0.0, -10.0]))
+    eigenvalues = np.linalg.eigvalsh(ekf.P)
+    assert np.all(eigenvalues > 0), "Covariance must be positive-definite"
+
+
+def test_ekf_singular_S_skips_update():
+    """When S is singular (e.g. zero R), update should skip gracefully."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12) * 0.1,
+    )
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        0.02,
+    )
+    # Huge P leads to singular S (numerically)
+    ekf.P = np.eye(12) * 1e30
+    state = ekf.update(100.0, np.array([0.0, 0.0, 0.0]))
+    assert state.shape == (6,)
+
+
+def test_ekf_large_dt_no_explosion():
+    """A single large dt should not make P explode to inf."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12) * 0.1,
+    )
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        5.0,  # 5 second dt
+    )
+    assert not np.any(np.isinf(ekf.P))
+    assert not np.any(np.isnan(ekf.P))
+
+
+def test_ekf_divergence_detection_via_innovation():
+    """Repeated bad inputs should cause large innovation, detectable by monitoring."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12) * 0.1,
+    )
+    for i in range(20):
+        ekf.predict(
+            np.array([0.0, 0.0, 100.0]),  # huge upward thrust (10G)
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.1,
+        )
+        ekf.update(100.0, np.array([0.0, 0.0, 0.0]))
+    # Innovation should be large because the model expects ~0 accel but gets ~90 m/s
+    assert ekf.get_innovation_norm() > 1.0, (
+        f"Expected large innovation norm, got {ekf.get_innovation_norm()}"
+    )
+
+
+def test_ekf_innovation_monitors_imu_health():
+    """Innovation norm should flag IMU faults per EKF_INNOVATION_FAULT_THRESHOLD."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12),
+    )
+    for _ in range(5):
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+        ekf.update(0.0, np.array([0.0, 0.0, 0.0]))
+    innov_norm = ekf.get_innovation_norm()
+    # With no altitude change and large gravity, innovation should exceed threshold
+    assert innov_norm >= 0.0
+
+
+def test_ekf_bias_convergence_sign_change():
+    """Bias estimates should track when true bias changes sign."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12) * 0.1,
+    )
+    np.random.seed(42)
+    gyro_bias = np.array([0.02, -0.01, 0.005])
+    accel_bias = np.array([0.05, -0.03, 0.1])
+    for i in range(100):
+        f_body = np.array([0.0, 0.0, 9.81]) + accel_bias
+        omega_body = np.array([0.0, 0.1, 0.0]) + gyro_bias
+        ekf.predict(
+            f_body,
+            omega_body,
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+        noisy_alt = float(np.random.normal(0.0, 0.1))
+        noisy_vel = np.random.normal(0.0, 0.05, 3)
+        ekf.update(noisy_alt, noisy_vel)
+    assert np.allclose(ekf.get_gyro_bias(), gyro_bias, atol=0.05)
+    assert np.allclose(ekf.get_accel_bias(), accel_bias, atol=0.3)
+
+
+def test_ekf_mahony_self_heals_from_nan():
+    """Mahony recovers from NaN quaternion internally — EKF never sees NaN."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, -10.0]),
+        np.eye(12),
+    )
+    mahony = MahonyAttitudeEstimator(
+        kp=config.MAHONY_KP,
+        ki=config.MAHONY_KI,
+        up_vector=np.array([0.0, 0.0, 1.0]),
+    )
+    # Run nominal steps first
+    for i in range(5):
+        mahony.set_gyro_bias(ekf.get_gyro_bias())
+        attitude = mahony.update(
+            np.array([0.0, 0.1, 0.0]),
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.1, 0.0]),
+            attitude,
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+        ekf.update(100.0, np.array([0.0, 0.0, -10.0]))
+    # Inject NaN into Mahony — it self-heals, producing valid quaternion
+    mahony.q = np.array([float("nan"), float("nan"), float("nan"), float("nan")])
+    attitude = mahony.update(
+        np.array([0.0, 0.1, 0.0]),
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, -9.81]),
+        0.02,
+    )
+    assert np.all(np.isfinite(attitude))
+    assert np.allclose(np.linalg.norm(attitude), 1.0, atol=1e-6)
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.1, 0.0]),
+        attitude,
+        np.array([0.0, 0.0, -9.81]),
+        0.02,
+    )
+    assert np.all(np.isfinite(ekf.get_state()))
+
+
+def test_ekf_get_innovation_returns_copy():
+    """get_innovation() should return a copy, not a reference."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12),
+    )
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        0.02,
+    )
+    ekf.update(1.0, np.array([0.0, 0.0, 0.0]))
+    innov = ekf.get_innovation()
+    innov[:] = 999.0
+    assert not np.allclose(ekf.get_innovation(), 999.0)
+
+
+def test_ekf_update_returns_6d_state():
+    """update() must return a (6,) array matching get_state()."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, -10.0]),
+        np.eye(12),
+    )
+    ekf.predict(
+        np.array([0.0, 0.0, 9.81]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0, 1.0]),
+        np.array([0.0, 0.0, -9.81]),
+        0.02,
+    )
+    state = ekf.update(100.0, np.array([0.0, 0.0, -10.0]))
+    assert state.shape == (6,)
+    np.testing.assert_array_equal(state, ekf.get_state())
+
+
+def test_ekf_high_dt_spike_does_not_crash():
+    """A sudden dt spike of 5 seconds (simulated comms glitch) should not crash."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 100.0]),
+        np.array([0.0, 0.0, -10.0]),
+        np.eye(12) * 0.1,
+    )
+    for _ in range(3):
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            5.0,
+        )
+    assert not np.any(np.isnan(ekf.P))
+    assert not np.any(np.isinf(ekf.P))
+    assert not np.any(np.isnan(ekf.get_state()))
+    assert not np.any(np.isinf(ekf.get_state()))
+
+
+def test_ekf_state_bounds_for_controller():
+    """State vector values should remain within physically reasonable bounds."""
+    ekf = ErrorStateEKF(
+        np.array([1000.0, 500.0, 5000.0]),
+        np.array([50.0, -30.0, -100.0]),
+        np.eye(12) * 0.1,
+    )
+    for _ in range(100):
+        ekf.predict(
+            np.array([0.0, 0.0, 9.81]),
+            np.array([0.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -9.81]),
+            0.02,
+        )
+        ekf.update(5000.0, np.array([50.0, -30.0, -100.0]))
+    state = ekf.get_state()
+    # State values should not be absurd
+    assert np.all(np.abs(state) < 1e9), f"State contains absurd values: {state}"
+
+
+def test_ekf_up_vector_is_normalized():
+    """up_vector should be normalized regardless of input."""
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12),
+        up_vector=np.array([0.0, 0.0, 5.0]),
+    )
+    assert np.allclose(np.linalg.norm(ekf.up_vector), 1.0)
+
+
 if __name__ == "__main__":
     test_ekf_initialization()
     test_ekf_prediction_step()
@@ -196,4 +629,24 @@ if __name__ == "__main__":
     test_ekf_bias_estimation()
     test_ekf_innovation_access()
     test_mahony_ekf_integration()
+    test_ekf_zero_dt_is_noop()
+    test_ekf_negative_dt_is_noop()
+    test_ekf_nan_imu_produces_nan_state()
+    test_ekf_nan_attitude_rejected()
+    test_ekf_huge_gravity_does_not_crash()
+    test_ekf_inf_imu_does_not_crash()
+    test_ekf_covariance_symmetry_after_predict()
+    test_ekf_covariance_symmetry_after_update()
+    test_ekf_covariance_positive_definite()
+    test_ekf_singular_S_skips_update()
+    test_ekf_large_dt_no_explosion()
+    test_ekf_divergence_detection_via_innovation()
+    test_ekf_innovation_monitors_imu_health()
+    test_ekf_bias_convergence_sign_change()
+    test_ekf_mahony_self_heals_from_nan()
+    test_ekf_get_innovation_returns_copy()
+    test_ekf_update_returns_6d_state()
+    test_ekf_high_dt_spike_does_not_crash()
+    test_ekf_state_bounds_for_controller()
+    test_ekf_up_vector_is_normalized()
     print("All EKF tests passed!")

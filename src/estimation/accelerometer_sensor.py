@@ -79,13 +79,14 @@ class AccelerometerSensor:
         self.last_ut = ut
         
         # Compute gravity using body's gravitational parameter and vessel's position
+        # relative to the body center (not the pad-relative frame).
         body = self.vessel.orbit.body
         mu = body.gravitational_parameter
-        # Vessel's position relative to body center in the reference frame
-        pos_rel_body = np.array(self.vessel.position(self.ref_frame))
-        distance = np.linalg.norm(pos_rel_body)
+        body_frame = body.reference_frame
+        pos_body_center = np.array(self.vessel.position(body_frame))
+        distance = np.linalg.norm(pos_body_center)
         if distance > 0:
-            gravity_world = - (mu / distance**3) * pos_rel_body
+            gravity_world = - (mu / distance**3) * pos_body_center
         else:
             # Fallback to avoid division by zero
             gravity_world = -self.up_vector * 9.81

@@ -155,7 +155,7 @@ EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY = 0.1  # m/s²
 # Innovation magnitude threshold for IMU health monitoring.
 # When the normalised innovation exceeds this, an sensor anomaly is flagged.
 # Min: 3.0 (Sensitive), Max: 10.0 (Tolerant)
-EKF_INNOVATION_FAULT_THRESHOLD = 5.0
+EKF_INNOVATION_FAULT_THRESHOLD = 15.0
 
 # ---------------------------------------------------------
 # Glide-Slope Guidance

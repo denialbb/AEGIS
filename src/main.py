@@ -97,6 +97,7 @@ class MissionDirector:
                     max_gimbal_deg=part.engine.gimbal_range,
                     part=part,
                 )
+                logger.info(f"E{e.index} {e.position} {e.max_gimbal_deg}")
                 part.engine.thrust_limit = 1.0  # Reset thrust limit to 100% in case a previous run set it to 0
                 e.active = True
                 self.engines.append(e)
@@ -109,15 +110,22 @@ class MissionDirector:
         )
 
         # Initialize submodules — Error-State EKF (12-dim error state: pos, vel, gyro_bias, accel_bias)
-        initial_pos: np.ndarray = np.zeros(3)
+        initial_alt: float = float(
+            vessel.flight(self.ref_frame).surface_altitude
+        )
+        initial_pos: np.ndarray = self.up_vector * initial_alt
         initial_vel: np.ndarray = np.array(
             vessel.flight(self.ref_frame).velocity
         )
         initial_covariance: np.ndarray = np.eye(12)
-        initial_covariance[0:3, 0:3] *= 1.0   # position uncertainty
-        initial_covariance[3:6, 3:6] *= 1.0   # velocity uncertainty
-        initial_covariance[6:9, 6:9] *= config.EKF_INITIAL_GYRO_BIAS_UNCERTAINTY**2   # gyro bias uncertainty
-        initial_covariance[9:12, 9:12] *= config.EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY**2   # accel bias uncertainty
+        initial_covariance[0:3, 0:3] *= config.SIGMA_ALT**2  # position uncertainty
+        initial_covariance[3:6, 3:6] *= config.SIGMA_VEL**2  # velocity uncertainty
+        initial_covariance[6:9, 6:9] *= (
+            config.EKF_INITIAL_GYRO_BIAS_UNCERTAINTY**2
+        )  # gyro bias uncertainty
+        initial_covariance[9:12, 9:12] *= (
+            config.EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY**2
+        )  # accel bias uncertainty
 
         self.estimator: ErrorStateEKF = ErrorStateEKF(
             initial_pos,
@@ -241,6 +249,7 @@ class MissionDirector:
         target_hz = config.TARGET_HZ
         success = False
         dt = 1.0 / target_hz
+        ekf_dt: float = dt
         ves_orientation = "stability"
 
         signal.signal(
@@ -286,8 +295,10 @@ class MissionDirector:
                     self._dt_spike_count += 1
                 else:
                     skip_predict = False
+                    ekf_dt = actual_dt
             else:
                 skip_predict = False
+                ekf_dt = dt
             self.last_tick_time = start_time
 
             # 1. Poll Telemetry
@@ -299,7 +310,7 @@ class MissionDirector:
                 aero_body,
                 situation,
                 omega_body,  # body-frame angular velocity
-                *rest
+                *rest,
             ) = self.sensors.poll()
             # Unpack additional optional values if present
             if rest:
@@ -307,7 +318,6 @@ class MissionDirector:
             # Update guidance controller with dynamic gravity
             self.guidance.gravity = gravity_world
             # Debug raw telemetry for diagnosis
-            # TODO
             logger.debug(
                 f"Poll: raw_alt={noisy_alt:.2f}, raw_ang_vel={np.linalg.norm(omega_body):.3f}"
             )
@@ -336,13 +346,17 @@ class MissionDirector:
                 self.vessel.control.throttle = 1.0
 
             # 2. Update Estimator
+            # Feed EKF gyro bias estimate back to Mahony filter
+            self.sensors.attitude_estimator.set_gyro_bias(
+                self.estimator.get_gyro_bias()
+            )
             if not skip_predict:
                 self.estimator.predict(
                     sf_body,  # body-frame specific force
                     omega_body,  # body-frame angular velocity
                     attitude,  # mahony_attitude: from complementary filter
                     gravity_world,
-                    dt,
+                    ekf_dt,
                 )
             state_vector = self.estimator.update(noisy_alt, noisy_vel)
 
@@ -490,54 +504,58 @@ class MissionDirector:
                 f"KF: est_alt={est_alt:.2f}, est_vz={est_vz:.2f}, "
                 f"pos_norm={np.linalg.norm(state_vector[:3]):.2f}, up_norm={np.linalg.norm(self.up_vector):.3f}"
             )
-            if config.SAS_PROGRADE_ASCENT:
-                if est_vz > 45 and ves_orientation != "prograde":
-                    self.vessel.control.sas = True
-                    self.vessel.control.sas_mode = (
-                        self.conn.space_center.SASMode.prograde
-                    )
-                    ves_orientation = "prograde"
-                elif (
-                    not config.USE_SAS
-                    and ves_orientation == "prograde"
-                    and est_vz <= 35
-                ):
-                    self.vessel.control.sas = True
-                    self.vessel.control.sas_mode = (
-                        self.conn.space_center.SASMode.stability_assist
-                    )
-                    ves_orientation = "stability"
-                elif (
-                    not config.USE_SAS
-                    and ves_orientation == "stability"
-                    and est_vz < -10.0
-                ):
-                    self.vessel.control.sas = False
-                    ves_orientation = "off"
+            try:
+                if config.SAS_PROGRADE_ASCENT:
+                    if est_vz > 45 and ves_orientation != "prograde":
+                        self.vessel.control.sas = True
+                        self.vessel.control.sas_mode = (
+                            self.conn.space_center.SASMode.prograde
+                        )
+                        ves_orientation = "prograde"
+                    elif (
+                        not config.USE_SAS
+                        and ves_orientation == "prograde"
+                        and est_vz <= 35
+                    ):
+                        self.vessel.control.sas = True
+                        self.vessel.control.sas_mode = (
+                            self.conn.space_center.SASMode.stability_assist
+                        )
+                        ves_orientation = "stability"
+                    elif (
+                        not config.USE_SAS
+                        and ves_orientation == "stability"
+                        and est_vz < -10.0
+                    ):
+                        self.vessel.control.sas = False
+                        ves_orientation = "off"
 
-            if config.USE_SAS:
-                sas_threshold = 40
-                if est_vz > sas_threshold and ves_orientation != "prograde":
-                    self.vessel.control.sas_mode = (
-                        self.conn.space_center.SASMode.prograde
-                    )
-                    ves_orientation = "prograde"
-                elif (
-                    sas_threshold > est_vz
-                    and est_vz > -sas_threshold
-                    and ves_orientation != "stability"
-                ):
-                    self.vessel.control.sas_mode = (
-                        self.conn.space_center.SASMode.stability_assist
-                    )
-                    ves_orientation = "stability"
-                elif (
-                    est_vz < -sas_threshold and ves_orientation != "retrograde"
-                ):
-                    self.vessel.control.sas_mode = (
-                        self.conn.space_center.SASMode.retrograde
-                    )
-                    ves_orientation = "retrograde"
+                if config.USE_SAS:
+                    sas_threshold = 40
+                    if est_vz > sas_threshold and ves_orientation != "prograde":
+                        self.vessel.control.sas_mode = (
+                            self.conn.space_center.SASMode.prograde
+                        )
+                        ves_orientation = "prograde"
+                    elif (
+                        sas_threshold > est_vz
+                        and est_vz > -sas_threshold
+                        and ves_orientation != "stability"
+                    ):
+                        self.vessel.control.sas_mode = (
+                            self.conn.space_center.SASMode.stability_assist
+                        )
+                        ves_orientation = "stability"
+                    elif (
+                        est_vz < -sas_threshold
+                        and ves_orientation != "retrograde"
+                    ):
+                        self.vessel.control.sas_mode = (
+                            self.conn.space_center.SASMode.retrograde
+                        )
+                        ves_orientation = "retrograde"
+            except RuntimeError:
+                logger.warning("Couldn't set SAS")
 
             # Smart Activation Logic
             if self.state == "STANDBY":
@@ -571,7 +589,7 @@ class MissionDirector:
                             "to": self.state,
                         }
                     )
-                elif est_alt < 5000 and est_vz < 0:
+                elif 500 < est_alt and est_alt < 5000 and est_vz < 0:
                     logger.info("AEGIS emergency switch.")
                     self.vessel.control.set_action_group(
                         config.ACTIVATION_ACTION_GROUP, True
@@ -864,6 +882,9 @@ class MissionDirector:
 
                         gimbal_x_rad = gimbals[i, 0]
                         gimbal_y_rad = gimbals[i, 1]
+                        logger.info(
+                            f"X {np.rad2deg(gimbal_x_rad)} Y {np.rad2deg(gimbal_y_rad)}"
+                        )
                         current_gimbals[engine.index, 0] = gimbal_x_rad
                         current_gimbals[engine.index, 1] = gimbal_y_rad
 
@@ -954,7 +975,7 @@ class MissionDirector:
                 velocity=state_vector[
                     3:
                 ],  # ISS-011 fix: was np.zeros(3), hid the KF velocity estimate
-                noisy_accel=noisy_accel_body,
+                noisy_accel=sf_body,
                 throttles=throttles,
                 fuel_state=fuel_state,
                 gimbals=gimbals,
@@ -984,7 +1005,7 @@ class MissionDirector:
                         "fdi_deviation": (
                             float(
                                 np.linalg.norm(
-                                    self.expected_accel - noisy_accel_body
+                                    self.expected_accel - sf_body
                                 )
                             )
                             if np.linalg.norm(self.expected_accel) > 1e-6
@@ -998,8 +1019,8 @@ class MissionDirector:
                             else 0.0
                         ),
                         "kf_cov_vel": (
-                            float(self.estimator.kf.P[5, 5])
-                            if self.estimator.kf.P.shape[0] > 5
+                            float(self.estimator.P[5, 5])
+                            if self.estimator.P.shape[0] > 5
                             else 0.0
                         ),
                         "dt_spike_count": self._dt_spike_count,
@@ -1009,7 +1030,7 @@ class MissionDirector:
                         "mass": mass,
                         "a_avail": a_avail,
                         "angular_velocity_mag": float(
-                            np.linalg.norm(angular_velocity)
+                            np.linalg.norm(omega_body)
                         ),
                     }
                 )

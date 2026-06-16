@@ -130,9 +130,9 @@ class SensorModels:
         sf_world, gravity_world = self.accel_sensor.poll(np.zeros(3))
 
         # Rotate specific-force to body frame using kRPC truth attitude.
-        # This gives both filters a noisy but correctly-framed input.
-        sf_body_raw: np.ndarray = rot_bw.inv().apply(sf_world)
-        sf_body_noisy: np.ndarray = sf_body_raw + self.rng.normal(0, self.sigma_accel, size=3)
+        # This gives both filters a correctly-framed input.
+        # Noise is already added in accelerometer_sensor.poll() — no duplicate.
+        sf_body_noisy: np.ndarray = rot_bw.inv().apply(sf_world)
 
         # ── Gyroscope: body-frame angular rates ─────────────────────
         omega_body: np.ndarray = self.gyro_sensor.poll()
