@@ -64,60 +64,40 @@ class FlightReplayer:
             ``{"rmse_pos":…, "rmse_vel":…, "nis":…, "score":…}``
         """
 
-        # Extract flattened arrays from the recording
-        ut = np.array(self.data["ut"])  # not used directly but kept for reference
-        dt = np.array(self.data["dt"])  # per‑tick time steps
-        gt_pos = np.array(self.data["gt_pos"])  # ground‑truth position
-        gt_vel = np.array(self.data["gt_vel"])  # ground‑truth velocity
-        mahony_att = np.array(self.data["mahony_attitude"])  # Mahony quaternion
-        sf_body_noisy = np.array(self.data["sf_body_noisy"])  # noisy body‑frame accel
-        noisy_alt = np.array(self.data["noisy_alt"])  # altimeter reading
-        noisy_vel = np.array(self.data["noisy_vel"])  # velocity measurement
-        gravity_world = np.array(self.data["gravity_world"])  # gravity vector
+        # Extract flattened arrays from the recording (pre-load everything to
+        # avoid per‑iteration zip decompression — the dominant cost).
+        ut = np.array(self.data["ut"])
+        dt = np.array(self.data["dt"])
+        gt_pos = np.array(self.data["gt_pos"])
+        gt_vel = np.array(self.data["gt_vel"])
+        mahony_att = np.array(self.data["mahony_attitude"])
+        sf_body_noisy = np.array(self.data["sf_body_noisy"])
+        raw_gyro = np.array(self.data["raw_gyro"])
+        noisy_alt = np.array(self.data["noisy_alt"])
+        noisy_vel = np.array(self.data["noisy_vel"])
+        gravity_world = np.array(self.data["gravity_world"])
 
         N = len(ut)
-        up = np.array([0.0, 0.0, 1.0])
-        _pos_errs: list[np.ndarray] = []
-        _vel_errs: list[np.ndarray] = []
-        nis_vals: list[float] = []
-
-        H = self._H(up)
-        R = self._R()
+        nis_vals = np.empty(N)
+        pos_errs = np.empty((N, 3))
+        vel_errs = np.empty((N, 3))
 
         for i in range(N):
-            f_body = np.array(sf_body_noisy[i])
-            omega = np.array(self.data["raw_gyro"][i])
-            attitude = np.array(mahony_att[i])
-            g_world = np.array(gravity_world[i])
-            dt_i = float(dt[i])
-
-            # Predict step
-            ekf.predict(f_body, omega, attitude, g_world, dt_i)
-
-            # Compute NIS (before update)
-            z_hat = np.array(
-                [float(np.dot(up, ekf.pos)), ekf.vel[0], ekf.vel[1], ekf.vel[2]]
+            ekf.predict(
+                sf_body_noisy[i], raw_gyro[i],
+                mahony_att[i], gravity_world[i],
+                float(dt[i]),
             )
-            z_meas = np.array(
-                [noisy_alt[i], noisy_vel[i, 0], noisy_vel[i, 1], noisy_vel[i, 2]]
-            )
-            innovation = z_meas - z_hat
-            S = H @ ekf.P @ H.T + R
-            nis = float(innovation.T @ np.linalg.inv(S) @ innovation)
-            nis_vals.append(nis)
 
-            # Update step
             ekf.update(noisy_alt[i], noisy_vel[i])
 
-            # Record errors
-            _pos_errs.append(ekf.pos - gt_pos[i])
-            _vel_errs.append(ekf.vel - gt_vel[i])
+            nis_vals[i] = ekf.get_last_nis()
+            pos_errs[i] = ekf.pos - gt_pos[i]
+            vel_errs[i] = ekf.vel - gt_vel[i]
 
-        pos_errs = np.array(_pos_errs)
-        vel_errs = np.array(_vel_errs)
-        rmse_pos = np.sqrt(np.mean(np.sum(pos_errs**2, axis=1)))
-        rmse_vel = np.sqrt(np.mean(np.sum(vel_errs**2, axis=1)))
-        mean_nis = np.mean(nis_vals)
+        rmse_pos = float(np.sqrt(np.mean(np.sum(pos_errs**2, axis=1))))
+        rmse_vel = float(np.sqrt(np.mean(np.sum(vel_errs**2, axis=1))))
+        mean_nis = float(np.mean(nis_vals))
 
         if weights is None:
             w_pos = w_vel = w_nis = 1.0 / 3.0

@@ -95,6 +95,7 @@ class ErrorStateEKF:
 
         self._last_innovation: np.ndarray = np.zeros(4)
         self._last_innovation_norm: float = 0.0
+        self._last_nis: float = 0.0
 
         logger.info("Initialized ErrorStateEKF (12-state: pos+vel+bg+ba)")
 
@@ -207,10 +208,15 @@ class ErrorStateEKF:
 
         S: np.ndarray = H @ self.P @ H.T + R_mat
         try:
-            K: np.ndarray = self.P @ H.T @ np.linalg.inv(S)
+            K: np.ndarray = np.linalg.solve(S, H @ self.P.T).T
         except np.linalg.LinAlgError:
             logger.warning("EKF update: singular innovation covariance, skipping")
+            self._last_nis = 0.0
             return self._pack_state_vector()
+
+        # Normalised Innovation Squared — use Cholesky-style solve for stability
+        nis_arg: np.ndarray = np.linalg.solve(S, innov)
+        self._last_nis = float(innov @ nis_arg)
 
         dx: np.ndarray = K @ innov
 
@@ -248,6 +254,10 @@ class ErrorStateEKF:
     def get_innovation(self) -> np.ndarray:
         """Return the last measurement innovation (4,)."""
         return self._last_innovation.copy()
+
+    def get_last_nis(self) -> float:
+        """Return the most recent Normalised Innovation Squared."""
+        return self._last_nis
 
     # ════════════════════════════════════════════════════════════════
     #  INTERNAL
