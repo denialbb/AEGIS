@@ -127,13 +127,14 @@ Code changes follow a structured review workflow:
 | ADR-026 | Optuna hyperparameter tuning |
 | ADR-028 | Vessel inertia tensor sourcing for guidance |
 | ADR-029 | 6-state KF sufficient for Phase 1 (EKF deferred) |
+| ADR-030 | Error-State EKF with Mahony attitude and dynamic gravity (supersedes ADR-007, ADR-014) |
 
 ## 6. Future: NN-ADRC Integration (Planned)
 
 The current PD guidance controller has no inherent disturbance rejection. The NN-ADRC roadmap upgrades the control architecture with an **Active Disturbance Rejection Controller** augmented by a **Neural Network compensator** to learn optimal counter-actions for any asymmetric failure pattern. The ESO equations, `fal()` nonlinearity, WSEF structure, and NN training approach are drawn from *NN Based Active Disturbance Rejection Controller for a Multi-Axis Gimbal System* (Leblebicioglu et al.) — see References §8.
 
 ### Architecture Constraint
-The Extended State Observer (ESO) lives in Guidance (`src/guidance/adrc.py`), not the State Estimator (ADR-027). The 6-state linear Kalman Filter remains unchanged (ADR-029 deferred). All cross-module signals are routed through the Mission Director (ADR-013 pattern) — no direct FDI↔Guidance data access.
+The Extended State Observer (ESO) lives in Guidance (`src/guidance/adrc.py`), not the State Estimator (ADR-027). The State Estimator now uses a 12-state Error-State EKF with a decoupled Mahony attitude filter (ADR-030, supersedes ADR-029). All cross-module signals are routed through the Mission Director (ADR-013 pattern) — no direct FDI↔Guidance data access.
 
 ### Integration Roadmap
 
@@ -178,6 +179,7 @@ The following works informed the mathematical foundations of the AEGIS guidance 
 
 | # | Source | Used In |
 |---|--------|---------|
-| [1] | Cornman, L. & Mei, G. *Extended Kalman Filtering*. Stanford University. | State Estimator — Kalman filter prediction/update structure, Q/R tuning methodology. |
+| [1] | Cornman, L. & Mei, G. *Extended Kalman Filtering*. Stanford University. | State Estimator — Error-State EKF prediction/update structure, Q/R tuning methodology. |
 | [2] | Leblebicioglu, K. et al. *NN Based Active Disturbance Rejection Controller for a Multi-Axis Gimbal System*. | NN-ADRC roadmap — ESO equations, `fal()` nonlinearity, WSEF/TG structure, NN training via Levenberg-Marquardt. |
 | [3] | Elbeltagy, A. et al. *Quaternion-Based Tracking Control Law Design for Tracking Mode*. | Guidance controller — quaternion error definition, inertia-scaled PD torque, gain-selection via natural frequency and damping ratio. |
+| [4] | Mahony, R., Hamel, T., & Pflimlin, J. *Nonlinear Complementary Filters on the Special Orthogonal Group*. IEEE Transactions on Automatic Control, 53(5), 1203–1218, 2008. | State Estimator — Mahony complementary filter for gyro/accelerometer attitude estimation. |
