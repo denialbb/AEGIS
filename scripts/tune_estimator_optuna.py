@@ -12,28 +12,22 @@ RMSE, and the mean Normalised Innovation Squared (NIS).
 import optuna
 import optuna.logging as optuna_logging
 
-optuna_logging.set_verbosity(optuna_logging.WARNING)
 import glob
 import os
 import sys
 import time
 import signal
 import numpy as np
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
-
-from tqdm import tqdm
-
-pbar = None
-
 import src.config as config
 from src.estimation.ekf import ErrorStateEKF
 from src.simulation.flights import FlightReplayer
+from scripts.trial_dashboard import TrialDashboard
 
+_dashboard: TrialDashboard | None = None
+
+optuna_logging.set_verbosity(optuna_logging.WARNING)
 _TERMINAL_WIDTH = 72
 _recordings_cache: list[str] = []
 
@@ -144,7 +138,10 @@ def _trial_result(
     elapsed: float,
 ) -> None:
     improved = "NEW BEST" if score <= best_score else ""
-    _dashboard.report_trial()
+    assert _dashboard is not None
+    _dashboard.report_trial(
+        trial_num, score, rmse_pos, rmse_vel, nis, best_score, elapsed
+    )
     print(f"  ┌─ Trial {trial_num + 1} result{improved}")
     print(f"  │  Score    = {_fmt(score)}")
     print(f"  │  RMSE pos = {_fmt(rmse_pos)}")
@@ -174,12 +171,27 @@ def objective(trial: optuna.trial.Trial) -> float:
             _dashboard.advance(1)
 
     if n_flights == 0:
-        score = 1e6
+        print("  No recordings found — returning penalty score 1e6")
+        return 1e6
 
     avg_rmse_pos = total_rmse_pos / n_flights
     avg_rmse_vel = total_rmse_vel / n_flights
     avg_nis = total_nis / n_flights
     score = 0.33 * avg_rmse_pos + 0.33 * avg_rmse_vel + 0.34 * avg_nis
+
+    if not np.isfinite(score) or score < 0:
+        print(_hr("═"))
+        print("  FATAL: Invalid score detected in estimator tuning.")
+        print(f"  Score     = {score}")
+        print(f"  RMSE pos  = {avg_rmse_pos}")
+        print(f"  RMSE vel  = {avg_rmse_vel}")
+        print(f"  NIS       = {avg_nis}")
+        print(f"  Trial     = {trial_num}")
+        print(f"  Params    = {trial.params}")
+        print("  This indicates EKF divergence or study corruption.")
+        print("  Fix the root cause before re-running.")
+        print(_hr("═"))
+        sys.exit(1)
 
     elapsed = time.perf_counter() - t0
     best_so_far = trial.study.best_value if trial.number > 0 else score
@@ -229,10 +241,8 @@ if __name__ == "__main__":
     study_name = "ekf-tuning"
     storage = f"sqlite:///logs/{study_name}.db"
 
-    n_trials_arg = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+    n_trials_arg = int(sys.argv[1]) if len(sys.argv) > 1 else 500
     _N_TOTAL = n_trials_arg * n_flights
-
-    pbar = tqdm(total=_N_TOTAL, desc="Trials", dynamic_ncols=True)
 
     study = optuna.create_study(
         study_name=study_name,
@@ -315,6 +325,3 @@ if __name__ == "__main__":
     print()
     print(f"  Database : {storage}")
     print(_hr("═"))
-
-    if pbar is not None:
-        pbar.close()

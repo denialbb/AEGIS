@@ -77,9 +77,9 @@ class FlightReplayer:
 
         N = len(ut)
         up = np.array([0.0, 0.0, 1.0])
-        pos_errs = []
-        vel_errs = []
-        nis_vals = []
+        _pos_errs: list[np.ndarray] = []
+        _vel_errs: list[np.ndarray] = []
+        nis_vals: list[float] = []
 
         H = self._H(up)
         R = self._R()
@@ -110,11 +110,11 @@ class FlightReplayer:
             ekf.update(noisy_alt[i], noisy_vel[i])
 
             # Record errors
-            pos_errs.append(ekf.pos - gt_pos[i])
-            vel_errs.append(ekf.vel - gt_vel[i])
+            _pos_errs.append(ekf.pos - gt_pos[i])
+            _vel_errs.append(ekf.vel - gt_vel[i])
 
-        pos_errs = np.array(pos_errs)
-        vel_errs = np.array(vel_errs)
+        pos_errs = np.array(_pos_errs)
+        vel_errs = np.array(_vel_errs)
         rmse_pos = np.sqrt(np.mean(np.sum(pos_errs**2, axis=1)))
         rmse_vel = np.sqrt(np.mean(np.sum(vel_errs**2, axis=1)))
         mean_nis = np.mean(nis_vals)
