@@ -6,7 +6,10 @@ walk rates and process‑noise scaling, and evaluates the resulting filter on
 all recordings present in the ``recordings/`` directory.
 
 The cost metric is a weighted sum of the mean position RMSE, the mean velocity
-RMSE, and the mean Normalised Innovation Squared (NIS).
+RMSE, and the mean Normalised Innovation Squared (NIS), each normalised by a
+running median so all three components contribute equally regardless of scale.
+The displayed score is a percentage where 100% = the running median
+(lower is better).
 """
 
 import optuna
@@ -44,6 +47,10 @@ def _fmt(val: float, width: int = 9, prec: int = 4) -> str:
     return f"{val:{width}.{prec}f}"
 
 
+def _fmt_pct(val: float, width: int = 7, prec: int = 1) -> str:
+    return f"{val * 100:{width}.{prec}f}%"
+
+
 # ---------------------------------------------------------------------------
 # Objective function
 # ---------------------------------------------------------------------------
@@ -54,11 +61,11 @@ def _build_ekf(trial: optuna.trial.Trial) -> ErrorStateEKF:
     # Hyper‑parameters
     sigma_gyro = trial.suggest_float("sigma_gyro", 0.0005, 0.02)
     sigma_accel = trial.suggest_float("sigma_accel", 0.02, 1.0)
-    sigma_alt = trial.suggest_float("sigma_alt", 0.1, 5.0)
-    sigma_vel = trial.suggest_float("sigma_vel", 0.05, 2.0)
+    sigma_alt = trial.suggest_float("sigma_alt", 0.5, 50.0, log=True)
+    sigma_vel = trial.suggest_float("sigma_vel", 0.5, 20.0, log=True)
     bg_inst = trial.suggest_float("bg_inst", 1e-6, 0.02)
     ba_inst = trial.suggest_float("ba_inst", 1e-4, 0.1)
-    process_coef = trial.suggest_float("process_coef", 0.01, 0.2)
+    process_coef = trial.suggest_float("process_coef", 0.01, 2.0, log=True)
 
     # Initial covariance – use default values for position/velocity
     init_cov = np.eye(12)
@@ -143,11 +150,11 @@ def _trial_result(
         trial_num, score, rmse_pos, rmse_vel, nis, best_score, elapsed
     )
     print(f"  ┌─ Trial {trial_num + 1} result{improved}")
-    print(f"  │  Score    = {_fmt(score)}")
+    print(f"  │  Score    = {_fmt_pct(score)}")
     print(f"  │  RMSE pos = {_fmt(rmse_pos)}")
     print(f"  │  RMSE vel = {_fmt(rmse_vel)}")
     print(f"  │  NIS      = {_fmt(nis)}")
-    print(f"  │  Best     = {_fmt(best_score)}")
+    print(f"  │  Best     = {_fmt_pct(best_score)}")
     print(f"  │  Time     = {elapsed:.1f}s")
     print(f"  └{_hr('─')[1:]}")
 
@@ -177,7 +184,33 @@ def objective(trial: optuna.trial.Trial) -> float:
     avg_rmse_pos = total_rmse_pos / n_flights
     avg_rmse_vel = total_rmse_vel / n_flights
     avg_nis = total_nis / n_flights
-    score = 0.33 * avg_rmse_pos + 0.33 * avg_rmse_vel + 0.34 * avg_nis
+
+    # Store per-component metrics for running-normalization
+    trial.set_user_attr("rmse_pos", avg_rmse_pos)
+    trial.set_user_attr("rmse_vel", avg_rmse_vel)
+    trial.set_user_attr("nis", avg_nis)
+
+    # Compute running medians from completed trials
+    completed = [
+        t
+        for t in trial.study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE
+        and t.number != trial.number
+    ]
+    if len(completed) >= 20:
+        pos_vals = [t.user_attrs.get("rmse_pos", np.nan) for t in completed]
+        vel_vals = [t.user_attrs.get("rmse_vel", np.nan) for t in completed]
+        nis_vals = [t.user_attrs.get("nis", np.nan) for t in completed]
+        median_pos = float(np.nanmedian(pos_vals))
+        median_vel = float(np.nanmedian(vel_vals))
+        median_nis = float(np.nanmedian(nis_vals))
+    else:
+        median_pos, median_vel, median_nis = 5000.0, 50.0, 5000.0
+
+    norm_pos = avg_rmse_pos / max(median_pos, 1e-12)
+    norm_vel = avg_rmse_vel / max(median_vel, 1e-12)
+    norm_nis = avg_nis / max(median_nis, 1e-12)
+    score = 0.33 * norm_pos + 0.33 * norm_vel + 0.34 * norm_nis
 
     if not np.isfinite(score) or score < 0:
         print(_hr("═"))
@@ -262,7 +295,7 @@ if __name__ == "__main__":
     if completed > 0:
         print(
             f"  Resuming from trial {completed}  "
-            f"(best so far: {_fmt(study.best_value)})"
+            f"(best so far: {_fmt_pct(study.best_value)})"
         )
         print(_hr("─"))
 
@@ -316,7 +349,7 @@ if __name__ == "__main__":
     print(
         f"  Completed trials : {completed_final}/{total_expected} ({percent:.1f}%)"
     )
-    print(f"  Best score       : {_fmt(study.best_value)}")
+    print(f"  Best score       : {_fmt_pct(study.best_value)}")
     print(f"  Best trial       : #{study.best_trial.number}")
     print()
     print("  Best hyper-parameters:")
