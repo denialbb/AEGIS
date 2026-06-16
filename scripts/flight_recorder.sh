@@ -1,4 +1,6 @@
-#!/usr/bin/env bash
+#!/bin/bash
+export PYTHONPATH=.
+
 # Simple wrapper that invokes the flight recorder script.
 set -euo pipefail
 
@@ -9,4 +11,4 @@ source_dir="$(dirname "$BASE_DIR")"
 cd "$source_dir"
 
 # Execute the recorder Python script
-python scripts/flight_recorder.py "$@"
+exec .venv/bin/python scripts/flight_recorder.py "$@"

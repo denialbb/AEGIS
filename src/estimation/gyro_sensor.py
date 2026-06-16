@@ -29,11 +29,12 @@ class GyroSensor:
         self.up_vector = up_vector
         
         # Initialize kRPC stream for angular velocity
-        try:
-            self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ref_frame)
-        except TypeError:
-            # Fallback for mocks (tests) that expect a simple attribute access.
-            self.angular_velocity_stream = self.conn.add_stream(getattr, self.vessel, 'angular_velocity')
+        # Use getattr to stream vessel angular velocity
+        # Stream vessel angular velocity in reference frame
+        # Angular velocity stream via bound method
+        # Create a bound method to avoid RPC errors
+        # It will invoke vessel.angular_velocity without extra args
+        self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ref_frame)
         
         # Noise parameters from config
         self.sigma_gyro = config.SIGMA_GYRO if hasattr(config, 'SIGMA_GYRO') else 0.01  # rad/s
@@ -48,6 +49,10 @@ class GyroSensor:
         
         logger.info(f"Initialized GyroSensor with sigma_gyro={self.sigma_gyro}, bias_instability={self.gyro_bias_instability}")
     
+    def _angular_velocity(self):
+        """Return vessel's angular velocity (Vector3)."""
+        return self.vessel.angular_velocity
+
     def poll(self) -> np.ndarray:
         """
         Samples the gyroscope stream and applies zero-mean Gaussian noise.

@@ -82,7 +82,7 @@ class AccelerometerSensor:
         body = self.vessel.orbit.body
         mu = body.gravitational_parameter
         # Vessel's position relative to body center in the reference frame
-        pos_rel_body = self.vessel.position(self.ref_frame)
+        pos_rel_body = np.array(self.vessel.position(self.ref_frame))
         distance = np.linalg.norm(pos_rel_body)
         if distance > 0:
             gravity_world = - (mu / distance**3) * pos_rel_body

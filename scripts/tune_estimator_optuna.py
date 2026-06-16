@@ -10,30 +10,61 @@ RMSE, and the mean Normalised Innovation Squared (NIS).
 """
 
 import optuna
+import optuna.logging as optuna_logging
+
+optuna_logging.set_verbosity(optuna_logging.WARNING)
 import glob
 import os
+import sys
+import time
+import signal
 import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
+
+from tqdm import tqdm
+
+pbar = None
 
 import src.config as config
 from src.estimation.ekf import ErrorStateEKF
 from src.simulation.flights import FlightReplayer
 
+_TERMINAL_WIDTH = 72
+_recordings_cache: list[str] = []
+
+
+def _hr(char: str = "─") -> str:
+    return char * _TERMINAL_WIDTH
+
+
+def _center(text: str, width: int = _TERMINAL_WIDTH) -> str:
+    return text.center(width)
+
+
+def _fmt(val: float, width: int = 9, prec: int = 4) -> str:
+    return f"{val:{width}.{prec}f}"
+
+
 # ---------------------------------------------------------------------------
 # Objective function
 # ---------------------------------------------------------------------------
 
+
 def _build_ekf(trial: optuna.trial.Trial) -> ErrorStateEKF:
     """Construct an EKF instance with hyper‑parameters sampled by a trial."""
     # Hyper‑parameters
-    sigma_gyro = trial.suggest_loguniform("sigma_gyro", 0.0005, 0.02)
-    sigma_accel = trial.suggest_loguniform("sigma_accel", 0.02, 1.0)
-    sigma_alt = trial.suggest_loguniform("sigma_alt", 0.1, 5.0)
-    sigma_vel = trial.suggest_loguniform("sigma_vel", 0.05, 2.0)
-    bg_inst = trial.suggest_loguniform("bg_inst", 1e-6, 0.02)
-    ba_inst = trial.suggest_loguniform("ba_inst", 1e-4, 0.1)
-    process_coef = trial.suggest_loguniform("process_coef", 0.01, 0.2)
+    sigma_gyro = trial.suggest_float("sigma_gyro", 0.0005, 0.02)
+    sigma_accel = trial.suggest_float("sigma_accel", 0.02, 1.0)
+    sigma_alt = trial.suggest_float("sigma_alt", 0.1, 5.0)
+    sigma_vel = trial.suggest_float("sigma_vel", 0.05, 2.0)
+    bg_inst = trial.suggest_float("bg_inst", 1e-6, 0.02)
+    ba_inst = trial.suggest_float("ba_inst", 1e-4, 0.1)
+    process_coef = trial.suggest_float("process_coef", 0.01, 0.2)
 
     # Initial covariance – use default values for position/velocity
     init_cov = np.eye(12)
@@ -42,7 +73,9 @@ def _build_ekf(trial: optuna.trial.Trial) -> ErrorStateEKF:
     init_cov[6:9, 6:9] *= bg_inst**2
     init_cov[9:12, 9:12] *= ba_inst**2
 
-    ekf = ErrorStateEKF(np.zeros(3), np.zeros(3), init_cov, np.array([0.0, 0.0, 1.0]))
+    ekf = ErrorStateEKF(
+        np.zeros(3), np.zeros(3), init_cov, np.array([0.0, 0.0, 1.0])
+    )
 
     ekf.sigma_gyro = sigma_gyro
     ekf.sigma_accel = sigma_accel
@@ -54,53 +87,225 @@ def _build_ekf(trial: optuna.trial.Trial) -> ErrorStateEKF:
 
     return ekf
 
+
+def _flight_banner(n_flights: int, rec_paths: list[str]) -> None:
+    print()
+    print(_hr("═"))
+    print(_center("EKF HYPER-PARAMETER TUNING (Optuna)"))
+    print(_hr("═"))
+    print(f"  Flight recordings : {n_flights}")
+
+    total_ticks = 0
+    total_dur = 0.0
+    total_bytes = 0
+
+    for rp in rec_paths:
+        data = np.load(rp, allow_pickle=True)
+        ticks = int(len(data["ut"]))
+        dt_arr = np.array(data["dt"])
+        dur = float(np.sum(dt_arr))
+        fsize = os.path.getsize(rp)
+        total_ticks += ticks
+        total_dur += dur
+        total_bytes += fsize
+        print(
+            f"    · {os.path.basename(rp):40s}  "
+            f"{ticks:>5d} ticks  {dur:>7.1f}s  "
+            f"{fsize / 1024:>6.0f} KB"
+        )
+        data.close()
+
+    print(_hr("─"))
+    print(
+        f"  Total : {total_ticks} ticks  |  "
+        f"{total_dur:.1f}s flight time  |  "
+        f"{total_bytes / (1024 * 1024):.1f} MB on disk"
+    )
+    print(_hr("─"))
+
+
+def _trial_banner(
+    trial: optuna.trial.Trial,
+    trial_num: int,
+    n_total: int | None,
+    params: dict[str, float],
+) -> None:
+    print(_hr("─"))
+    print(f"Trial {trial_num + 1}")
+
+
+def _trial_result(
+    trial_num: int,
+    score: float,
+    rmse_pos: float,
+    rmse_vel: float,
+    nis: float,
+    best_score: float,
+    elapsed: float,
+) -> None:
+    improved = " ★ NEW BEST" if score <= best_score else ""
+    print(f"  ┌─ Trial {trial_num + 1} result{improved}")
+    print(f"  │  Score    = {_fmt(score)}")
+    print(f"  │  RMSE pos = {_fmt(rmse_pos)}")
+    print(f"  │  RMSE vel = {_fmt(rmse_vel)}")
+    print(f"  │  NIS      = {_fmt(nis)}")
+    print(f"  │  Best     = {_fmt(best_score)}")
+    print(f"  │  Time     = {elapsed:.1f}s")
+    print(f"  └{_hr('─')[1:]}")
+
+
 def objective(trial: optuna.trial.Trial) -> float:
     ekf = _build_ekf(trial)
+    trial_num = trial.number
 
-    # Accumulate metrics across all recordings
+    _trial_banner(trial, trial_num, _N_TOTAL, trial.params)
+
+    t0 = time.perf_counter()
     total_rmse_pos = 0.0
     total_rmse_vel = 0.0
     total_nis = 0.0
-    count = 0
 
-    for rec_path in glob.glob("recordings/*.npz"):
-        replay = FlightReplayer(rec_path)
+    for i, rec in enumerate(_recordings_cache):
+        replay = FlightReplayer(rec)
         metrics = replay.evaluate(ekf)
         total_rmse_pos += metrics["rmse_pos"]
         total_rmse_vel += metrics["rmse_vel"]
         total_nis += metrics["nis"]
-        count += 1
+        test_n = i + (trial_num - 1) * n_flights
+        if "pbar" in globals():
+            percent_complete = (
+                ((test_n + 1) / _N_TOTAL * 100) if _N_TOTAL else 0
+            )
+            globals()["pbar"].update(1)
+            globals()["pbar"].refresh()
+            # globals()["pbar"].write(
+            #     #    f"  Trial progress: {test_n + 1}/{_N_TOTAL} ({percent_complete:.1f}%)"
+            # )
 
-    if count == 0:
-        return 1e6  # no recordings – penalise heavily
+    if n_flights == 0:
+        score = 1e6
 
-    avg_rmse_pos = total_rmse_pos / count
-    avg_rmse_vel = total_rmse_vel / count
-    avg_nis = total_nis / count
-
-    # Weighted cost – the exact weights can be tuned, here we use 1/3 each
+    avg_rmse_pos = total_rmse_pos / n_flights
+    avg_rmse_vel = total_rmse_vel / n_flights
+    avg_nis = total_nis / n_flights
     score = 0.33 * avg_rmse_pos + 0.33 * avg_rmse_vel + 0.34 * avg_nis
+
+    elapsed = time.perf_counter() - t0
+    best_so_far = trial.study.best_value if trial.number > 0 else score
+    _trial_result(
+        trial_num,
+        score,
+        total_rmse_pos / max(n_flights, 1),
+        total_rmse_vel / max(n_flights, 1),
+        total_nis / max(n_flights, 1),
+        best_so_far,
+        elapsed,
+    )
+
     return score
+
 
 # ---------------------------------------------------------------------------
 # Main execution
 # ---------------------------------------------------------------------------
+_N_TOTAL: int | None = None
+
+_PARAM_NAMES = [
+    "sigma_gyro",
+    "sigma_accel",
+    "sigma_alt",
+    "sigma_vel",
+    "bg_inst",
+    "ba_inst",
+    "process_coef",
+]
+
 if __name__ == "__main__":
     os.makedirs("logs", exist_ok=True)
-    study_name = "ekf_optuna_tuning"
+
+    _recordings_cache = sorted(glob.glob("recordings/*.npz"))
+    n_flights = len(_recordings_cache)
+
+    study_name = "ekf-tuning"
     storage = f"sqlite:///logs/{study_name}.db"
+
+    n_trials_arg = int(sys.argv[1]) if len(sys.argv) > 1 else 100
+    _N_TOTAL = n_trials_arg * n_flights
+
+    pbar = tqdm(total=_N_TOTAL, desc="Trials", dynamic_ncols=True)
+
     study = optuna.create_study(
-        name=study_name,
+        study_name=study_name,
         direction="minimize",
         storage=storage,
         sampler=TPESampler(seed=config.RANDOM_SEED),
         pruner=MedianPruner(),
         load_if_exists=True,
     )
-    print("Starting optimisation – database:", storage)
-    study.optimize(objective, n_trials=None, n_jobs=-1)
-    print("Best trial:")
-    print("  Value:", study.best_trial.value)
-    print("  Params:")
+
+    completed = len(study.trials)
+    if completed > 0:
+        n_trials_arg = max(n_trials_arg - completed, 0)
+
+    _flight_banner(n_flights, _recordings_cache)
+
+    if completed > 0:
+        print(
+            f"  Resuming from trial {completed}  "
+            f"(best so far: {_fmt(study.best_value)})"
+        )
+        print(_hr("─"))
+
+    print(f"  Target trials : {_N_TOTAL}")
+    print(f"  Remaining     : {n_trials_arg}")
+    print(f"  CTRL+C to stop gracefully")
+    print(_hr("═"))
+
+    _stop = [False]
+
+    def _sigint_handler(signum: int, frame: object) -> None:
+        print("\nCTRL+C received — finishing current trial and stopping…")
+        _stop[0] = True
+
+    original_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    try:
+
+        def _should_stop(
+            study: optuna.Study, trial: optuna.trial.FrozenTrial
+        ) -> None:
+            if _stop[0]:
+                study.stop()
+
+        study.optimize(
+            objective, n_trials=n_trials_arg, n_jobs=1, callbacks=[_should_stop]
+        )
+
+    except KeyboardInterrupt:
+        print("\n  interrupted.")
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
+
+    print()
+    print(_hr("═"))
+    print(_center("OPTIMISATION COMPLETE"))
+    print(_hr("═"))
+    completed_final = len(study.trials)
+    total_expected = _N_TOTAL
+    percent = (completed_final / total_expected * 100) if total_expected else 0
+    print(
+        f"  Completed trials : {completed_final}/{total_expected} ({percent:.1f}%)"
+    )
+    print(f"  Best score       : {_fmt(study.best_value)}")
+    print(f"  Best trial       : #{study.best_trial.number}")
+    print()
+    print("  Best hyper-parameters:")
     for k, v in study.best_trial.params.items():
-        print(f"    {k}: {v}")
+        print(f"    {k:>14s} = {v:.6f}")
+    print()
+    print(f"  Database : {storage}")
+    print(_hr("═"))
+
+    if pbar is not None:
+        pbar.close()

@@ -7,7 +7,7 @@ Tuning these values directly affects the performance, stability, and behavior of
 # ---------------------------------------------------------
 # kRPC Connection
 # ---------------------------------------------------------
-KRPC_DEFAULT_ADDRESS = "127.0.0.1"
+KRPC_DEFAULT_ADDRESS = "172.22.80.1"
 KRPC_CLIENT_NAME = "AEGIS Mission Director"
 
 # ---------------------------------------------------------
@@ -52,7 +52,7 @@ ALT_HYPERSONIC = 10000.0
 # Altitude to ignite engines for primary braking (POWERED_DESCENT).
 # CRITICAL: If set too low (e.g., 3000.0 suicide burn), the vessel will not have enough time to slow down and will crash.
 # If too high (e.g., 15000.0), it wastes fuel hovering down.
-ALT_POWERED_DESCENT = 4000.0
+ALT_POWERED_DESCENT = 3000.0
 
 # Altitude to enter HOVER_TARGETING and zero out lateral drift.
 # Gives the vessel a buffer to precisely align over the pad before final descent.
@@ -61,7 +61,7 @@ ALT_HOVER = 200.0
 
 # Final slow descent phase threshold. Sets the height of the final touchdown phase.
 # Min: 10.0, Max: 200.0
-ALT_TERMINAL = 20.0
+ALT_TERMINAL = 10.0
 
 # ---------------------------------------------------------
 # Landed Timer Parameters
@@ -87,12 +87,12 @@ SIGMA_ALT = 2.0  # meters
 # Standard deviation of accelerometer noise (m/s^2).
 # Higher values make the estimator trust the altitude sensor more, slowing velocity reaction time.
 # Min: 0.05 (High-end IMU), Max: 2.0 (Cheap IMU)
-SIGMA_ACCEL = 0.5  # m/s^2
+SIGMA_ACCEL = 0.39  # m/s^2
 
 # Standard deviation of velocity noise (m/s).
 # Higher values make the estimator trust the altitude sensor more for velocity.
 # Min: 0.1 (High-end GPS), Max: 5.0 (Noisy GPS)
-SIGMA_VEL = 1.0  # m/s
+SIGMA_VEL = 1.7  # m/s
 
 # ---------------------------------------------------------
 # Fault Detection & Isolation
@@ -101,7 +101,7 @@ SIGMA_VEL = 1.0  # m/s
 # A higher value avoids false positives from aerodynamic noise or gimbal swinging.
 # A lower value catches partial-thrust failures faster.
 # Min: 1.5 (High sensitivity), Max: 5.0 (Low sensitivity)
-FDI_THRESHOLD = 3.0
+FDI_THRESHOLD = 5.0
 
 # ---------------------------------------------------------
 # Simulation Determinism
@@ -119,12 +119,12 @@ SIGMA_GYRO = 0.01  # rad/s
 # Gyroscope bias instability (rad/s/sqrt(Hz)).
 # Models random walk of gyroscope bias over time.
 # Min: 1e-6 (Very stable), Max: 0.01 (Unstable)
-GYRO_BIAS_INSTABILITY = 0.0001  # rad/s/sqrt(Hz)
+GYRO_BIAS_INSTABILITY = 0.017362  # rad/s/sqrt(Hz)
 
 # Standard deviation of accelerometer noise (m/s^2).
 # Already defined above as SIGMA_ACCEL, keeping for clarity
 # ACCEL_BIAS_INSTABILITY models random walk of accelerometer bias
-ACCEL_BIAS_INSTABILITY = 0.001  # m/s^2/sqrt(Hz)
+ACCEL_BIAS_INSTABILITY = 0.060669  # m/s^2/sqrt(Hz)
 
 # Mahony filter proportional gain.
 # Higher values increase correction from accelerometer (reduces drift but increases noise sensitivity).
@@ -134,7 +134,7 @@ MAHONY_KP = 2.0
 # Mahony filter integral gain (for gyroscope bias estimation).
 # Higher values better estimate and remove gyroscope bias but can cause overshoot.
 # Min: 0.0 (No integral action), Max: 0.1 (Aggressive bias estimation)
-MAHONY_KI = 0.0
+MAHONY_KI = 0.01
 
 # ---------------------------------------------------------
 # Error-State EKF Parameters

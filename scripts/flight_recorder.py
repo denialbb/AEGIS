@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Flight recorder that uses kRPC Action Group 1 (configured in the game) to start and stop capturing telemetry.
 The data are stored in a single ``.npz`` file, with arrays that are convenient for offline replay.
@@ -27,7 +26,9 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s: %(message)s",
     )
-    conn = krpc.connect(name=config.KRPC_CLIENT_NAME, address=config.KRPC_DEFAULT_ADDRESS)
+    conn = krpc.connect(
+        name=config.KRPC_CLIENT_NAME, address=config.KRPC_DEFAULT_ADDRESS
+    )
     vessel = conn.space_center.active_vessel
     body = vessel.orbit.body
     target_lat = config.TARGET_LAT
@@ -35,7 +36,9 @@ def main() -> None:
     # Reference frame centered at the pad location
     ref_frame = conn.space_center.ReferenceFrame.create_relative(
         body.reference_frame,
-        position=body.surface_position(target_lat, target_lon, body.reference_frame),
+        position=body.surface_position(
+            target_lat, target_lon, body.reference_frame
+        ),
     )
     pin = np.array(
         body.surface_position(target_lat, target_lon, body.reference_frame)
@@ -69,7 +72,7 @@ def main() -> None:
             timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             file_path = os.path.join(RECORD_DIR, f"flight_{timestamp}.npz")
             for key in data:
-                data[key].clear()
+                data[key] = []
             last_ut = None
             running = True
             logging.info(f"Recording started: {file_path}")
@@ -95,7 +98,11 @@ def main() -> None:
         dt = 0.0 if last_ut is None else ut - last_ut
         last_ut = ut
 
-        gt_pos = np.array(flight.position)
+        gt_pos = (
+            np.array(flight.position)
+            if hasattr(flight, "position")
+            else np.array(vessel.position(ref_frame))
+        )
         gt_vel = np.array(flight.velocity)
         gt_att = sensors._read_krpc_quaternion()
 

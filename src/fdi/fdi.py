@@ -21,6 +21,7 @@ class FaultDetectionIsolation:
         self.imu_fault_threshold: float = config.EKF_INNOVATION_FAULT_THRESHOLD if hasattr(config, 'EKF_INNOVATION_FAULT_THRESHOLD') else 5.0
         self.imu_persistence_ticks: int = 10  # Shorter persistence for IMU faults
         self.imu_consecutive_faults: int = 0
+        self.imu_fault_reported: bool = False
 
     def detect_imu_fault(self) -> bool:
         """
@@ -39,10 +40,15 @@ class FaultDetectionIsolation:
         if innovation_norm > self.imu_fault_threshold:
             self.imu_consecutive_faults += 1
             if self.imu_consecutive_faults >= self.imu_persistence_ticks:
-                logger.warning(f"[FDI-IMU] Persistent IMU Fault Confirmed! Innovation norm: {innovation_norm:.3f} > {self.imu_fault_threshold}")
-                return True
+                if not self.imu_fault_reported:
+                    logger.warning(f"[FDI-IMU] Persistent IMU Fault Confirmed! Innovation norm: {innovation_norm:.3f} > {self.imu_fault_threshold}")
+                    self.imu_fault_reported = True
+                    return True
+                else:
+                    return False
         else:
             self.imu_consecutive_faults = 0
+                self.imu_fault_reported = False
              
         return False
 
