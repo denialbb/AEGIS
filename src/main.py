@@ -299,9 +299,11 @@ class MissionDirector:
                 aero_body,
                 situation,
                 omega_body,  # body-frame angular velocity
-                noisy_vel,
-                gravity_world,
+                *rest
             ) = self.sensors.poll()
+            # Unpack additional optional values if present
+            if rest:
+                noisy_vel, gravity_world = rest[:2]
             # Update guidance controller with dynamic gravity
             self.guidance.gravity = gravity_world
             # Debug raw telemetry for diagnosis

@@ -15,7 +15,7 @@ class SensorModels:
     """
     Wraps kRPC telemetry streams and injects synthetic Gaussian noise.
 
-    Returns a 9-tuple compatible with main.py's expectations:
+    Returns a 10-tuple compatible with main.py's expectations:
     0. noisy_alt      : float               — altitude [m]
     1. sf_body        : ndarray (3,)       — body-frame specific force [m/s²]
     2. attitude       : ndarray (4,)       — Mahony quaternion [x,y,z,w]
@@ -25,6 +25,7 @@ class SensorModels:
     6. omega_body     : ndarray (3,)       — body-frame angular rates [rad/s]
     7. vel            : ndarray (3,)       — world-frame velocity [m/s]
     8. gravity_world  : ndarray (3,)       — gravity in world frame [m/s²]
+    9. raw_gyro       : ndarray (3,)       — raw gyro readings (noisy) [rad/s]
     """
     def __init__(self, conn: Any, vessel: Any, ref_frame: Any, up_vector: np.ndarray):
         self.conn = conn
@@ -65,6 +66,32 @@ class SensorModels:
             f"sigma_accel={self.sigma_accel}, sigma_vel={self.sigma_vel}"
         )
 
+    def _read_krpc_quaternion(self) -> np.ndarray:
+        """
+        Read the kRPC rotation and convert to [x,y,z,w] (scipy convention).
+
+        kRPC ``flight.rotation`` returns a Euler-angle triplet, NOT a
+        quaternion.  We reconstruct a quaternion via
+        ``R.from_euler('YXZ', (y, x, z))`` which matches the KSP
+        heading-pitch-roll convention.  If the stream returns a
+        4-element sequence we fall back to a direct cast.
+        """
+        raw = self.attitude_stream()
+        try:
+            euler = tuple(float(v) for v in raw)
+            if len(euler) == 3:
+                rot = R.from_euler("YXZ", euler, degrees=True)
+                return rot.as_quat()
+        except (TypeError, ValueError):
+            pass
+        arr = np.array(raw, dtype=float)
+        if arr.shape == (4,):
+            q = arr / np.linalg.norm(arr)
+            if q[3] < 0:
+                q = -q
+            return q
+        return np.array([0.0, 0.0, 0.0, 1.0])
+
     def poll(self) -> Tuple[
         float,
         np.ndarray,
@@ -75,10 +102,11 @@ class SensorModels:
         np.ndarray,
         np.ndarray,
         np.ndarray,
+        np.ndarray,
     ]:
         """
         Sample all streams and apply noise.
-        Returns 9-tuple matching main.py's destructure.
+        Returns 10-tuple matching main.py's destructure.
         """
         # ── Altitude & velocity ───────────────────────────────────
         perfect_alt = self.altitude_stream()
@@ -108,6 +136,16 @@ class SensorModels:
 
         # ── Gyroscope: body-frame angular rates ─────────────────────
         omega_body: np.ndarray = self.gyro_sensor.poll()
+        # Obtain raw gyroscope reading (noise added but bias not corrected)
+        # Read raw data from gyro sensor stream
+        av_raw = self.gyro_sensor.angular_velocity_stream()
+        if hasattr(av_raw, "x"):
+            perfect_raw = np.array([av_raw.x, av_raw.y, av_raw.z])
+        else:
+            perfect_raw = np.array(av_raw, dtype=float)
+        raw_gyro = perfect_raw + self.rng.normal(0, self.gyro_sensor.sigma_gyro, size=3)
+        # NOTE: gyroscope “raw” data includes noise but does not include bias correction.
+
 
         # ── Mahony filter update (attitude for EKF + guidance) ───────
         dt_mahony: float = 1.0 / config.TARGET_HZ
@@ -142,30 +180,5 @@ class SensorModels:
             omega_body,
             noisy_vel,
             gravity_world,
+            raw_gyro,
         )
-
-    def _read_krpc_quaternion(self) -> np.ndarray:
-        """
-        Read the kRPC rotation and convert to [x,y,z,w] (scipy convention).
-
-        kRPC ``flight.rotation`` returns a Euler-angle triplet, NOT a
-        quaternion.  We reconstruct a quaternion via
-        ``R.from_euler('YXZ', (y, x, z))`` which matches the KSP
-        heading-pitch-roll convention.  If the stream returns a
-        4-element sequence we fall back to a direct cast.
-        """
-        raw = self.attitude_stream()
-        try:
-            euler = tuple(float(v) for v in raw)
-            if len(euler) == 3:
-                rot = R.from_euler("YXZ", euler, degrees=True)
-                return rot.as_quat()
-        except (TypeError, ValueError):
-            pass
-        arr = np.array(raw, dtype=float)
-        if arr.shape == (4,):
-            q = arr / np.linalg.norm(arr)
-            if q[3] < 0:
-                q = -q
-            return q
-        return np.array([0.0, 0.0, 0.0, 1.0])
