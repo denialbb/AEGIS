@@ -7,11 +7,11 @@ This report outlines the systems engineering process for migrating the existing 
 The migration capitalizes on the existing decoupled Python/kRPC architecture, requiring module-specific upgrades rather than a complete rewrite.
 
 ### Phase 1: Upgrading the Guidance Controller
-Currently, the AEGIS Discrete-Time Kalman Filter estimates a 6-DOF state vector containing only position and velocity:
+Currently, the AEGIS Error-State Extended Kalman Filter (EKF) estimates a 12-DOF error state containing position, velocity, gyroscope bias, and accelerometer bias. The attitude is estimated externally by a Mahony complementary filter that fuses gyroscope and accelerometer data, consuming bias-corrected gyroscope rates from the EKF.
 \[
-x = [x, y, z, v_x, v_y, v_z]^T
+\text{Error state} = [\delta x, \delta y, \delta z, \delta v_x, \delta v_y, \delta v_z, \delta b_{gx}, \delta b_{gy}, \delta b_{gz}, \delta b_{ax}, \delta b_{ay}, \delta b_{az}]^T
 \]
-The Kalman Filter remains unchanged (see ADR-007, ADR-014). The Extended State Observer (ESO) is implemented in the Guidance module (`src/guidance/adrc.py` — ADR-027), fed by the KF's existing output. The ESO introduces an additional state variable dedicated to estimating total unknown disturbances in real-time, but lives in Guidance, not the State Estimator.
+The State Estimator (EKF + Mahony) remains updated per ADR-030. The Extended State Observer (ESO) is implemented in the Guidance module (`src/guidance/adrc.py` — ADR-027), fed by the EKF's output of position and velocity. The ESO introduces an additional state variable dedicated to estimating total unknown disturbances in real-time, but lives in Guidance, not the State Estimator.
 
 ### Phase 2: Implementing the NN-ADRC Core
 The core guidance logic will be replaced with three interconnected ADRC components:
@@ -67,15 +67,9 @@ To implement the integration, refer to the following mathematical foundations an
 ### 2. State Estimation & Filtering Math
 * **Source:** *Extended Kalman Filtering* - Stanford University
 * **Filter Matrices:**
-  To upgrade your state estimator, you will need the exact matrix formulations for the prediction and update steps. Use the state transition model:
-  \[
-  x_{t \mid t-1} = A x_{t-1 \mid t-1}
-  \]
-  and covariance matrix prediction:
-  \[
-  P_{t \mid t-1} = A P_{t-1 \mid t-1} A^T + Q
-  \]
-  to process the noisy telemetry data.
+  The Error-State EKF uses a 12-dimensional error state vector. The state transition and covariance prediction are derived from the kinematic equations and sensor models. The prediction step uses the gyroscope and accelerometer measurements (corrected for estimated biases) and the Mahony-attitude quaternion to rotate specific force to the world frame before adding gravity. The update step uses altimeter and velocimeter measurements.
+  The state transition matrix \(F\) and process noise covariance \(Q\) are computed as described in the EKF implementation (`src/estimation/ekf.py`). The measurement matrix \(H\) maps the error state to the altimeter and velocimeter readings.
+  To implement the EKF, you will need the matrix formulations for the prediction and update steps as detailed in the source code and the architecture design document.
 
 ### 3. Quaternion and Attitude Tracking Math
 * **Sources:**
