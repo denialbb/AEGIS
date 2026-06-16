@@ -56,41 +56,27 @@ class GyroSensor:
     def poll(self) -> np.ndarray:
         """
         Samples the gyroscope stream and applies zero-mean Gaussian noise.
-        Also estimates and removes bias.
-        
+        Bias estimation is now owned by the EKF (ErrorStateEKF) — this sensor
+        only injects noise and passes raw readings upward.
+
         Returns:
-            cleaned_angular_velocity (np.ndarray shape (3,)) body-frame angular rates in rad/s
+            noisy_angular_velocity (np.ndarray shape (3,)) body-frame angular rates in rad/s
         """
-        # Read perfect data from kRPC
         av_raw = self.angular_velocity_stream()
-        
-        # Handle different return types from kRPC
+
         if hasattr(av_raw, "x"):
             perfect_angular_velocity = np.array([av_raw.x, av_raw.y, av_raw.z])
         else:
-            # Assume iterable of three numbers
             perfect_angular_velocity = np.array(av_raw, dtype=float)
-        
-        # Add noise to simulate real gyroscope
+
         noisy_angular_velocity = perfect_angular_velocity + self.rng.normal(0, self.sigma_gyro, size=3)
-        
-        # Simple bias estimation (could be enhanced with Kalman filter later)
-        # For now, we'll just subtract a slowly-adapting bias estimate
-        # In a full implementation, this would be part of the attitude estimator
-        bias_corrected = noisy_angular_velocity - self.gyro_bias
-        
-        # Update bias estimate using low-pass filter on the residuals
-        # This is a simple approach - a proper implementation would use the attitude estimator residuals
-        self.gyro_bias = self.gyro_bias * (1 - self.bias_update_gain) + noisy_angular_velocity * self.bias_update_gain
-        
+
         logger.debug(
             f"Gyro: raw=[{perfect_angular_velocity[0]:.3f}, {perfect_angular_velocity[1]:.3f}, {perfect_angular_velocity[2]:.3f}] "
-            f"noisy=[{noisy_angular_velocity[0]:.3f}, {noisy_angular_velocity[1]:.3f}, {noisy_angular_velocity[2]:.3f}] "
-            f"bias=[{self.gyro_bias[0]:.3f}, {self.gyro_bias[1]:.3f}, {self.gyro_bias[2]:.3f}] "
-            f"cleaned=[{bias_corrected[0]:.3f}, {bias_corrected[1]:.3f}, {bias_corrected[2]:.3f}]"
+            f"noisy=[{noisy_angular_velocity[0]:.3f}, {noisy_angular_velocity[1]:.3f}, {noisy_angular_velocity[2]:.3f}]"
         )
-        
-        return bias_corrected
+
+        return noisy_angular_velocity
     
     def get_bias(self) -> np.ndarray:
         """Returns the current estimated gyroscope bias."""

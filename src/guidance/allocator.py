@@ -49,7 +49,7 @@ class ControlAllocator:
 
     def allocate(
         self, desired_wrench: np.ndarray, active_engines: List[Engine]
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Solves the control allocation problem using an iterative saturation-aware approach.
         This method redistributes demand from saturated engines to minimize wrench error
@@ -62,11 +62,13 @@ class ControlAllocator:
         Returns:
             throttles: array of shape (N,) bounded between 0.0 and 1.0.
             gimbals: array of shape (N, 2) representing X/Y gimbal angles in radians.
+            forces: array of shape (N, 3) with the actual force vector per engine (includes
+                    gimbal deflection).
         Raises:
             AllocationDegenerateError: If the B matrix is rank deficient or ill-conditioned.
         """
         if not active_engines:
-            return np.array([]), np.empty((0, 2))
+            return np.array([]), np.empty((0, 2)), np.empty((0, 3))
 
         # Check for rank deficiency and condition number (same as original implementation)
         B = self._build_B(active_engines)
@@ -179,7 +181,7 @@ class ControlAllocator:
                 break
 
         # Convert final forces to throttles and gimbals
-        throttles, gimbals = self._forces_to_controls(f_actual, active_engines)
+        throttles, gimbals, forces_out = self._forces_to_controls(f_actual, active_engines)
 
         # Log saturation events (once per engine per allocation to avoid spam)
         newly_saturated_mask = saturated & ~np.isin(
@@ -194,8 +196,8 @@ class ControlAllocator:
                 f"Engine {engine.index} thrust saturated "
                 f"(requested: {f_mag:.2f}, max: {engine.max_thrust:.2f})"
             )
+        return throttles, gimbals, forces_out
 
-        return throttles, gimbals
 
     def _compute_wrench_from_forces(
         self, forces: np.ndarray, active_engines: List[Engine]
@@ -221,7 +223,7 @@ class ControlAllocator:
 
     def _forces_to_controls(
         self, forces: np.ndarray, active_engines: List[Engine]
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Convert engine force vectors to throttle and gimbal commands.
 
@@ -232,10 +234,12 @@ class ControlAllocator:
         Returns:
             throttles: array of shape (N,) with values in [0.0, 1.0]
             gimbals: array of shape (N, 2) with gimbal angles in radians
+            forces_out: array of shape (N, 3) with the final gimballed force vectors
         """
         N = len(active_engines)
         throttles = np.zeros(N)
         gimbals = np.zeros((N, 2))
+        forces_out = np.zeros((N, 3))
 
         for i, engine in enumerate(active_engines):
             f_vec = forces[i]
@@ -246,6 +250,7 @@ class ControlAllocator:
                 throttles[i] = 0.0
                 gimbals[i, 0] = 0.0
                 gimbals[i, 1] = 0.0
+                forces_out[i] = np.zeros(3)
                 continue
 
             axial_force = min(axial_force, engine.max_thrust)
@@ -258,7 +263,9 @@ class ControlAllocator:
 
             lat_mag = float(np.linalg.norm(lateral_force_vec))
 
-            max_lat = axial_force * np.tan(np.radians(5))
+            max_lat = axial_force * np.tan(
+                np.deg2rad(engine.max_gimbal_deg)
+            )
             if lat_mag > max_lat and max_lat > 1e-6:
                 lateral_force_vec = (lateral_force_vec / lat_mag) * max_lat
             elif max_lat <= 1e-6:
@@ -283,23 +290,30 @@ class ControlAllocator:
                     throttles[i] = 0.0
                     gimbals[i, 0] = 0.0
                     gimbals[i, 1] = 0.0
+                    forces_out[i] = np.zeros(3)
                     continue
 
-                angle = np.arccos(dot_prod)
-                c = np.cross(engine.thrust_direction, n)
-                s = float(np.linalg.norm(c))
-                if s > 1e-6:
-                    rot_vec = (c / s) * angle
-                    gimbals[i, 0] = rot_vec[0]
-                    gimbals[i, 1] = rot_vec[1]
-                else:
-                    gimbals[i, 0] = 0.0
-                    gimbals[i, 1] = 0.0
+                # Decompose lateral force onto engine-local gimbal axes
+                #   Gimbal X: rotate about engine X axis → tilts thrust toward Y
+                #   Gimbal Y: rotate about engine Y axis → tilts thrust toward X
+                gx_rad = float(np.arctan2(
+                    np.dot(lateral_force_vec, engine.gimbal_y_axis),
+                    axial_force,
+                ))
+                gy_rad = float(-np.arctan2(
+                    np.dot(lateral_force_vec, engine.gimbal_x_axis),
+                    axial_force,
+                ))
+                max_rad = float(np.deg2rad(engine.max_gimbal_deg))
+                gimbals[i, 0] = float(np.clip(gx_rad, -max_rad, max_rad))
+                gimbals[i, 1] = float(np.clip(gy_rad, -max_rad, max_rad))
+                forces_out[i] = f_vec
             else:
                 gimbals[i, 0] = 0.0
                 gimbals[i, 1] = 0.0
+                forces_out[i] = np.zeros(3)
 
-        return throttles, gimbals
+        return throttles, gimbals, forces_out
 
     @property
     def _max_iterations(self) -> int:

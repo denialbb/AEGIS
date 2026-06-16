@@ -50,8 +50,14 @@ class TestMissionDirector:
         part = Mock()
         part.engine = Mock()
         part.engine.max_thrust = 1000.0
-        part.position = Mock(return_value=[0.0, 0.0, 0.0])
+        part.engine.gimbal_range = 10.0
+        part.engine.thrust_direction = (0.0, 0.0, -1.0)
+        part.engine.has_fuel = True
+        part.engine.part = part  # engine.part → part (needed for fallback path)
+        part.position = Mock(return_value=[0.0, 0.0, -1.0])
+        part.reference_frame = Mock()
         part.modules = []
+        flight.surface_altitude = 100.0
         
         vessel.parts.with_tag = Mock(return_value=[part])
         vessel.parts.engines = [part.engine]
@@ -59,6 +65,16 @@ class TestMissionDirector:
         # Mock reference frame creation
         space_center.ReferenceFrame = Mock()
         space_center.ReferenceFrame.create_relative = Mock(return_value=Mock())
+        # Mock transform_direction — return identity-like directions
+        def fake_transform_dir(vec, from_rf, to_rf):
+            return list(vec)  # pass through
+        space_center.transform_direction = fake_transform_dir
+        
+        # Mock add_stream for SensorModels
+        conn.add_stream = Mock(return_value=Mock())
+        conn.add_stream().x = 0.0
+        conn.add_stream().y = 0.0
+        conn.add_stream().z = 0.0
         
         return conn, vessel, space_center, body, flight, part
 

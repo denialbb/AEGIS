@@ -90,29 +90,48 @@ class FaultDetectionIsolation:
         expected_throttles: np.ndarray,
         measured_accel: np.ndarray,
         mass: float,
+        expected_forces: np.ndarray | None = None,
     ) -> List[int]:
         """
         Isolates which engine(s) failed.
-        expected_throttles: array of throttle values [0.0, 1.0] commanded in the previous step, shape (N,)
-        Returns a list of engine indices that have suffered a fault.
+
+        Parameters
+        ----------
+        active_engines : list of Engine
+            Currently active engines.
+        expected_throttles : ndarray (N,)
+            Throttle values [0.0, 1.0] commanded in the previous step.
+        measured_accel : ndarray (3,)
+            Measured specific force from accelerometer.
+        mass : float
+            Current vessel mass.
+        expected_forces : ndarray (N, 3) or None
+            Pre-computed gimbal-aware force vectors per engine.  If None,
+            falls back to thrust_direction * max_thrust * throttle (no gimbal).
+
+        Returns
+        -------
+        list of int
+            Engine indices that have suffered a fault.
         """
-        # ISS-006: mass is sourced from clean kRPC telemetry (vessel.mass), not the State Estimator. If mass is ever noised or rate-limited, this expected_accel calculation will produce spurious fault flags.
         if not active_engines:
             return []
 
-        expected_force = np.zeros(3)
-        for i, engine in enumerate(active_engines):
-            force_i = (
-                engine.thrust_direction
-                * engine.max_thrust
-                * expected_throttles[i]
-            )
-            expected_force += force_i
+        N = len(active_engines)
+        if expected_forces is not None and expected_forces.shape == (N, 3):
+            per_engine_forces = expected_forces
+        else:
+            # Fallback: no gimbal model (legacy path)
+            per_engine_forces = np.zeros((N, 3))
+            for i, engine in enumerate(active_engines):
+                per_engine_forces[i] = (
+                    engine.thrust_direction
+                    * engine.max_thrust
+                    * expected_throttles[i]
+                )
 
-        # We assume isolate_fault is only called AFTER detect_fault has returned True.
-        # We do not call detect_fault again here to avoid double-incrementing the persistence counter.
-
-        missing_force = expected_force - (measured_accel * mass)
+        total_expected_force = per_engine_forces.sum(axis=0)
+        missing_force = total_expected_force - (measured_accel * mass)
         force_tolerance = self.threshold * mass
 
         min_error = float("inf")
@@ -120,37 +139,23 @@ class FaultDetectionIsolation:
 
         import itertools
 
-        # The FDI problem is an underdetermined inverse problem. We know there is missing force,
-        # but we don't know which subset of engines stopped producing it.
-        # We solve this by brute-forcing all possible failure combinations (1 engine out, 2 engines out, etc.).
-        # Test all combinations of active engines (from 1 to N failures)
-        for num_failed in range(1, len(active_engines) + 1):
+        for num_failed in range(1, N + 1):
             for combo in itertools.combinations(
                 enumerate(active_engines), num_failed
             ):
-
-                # Calculate the hypothetical force this specific combination of engines *should* have produced
                 combo_force = np.zeros(3)
                 for i, engine in combo:
-                    combo_force += (
-                        engine.thrust_direction
-                        * engine.max_thrust
-                        * expected_throttles[i]
-                    )
+                    combo_force += per_engine_forces[i]
 
                 error = float(np.linalg.norm(missing_force - combo_force))
                 if error < min_error:
                     min_error = error
                     best_combo = [engine.index for i, engine in combo]
 
-        # If the best matching combination is within our tolerance, return it
-        if (
-            min_error < force_tolerance * 2.0
-        ):  # Giving some leeway for double failures
+        if min_error < force_tolerance * 2.0:
             logger.warning(
                 f"[FDI] Engines {best_combo} isolated due to fault detection."
             )
             return best_combo
 
-        # Fallback: if we can't cleanly isolate, return the best guess anyway
         return best_combo

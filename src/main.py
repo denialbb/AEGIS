@@ -86,9 +86,31 @@ class MissionDirector:
                 continue
             if part.engine is not None:
                 pos = np.array(part.position(vessel.reference_frame))
-                thrust_dir = np.array(
-                    [0.0, 1.0, 0.0]
-                )  # Simplified thrust vector
+                thrust_dir_part = tuple(part.engine.thrust_direction)
+                thrust_dir_vessel = np.array(
+                    self.conn.space_center.transform_direction(
+                        thrust_dir_part,
+                        part.reference_frame,
+                        vessel.reference_frame,
+                    )
+                )
+                thrust_dir = thrust_dir_vessel / (
+                    np.linalg.norm(thrust_dir_vessel) + 1e-12
+                )
+                gx_v = np.array(
+                    self.conn.space_center.transform_direction(
+                        (1.0, 0.0, 0.0),
+                        part.reference_frame,
+                        vessel.reference_frame,
+                    )
+                )
+                gy_v = np.array(
+                    self.conn.space_center.transform_direction(
+                        (0.0, 1.0, 0.0),
+                        part.reference_frame,
+                        vessel.reference_frame,
+                    )
+                )
                 e = Engine(
                     index=i,
                     position=pos,
@@ -96,6 +118,8 @@ class MissionDirector:
                     max_thrust=part.engine.max_thrust,
                     max_gimbal_deg=part.engine.gimbal_range,
                     part=part,
+                    gimbal_x_axis=gx_v / np.linalg.norm(gx_v),
+                    gimbal_y_axis=gy_v / np.linalg.norm(gy_v),
                 )
                 logger.info(f"E{e.index} {e.position} {e.max_gimbal_deg}")
                 part.engine.thrust_limit = 1.0  # Reset thrust limit to 100% in case a previous run set it to 0
@@ -174,6 +198,7 @@ class MissionDirector:
         # State persistence for FDI
         self.expected_throttles: np.ndarray = np.array([])
         self.expected_accel: np.ndarray = np.zeros(3)
+        self._expected_forces: np.ndarray = np.zeros((max(len(self.engines), 1), 3))
 
         # Accumulated angular motion penalty metric for Optuna tuning
         self.total_angular_motion: float = 0.0
@@ -417,11 +442,17 @@ class MissionDirector:
                         self.expected_accel, sf_body
                     )
                     if fault_detected and len(active_engines) > 0:
+                        # Use persisted per-engine force vectors from last allocation
+                        fdi_forces = np.array([
+                            self._expected_forces[e.index]
+                            for e in active_engines
+                        ])
                         failed_indices = self.fdi.isolate_fault(
                             active_engines,
                             self.expected_throttles,
                             sf_body,
                             mass,
+                            expected_forces=fdi_forces,
                         )
 
                     # ISS-004: Handle multiple simultaneous failures
@@ -711,10 +742,13 @@ class MissionDirector:
 
             # Refresh max_thrust from kRPC so a_avail and the allocator both use
             # the current atmospheric-pressure-adjusted thrust (ISS-012).
+            # Also refresh engine positions — CoM shifts as fuel drains, changing
+            # lever arms in the B matrix.
             for e in active_engines:
                 engine_obj = _safe_engine_access(e.part)
                 if engine_obj:
                     e.max_thrust = engine_obj.max_thrust
+                    e.position = np.array(e.part.position(self.vessel.reference_frame))
 
             # Compute available net upward acceleration from actual TWR.
             # Used by both the suicide-burn glideslope and the wrench clamp.
@@ -750,26 +784,8 @@ class MissionDirector:
                     a_avail=a_avail,
                 )
             elif self.state == "TERMINAL_DESCENT":
-                vel_landed = abs(est_vz) < config.LANDED_VEL_THRESHOLD
-                alt_landed = abs(noisy_alt) < config.LANDED_ALT_THRESHOLD
-                if vel_landed and alt_landed:
-                    self._landed_timer += dt
-                else:
-                    self._landed_timer = max(0.0, self._landed_timer - dt)
-                if self._landed_timer >= 5.0:
-                    self.writer.log_event(
-                        {
-                            "type": "STATE_TRANSITION",
-                            "from": self.state,
-                            "to": "LANDED",
-                        }
-                    )
-                    logger.info(
-                        f"Transitioning from {self.state} to LANDED. "
-                        f"Touchdown confirmed (timer={self._landed_timer:.3f}s)."
-                    )
-                    self.state = "LANDED"
-                else:
+                if self._landed_timer < 5.0:
+
                     target_state = self._compute_glideslope_target(
                         state_vector,
                         floor_alt=0.0,
@@ -854,35 +870,38 @@ class MissionDirector:
                 "LANDED",
             ]:
                 try:
-                    throttles, gimbals = self.allocator.allocate(
+                    throttles, gimbals, forces_out = self.allocator.allocate(
                         desired_wrench, active_engines
                     )
 
-                    # Apply EMA to individual engine throttles to model spool-up dynamically
-                    # We MUST use alpha=0.95 to match the physical KSP engine spool-up time.
-                    # A faster EMA causes the expected acceleration to outpace the real engines, triggering false FDI faults!
+                    # forces_out already includes gimbal deflection — use it
+                    # directly for expected force instead of reconstructing from
+                    # thrust_direction (which ignores gimbals).
                     alpha = 0.95
                     expected_force = np.zeros(3)
                     new_expected_throttles = []
                     current_gimbals = np.zeros((max(len(self.engines), 1), 2))
 
                     for i, engine in enumerate(active_engines):
-                        # Update engine's internal EMA state
                         engine.expected_throttle = (
                             alpha * engine.expected_throttle
                             + (1 - alpha) * throttles[i]
                         )
                         new_expected_throttles.append(engine.expected_throttle)
 
-                        expected_force += (
-                            engine.thrust_direction
-                            * engine.max_thrust
-                            * engine.expected_throttle
-                        )
+                        if throttles[i] > 1e-6 and engine.max_thrust > 0:
+                            gimballed_dir = forces_out[i] / (
+                                throttles[i] * engine.max_thrust
+                            )
+                            expected_force += (
+                                gimballed_dir
+                                * engine.max_thrust
+                                * engine.expected_throttle
+                            )
 
                         gimbal_x_rad = gimbals[i, 0]
                         gimbal_y_rad = gimbals[i, 1]
-                        logger.info(
+                        logger.debug(
                             f"X {np.rad2deg(gimbal_x_rad)} Y {np.rad2deg(gimbal_y_rad)}"
                         )
                         current_gimbals[engine.index, 0] = gimbal_x_rad
@@ -904,16 +923,19 @@ class MissionDirector:
                             #   vessel.control.yaw   = clip(desired_wrench[5] * RW_GAIN, -1, 1)
                             # RW_GAIN converts N·m to [-1, 1]; tune empirically.
 
-                            # Apply independent gimbal trimming via the mod
                             for module in engine.part.modules:
                                 if module.name == "ModuleGimbalTrim":
                                     if "Gimbal X" in module.fields:
-                                        # Allocator outputs radians. Module takes degrees. Limit to +/- 5 degrees.
+                                        gclamp = engine.max_gimbal_deg
                                         g_x = np.clip(
-                                            np.degrees(gimbal_x_rad), -5.0, 5.0
+                                            np.degrees(gimbal_x_rad),
+                                            -gclamp,
+                                            gclamp,
                                         )
                                         g_y = np.clip(
-                                            np.degrees(gimbal_y_rad), -5.0, 5.0
+                                            np.degrees(gimbal_y_rad),
+                                            -gclamp,
+                                            gclamp,
                                         )
                                         module.set_field_float(
                                             "Gimbal X", float(g_x)
@@ -939,6 +961,9 @@ class MissionDirector:
                         self.expected_accel = (
                             expected_force + aero_body
                         ) / mass
+                    # Persist per-engine gimbal-aware force vectors for FDI
+                    for i, engine in enumerate(active_engines):
+                        self._expected_forces[engine.index] = forces_out[i]
                 except AllocationDegenerateError as e:
                     logger.error(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event(

@@ -1,9 +1,12 @@
 import sys
 import time
+import logging
 import numpy as np
 from typing import Dict, Any, Optional, List
 
 from rich.console import Console, Group
+
+logger = logging.getLogger(__name__)
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -50,7 +53,14 @@ class HudDisplay:
         }
 
     def start(self) -> None:
-        if not config.HUD_ENABLED or not self._is_tty:
+        if not config.HUD_ENABLED:
+            logger.warning("HUD disabled by config (HUD_ENABLED=False)")
+            return
+        if not self._is_tty:
+            logger.warning(
+                "HUD disabled: stdout is not a TTY. "
+                "Run in a real terminal to see the HUD."
+            )
             return
         self._live = Live(
             console=self._console,
