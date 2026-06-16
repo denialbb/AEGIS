@@ -30,11 +30,15 @@ These define the altitudes (in meters) where the mission director transitions fl
 | `ALT_TERMINAL` | Final slow descent phase threshold. | Sets the height of the final slow-touchdown phase. | **Min:** 10.0<br>**Max:** 200.0 |
 
 ## 3. Sensor Noise & State Estimation
-Used by the Kalman Filter to fuse noisy telemetry.
+Used by the Error-State Extended Kalman Filter (EKF) to fuse IMU (gyroscope and accelerometer), altimeter, and velocimeter telemetry.
 | Parameter | Description | Practical Effect | Min/Max Examples |
 |-----------|-------------|------------------|------------------|
-| `SIGMA_ALT` | Standard deviation of altitude noise (meters). | Higher values make the estimator trust the IMU (accelerometer) more for vertical position. | **Min:** 0.1 (Perfect radar)<br>**Max:** 10.0 (Noisy radar) |
+| `SIGMA_ALT` | Standard deviation of altitude noise (meters). | Higher values make the estimator trust the IMU and velocimeter more for vertical position. | **Min:** 0.1 (Perfect radar)<br>**Max:** 10.0 (Noisy radar) |
 | `SIGMA_ACCEL` | Standard deviation of accelerometer noise (m/s²). | Higher values make the estimator trust the altitude sensor more, slowing down velocity reaction time. | **Min:** 0.05 (High-end IMU)<br>**Max:** 2.0 (Cheap IMU) |
+| `SIGMA_GYRO` | Standard deviation of gyroscope noise (rad/s). | Higher values make the estimator trust the gyroscope less for attitude and bias estimation. | **Min:** 0.001 (High-end gyro)<br>**Max:** 0.1 (Cheap gyro) |
+| `GYRO_BIAS_INSTABILITY` | Gyroscope bias instability (rad/s/sqrt(Hz)). | Higher values increase the allowed random walk of gyroscope bias, making the estimator slower to track bias changes. | **Min:** 1e-6 (Very stable)<br>**Max:** 1e-3 (Unstable) |
+| `ACCEL_BIAS_INSTABILITY` | Accelerometer bias instability (m/s²/sqrt(Hz)). | Higher values increase the allowed random walk of accelerometer bias, making the estimator slower to track bias changes. | **Min:** 1e-5 (Very stable)<br>**Max:** 1e-2 (Unstable) |
+| `PROCESS_NOISE_THRUST_COEF` | Scale factor for adaptive process‑noise in the StateEstimator (see architecture design). | Increases the velocity‑noise block of the EKF proportionally to the squared magnitude of the commanded acceleration. Helps keep altitude/velocity estimates stable during high‑thrust phases. | **Typical:** 0.05 – 0.2 (tuned via Optuna) |
 
 ## 4. Fault Detection & Isolation (FDI)
 | Parameter | Description | Practical Effect | Min/Max Examples |

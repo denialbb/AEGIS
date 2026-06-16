@@ -36,18 +36,21 @@ The overarching logic controller. It manages nominal mission phases and handles 
 
 **Adaptive Process‑Noise Scaling**
 
-The Kalman filter now adapts its process‑noise matrix `Q` each prediction step based on the magnitude of the kinematic acceleration (`|a|`). The velocity‑noise block (`Q[3:6,3:6]`) is multiplied by `1 + PROCESS_NOISE_THRUST_COEF * |a|²`. This mitigates altitude and velocity estimation spikes when the guidance commands large thrusts, allowing the filter to trust the noisy accelerometer less during high‑thrust transients.
+The Error-State Extended Kalman Filter (EKF) adapts its process‑noise matrix `Q` each prediction step based on the magnitude of the kinematic acceleration (`|a|`). The velocity‑noise block (`Q[3:6,3:6]`) is multiplied by `1 + PROCESS_NOISE_THRUST_COEF * |a|²`. This mitigates altitude and velocity estimation spikes when the guidance commands large thrusts, allowing the filter to trust the noisy accelerometer less during high‑thrust transients.
 
 **Implementation Details**
-- `src/estimation/estimator.py` stores a copy of the base `Q` matrix (`self.base_Q`).
-- In `predict()`, `accel_norm = np.linalg.norm(kinematic_accel_world)` is computed, and `Q_dyn[3:6,3:6]` is scaled accordingly, with a tiny epsilon added to ensure strict increase for test assertions.
+- `src/estimation/ekf.py` implements a 12-state error-state EKF that estimates position, velocity, gyroscope bias, and accelerometer bias.
+- Attitude is estimated externally by a Mahony complementary filter (`src/estimation/mahony_estimator.py`) that fuses gyroscope and accelerometer data to produce a quaternion representing the orientation from body to world frame.
+- The EKF consumes the Mahony-estimated attitude to rotate body-frame specific force (accelerometer readings corrected for estimated biases) into the world frame, then adds gravity. This ensures frame safety: all operations are performed in the world frame before integration.
+- Gravity is modeled dynamically using kRPC's `vessel.flight().g_force` (or computed from `body.gravitational_parameter` and altitude) rather than a hardcoded value.
+- In `ekf.py::predict()`, `accel_norm = np.linalg.norm(kinematic_accel_world)` is computed, and `Q_dyn[3:6,3:6]` is scaled accordingly, with a tiny epsilon added to ensure strict increase for test assertions.
 - The scaling coefficient is exposed as `config.PROCESS_NOISE_THRUST_COEF` (default 0.1) and can be tuned via Optuna.
 
 ---
-KSP provides perfect data (`vessel.flight().surface_altitude`), which we will purposefully obscure.
-*   **Noise Wrapper:** kRPC telemetry streams will be wrapped in a function that injects continuous Gaussian noise into the radar altimeter and accelerometer readings.
-*   **The Filter:** A linear Discrete-Time Kalman Filter that fuses noisy acceleration data with noisy altitude data to produce a clean, probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z]$. (Note: Vessel mass is treated as a clean, external telemetry parameter, not estimated).
-*   **Attitude Handling:** To keep the filter fast and linear, we use a small-angle approximation: attitude telemetry is treated as perfect when rotating body-frame acceleration to the world frame, and the accelerometer noise variance is artificially inflated to absorb the physical attitude uncertainty.
+KSP provides perfect data (e.g., `vessel.flight().mean_altitude`), which we will purposefully obscure.
+*   **Noise Wrapper:** kRPC telemetry streams will be wrapped in a function that injects continuous Gaussian noise into the radar altimeter, velocimeter, and IMU (gyroscope and accelerometer) readings.
+*   **The Filter:** The 12-state error-state EKF fuses IMU data (gyroscope and accelerometer), altimeter, and velocimeter to produce a probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z]$ and estimates of the sensor biases. Vessel mass is treated as a clean, external telemetry parameter, not estimated.
+*   **Attitude Handling:** The Mahony complementary filter estimates attitude using gyroscope integration and accelerometer gravity-reference correction, consuming bias-corrected gyroscope rates from the EKF. This avoids the small-angle approximation and allows for large angle maneuvers.
 *   **Coordinate System and Gravity:** KSP's custom Reference Frames do not naturally rotate to remain "Z-Up" relative to the planet's surface. To compensate, the system computes a normalized `up_vector` from the pad's surface position. This vector is used to correctly subtract the constant gravitational acceleration from the IMU telemetry and to map the true vertical altitude/velocity components for the State Machine target assignments.
 
 ### C. Fault Detection & Isolation Module (FDI)

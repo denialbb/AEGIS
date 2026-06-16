@@ -22,14 +22,24 @@ The agent code uses `add_stream()` for all high-frequency telemetry (altitude, a
 ### A single tick through the control loop:
 **KSP physics tick (50Hz, 20ms budget)**
 - stream: `noisy_alt` arrives via kRPC stream port
-- stream: `raw_accel` arrives
-- stream: `vessel.mass` arrives 
+- stream: `noisy_vel` arrives via kRPC stream port
+- stream: `sf_body` (specific force) arrives
+- stream: `omega_body` (angular velocity) arrives
+- stream: `vessel.mass` arrives
+- stream: `attitude` (Mahony quaternion) arrives
+- stream: `gravity_world` arrives
 
 **Python `run_loop()` wakes:**
 - `noise_wrapper(raw_alt)` → `noisy_alt` [inject Gaussian]
-- `noise_wrapper(raw_accel)` → `noisy_accel` [inject Gaussian]
-- `estimator.predict(noisy_accel, dt)` [Kalman predict step]
-- `estimator.update(noisy_alt)` [Kalman update step]
+- `noise_wrapper(raw_vel)` → `noisy_vel` [inject Gaussian]
+- `noise_wrapper(raw_sf_body)` → `sf_body` [inject Gaussian]
+- `noise_wrapper(raw_omega_body)` → `omega_body` [inject Gaussian]
+- `noise_wrapper(raw_attitude)` → `attitude` [Mahony update uses raw gyro and accel]
+- `noise_wrapper(raw_gravity)` → `gravity_world` [if needed, but gravity is from kRPC]
+
+- `mahony_attitude = attitude_estimator.update(omega_body, sf_body, gravity_world, dt)` [Mahony predict step]
+- `estimator.predict(sf_body, omega_body, mahony_attitude, gravity_world, dt)` [EKF predict step]
+- `estimator.update(noisy_alt, noisy_vel)` [EKF update step]
 - `state = estimator.get_state()` 
 - `fdi.detect_fault(expected_accel, measured_accel)` 
 - if fault: `fdi.isolate_fault(...)` 

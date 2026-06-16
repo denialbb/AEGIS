@@ -22,8 +22,8 @@ Contingencies:
 
 SAS is disabled during descent — the guidance controller handles attitude entirely via gimbal trim (inertia-scaled PD + gyroscopic feedforward per ADR-028). SAS prograde mode is used during ascent only for a stable test start.
 
-### State Estimator (`src/estimation/estimator.py`)
-A linear Discrete-Time Kalman Filter (filterpy) fusing noisy altimeter and accelerometer streams into a clean 6-state vector `[x, y, z, vx, vy, vz]` in a target-relative Cartesian frame. Mass is treated as a clean external telemetry parameter. Uses a small-angle approximation (ADR-014): attitude telemetry is treated as perfect for rotating body-frame acceleration to world frame, and accelerometer noise variance is inflated to absorb the attitude uncertainty. The Kalman filter formulation follows the standard prediction-update structure detailed in *Extended Kalman Filtering* (Cornman & Mei, Stanford University) — see References §8.
+### State Estimator (`src/estimation/ekf.py` and `src/estimation/mahony_estimator.py`)
+A 12-state Error-State Extended Kalman Filter (EKF) fusing IMU (gyroscope and accelerometer), altimeter, and velocimeter data. The EKF estimates position, velocity, gyroscope bias, and accelerometer bias. Attitude is estimated externally by a Mahony complementary filter that consumes bias-corrected gyroscope rates from the EKF and provides the attitude quaternion for rotating IMU specific force into the world frame. Gravity is modeled dynamically using kRPC's `vessel.flight.g_force` and `body.gravitational_parameter`. The EKF is frame-safe: body-frame specific force is rotated to the world frame before gravity addition. Mass is treated as a clean external telemetry parameter.
 
 ### Fault Detection & Isolation (`src/fdi/fdi.py`)
 Compares expected acceleration (from commanded throttle + known mass) against measured acceleration (from the State Estimator). If the deviation exceeds a configurable threshold (`FDI_THRESHOLD = 3.0`) persistently (50 ticks), it isolates the failing engine by brute-forcing failure combinations. Multiple simultaneous failures trigger a `HARD_ABORT`.
