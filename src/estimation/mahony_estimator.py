@@ -11,7 +11,7 @@ Usage
 ─────
     mahony = MahonyAttitudeEstimator(kp=2.0, ki=0.1)
     mahony.set_gyro_bias(bg_from_ekf)      # optional, each tick
-    q = mahony.update(omega_body, f_body, gravity_world_mag, dt)
+    q = mahony.update(omega_body, f_body, gravity_ned, dt)
 """
 import numpy as np
 import logging
@@ -64,7 +64,7 @@ class MahonyAttitudeEstimator:
         self,
         omega_body: np.ndarray,
         f_body: np.ndarray,
-        gravity_world: np.ndarray,
+        gravity_ned: np.ndarray,
         dt: float,
     ) -> np.ndarray:
         """
@@ -76,15 +76,15 @@ class MahonyAttitudeEstimator:
             Raw gyroscope reading in body frame [rad/s].
         f_body : ndarray (3,)
             Raw specific-force reading in body frame [m/s²].
-        gravity_world : ndarray (3,)
-            Gravity vector in world frame [m/s²].
+        gravity_ned : ndarray (3,)
+            Gravity vector in NED frame [m/s²].
         dt : float
             Time step [s].
 
         Returns
         -------
         quaternion : ndarray (4,)
-            Updated attitude [x, y, z, w] (body→world).
+            Updated attitude [x, y, z, w] (body→NED).
         """
         # ── 1. Subtract EKF-estimated gyro bias ─────────────────────
         omega_corr: np.ndarray = omega_body - self._external_bg
@@ -93,12 +93,12 @@ class MahonyAttitudeEstimator:
         #   The accelerometer measures specific force f = a − g.
         #   When stationary, f = −g  →  normalised f should align
         #   with the expected gravity direction in body frame.
-        g_mag: float = float(np.linalg.norm(gravity_world))
-        g_world_unit: np.ndarray = gravity_world / g_mag if g_mag > 1e-6 else self.up_vector
+        g_mag: float = float(np.linalg.norm(gravity_ned))
+        g_ned_unit: np.ndarray = gravity_ned / g_mag if g_mag > 1e-6 else self.up_vector
 
         #   Expected gravity in body frame given current quaternion.
-        #   gravity_world is world-frame → rotate to body via q⁻¹.
-        g_expected_body: np.ndarray = R.from_quat(self.quaternion).inv().apply(g_world_unit)
+        #   gravity_ned is NED-frame → rotate to body via q⁻¹.
+        g_expected_body: np.ndarray = R.from_quat(self.quaternion).inv().apply(g_ned_unit)
 
         #   Measured gravity direction in body frame (inverted specific force)
         f_norm: float = float(np.linalg.norm(f_body))

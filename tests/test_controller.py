@@ -8,7 +8,7 @@ def test_controller_initialization_with_inertia():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
         inertia_tensor=np.eye(3)
     )
     assert controller.inertia_tensor is not None
@@ -21,7 +21,7 @@ def test_controller_without_inertia():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([10.0, 10.0, 10.0]),
         kd_att=np.array([20.0, 20.0, 20.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
     )
     assert controller.inertia_tensor is None
 
@@ -32,7 +32,7 @@ def test_controller_inertia_torque_computation():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
         inertia_tensor=np.diag([1000.0, 500.0, 800.0])
     )
 
@@ -70,7 +70,7 @@ def test_controller_gyroscopic_term():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
         inertia_tensor=np.diag([1000.0, 500.0, 800.0])
     )
 
@@ -117,7 +117,7 @@ def test_controller_requires_angular_velocity_with_inertia():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
         inertia_tensor=np.eye(3)
     )
 
@@ -147,6 +147,6 @@ def test_invalid_inertia_tensor_shape():
             kd_vel_lateral=10.0, kd_vel_vertical=40.0,
             kp_att=np.array([9.0, 9.0, 9.0]),
             kd_att=np.array([6.0, 6.0, 6.0]),
-            gravity=np.array([0.0, 0.0, -9.81]),
+            gravity_ned=np.array([0.0, 0.0, -9.81]),
             inertia_tensor=np.eye(4)
         )

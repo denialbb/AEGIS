@@ -10,7 +10,7 @@ class StateEstimator:
     def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise_alt: np.ndarray, measurement_noise_vel: np.ndarray, up_vector: np.ndarray = np.array([0.0, 0.0, 1.0])):
         """
         Initializes the Discrete-Time Kalman Filter for translational motion.
-        Estimates [X, Y, Z, Vx, Vy, Vz] in world frame.
+        Estimates [X, Y, Z, Vx, Vy, Vz] in NED frame.
         Attitude and gyro biases are handled by external sensors/filters.
         
         Args:
@@ -47,19 +47,19 @@ class StateEstimator:
                 
         logger.info("Initialized StateEstimator (Kalman Filter with alt+vel)")
 
-    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float, gravity_world: np.ndarray) -> None:
+    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float, gravity_ned: np.ndarray) -> None:
         """
         Predicts the next state using the measured acceleration as the control input.
         noisy_accel_body: Accelerometer reading in vessel body frame.
-        attitude: Vessel attitude required to rotate acceleration to world frame.
-        gravity_world: Gravitational acceleration in world frame (m/s^2).
+        attitude: Vessel attitude required to rotate acceleration to NED frame.
+        gravity_ned: Gravitational acceleration in NED frame (m/s^2).
         """
         rot = R.from_quat(attitude)
-        proper_accel_world = rot.apply(noisy_accel_body)
+        proper_accel_ned = rot.apply(noisy_accel_body)
         
         # IMU measures proper acceleration (includes normal force, excludes gravity).
         # We need kinematic acceleration for Newtonian physics: a_kinematic = a_proper + gravity
-        kinematic_accel_world = proper_accel_world + gravity_world
+        kinematic_accel_ned = proper_accel_ned + gravity_ned
         
         # Update dynamic state transition matrix F.
         # This matrix represents the physics model x_next = F * x_current.
@@ -80,8 +80,8 @@ class StateEstimator:
         B[3:6, 0:3] = dt * np.eye(3)
         
         # Adaptive process‑noise scaling based on thrust magnitude
-        # Compute the norm of the kinematic acceleration (world frame)
-        accel_norm = np.linalg.norm(kinematic_accel_world)
+        # Compute the norm of the kinematic acceleration (NED frame)
+        accel_norm = np.linalg.norm(kinematic_accel_ned)
         # Copy the base Q matrix and scale the velocity‑noise block (indices 3:6)
         Q_dyn = self.base_Q.copy()
         # Scale factor grows with the square of the acceleration magnitude
@@ -93,8 +93,8 @@ class StateEstimator:
         Q_block = Q_dyn[3:6, 3:6] * scale + eps
         Q_dyn[3:6, 3:6] = Q_block
         self.kf.Q = Q_dyn
-        # Predict step using kinematic_accel_world as the control input
-        self.kf.predict(u=kinematic_accel_world, B=B)
+        # Predict step using kinematic_accel_ned as the control input
+        self.kf.predict(u=kinematic_accel_ned, B=B)
         
     def update(self, noisy_alt: float, noisy_vel: np.ndarray) -> np.ndarray:
         """

@@ -13,28 +13,26 @@ class GyroSensor:
     Provides cleaned angular velocity readings for attitude estimation.
     """
     
-    def __init__(self, conn: Any, vessel: Any, ref_frame: Any, up_vector: np.ndarray):
+    def __init__(self, conn: Any, vessel: Any, ned_frame: Any, up_vector: np.ndarray):
         """
         Initializes the gyroscope sensor.
         
         Args:
             conn: kRPC connection object
             vessel: active vessel object
-            ref_frame: the custom landing pad reference frame
+            ned_frame: the custom NED landing pad reference frame
             up_vector: (3,) normalized vector pointing away from the center of the celestial body
         """
         self.conn = conn
         self.vessel = vessel
-        self.ref_frame = ref_frame
+        self.ned_frame = ned_frame
         self.up_vector = up_vector
         
         # Initialize kRPC stream for angular velocity
-        # Use getattr to stream vessel angular velocity
-        # Stream vessel angular velocity in reference frame
-        # Angular velocity stream via bound method
-        # Create a bound method to avoid RPC errors
-        # It will invoke vessel.angular_velocity without extra args
-        self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ref_frame)
+        # Stream vessel angular velocity in the NED frame.
+        # kRPC returns ω expressed in the given frame's coordinate axes (NED).
+        # FRAME-001: this ω must be rotated to body frame by the caller.
+        self.angular_velocity_stream = self.conn.add_stream(self.vessel.angular_velocity, self.ned_frame)
         
         # Noise parameters from config
         self.sigma_gyro = config.SIGMA_GYRO if hasattr(config, 'SIGMA_GYRO') else 0.01  # rad/s
@@ -60,7 +58,8 @@ class GyroSensor:
         only injects noise and passes raw readings upward.
 
         Returns:
-            noisy_angular_velocity (np.ndarray shape (3,)) body-frame angular rates in rad/s
+            noisy_angular_velocity (np.ndarray shape (3,)) angular velocity in NED frame [rad/s].
+            NOTE: The caller (sensors.py) rotates this to body frame before use.
         """
         av_raw = self.angular_velocity_stream()
 

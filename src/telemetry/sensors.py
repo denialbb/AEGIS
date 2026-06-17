@@ -23,31 +23,31 @@ class SensorModels:
     4. aero_body      : ndarray (3,)       — body-frame aero force [N]
     5. situation      : str                  — e.g. "flying"
     6. omega_body     : ndarray (3,)       — body-frame angular rates [rad/s]
-    7. vel            : ndarray (3,)       — world-frame velocity [m/s]
-    8. gravity_world  : ndarray (3,)       — gravity in world frame [m/s²]
+    7. vel            : ndarray (3,)       — NED frame velocity [m/s]
+    8. gravity_ned    : ndarray (3,)       — gravity in NED frame [m/s²]
     9. raw_gyro       : ndarray (3,)       — raw gyro readings (noisy) [rad/s]
     """
-    def __init__(self, conn: Any, vessel: Any, ref_frame: Any, up_vector: np.ndarray):
+    def __init__(self, conn: Any, vessel: Any, ned_frame: Any, up_vector: np.ndarray):
         self.conn = conn
         self.vessel = vessel
-        self.ref_frame = ref_frame
+        self.ned_frame = ned_frame
         self.up_vector = up_vector
 
-        flight_world = self.vessel.flight(self.ref_frame)
+        flight_ned = self.vessel.flight(self.ned_frame)
 
-        self.altitude_stream = self.conn.add_stream(getattr, flight_world, 'surface_altitude')
-        self.velocity_stream = self.conn.add_stream(getattr, flight_world, 'velocity')
+        self.altitude_stream = self.conn.add_stream(getattr, flight_ned, 'surface_altitude')
+        self.velocity_stream = self.conn.add_stream(getattr, flight_ned, 'velocity')
         self.ut_stream = self.conn.add_stream(getattr, self.conn.space_center, 'ut')
-        self.attitude_stream = self.conn.add_stream(getattr, flight_world, 'rotation')
-        self.aero_stream = self.conn.add_stream(getattr, flight_world, 'aerodynamic_force')
+        self.attitude_stream = self.conn.add_stream(getattr, flight_ned, 'rotation')
+        self.aero_stream = self.conn.add_stream(getattr, flight_ned, 'aerodynamic_force')
         self.mass_stream = self.conn.add_stream(getattr, self.vessel, 'mass')
         self.situation_stream = self.conn.add_stream(getattr, self.vessel, 'situation')
 
         self.last_vel: np.ndarray | None = None
         self.last_ut: float | None = None
 
-        self.gyro_sensor = GyroSensor(conn, vessel, ref_frame, up_vector)
-        self.accel_sensor = AccelerometerSensor(conn, vessel, ref_frame, up_vector)
+        self.gyro_sensor = GyroSensor(conn, vessel, ned_frame, up_vector)
+        self.accel_sensor = AccelerometerSensor(conn, vessel, ned_frame, up_vector)
 
         self.attitude_estimator = MahonyAttitudeEstimator(
             kp=config.MAHONY_KP if hasattr(config, 'MAHONY_KP') else 2.0,
@@ -119,45 +119,48 @@ class SensorModels:
 
         # ── Mass, aero, situation ─────────────────────────────────
         mass = self.mass_stream()
-        aero_world = np.array(self.aero_stream())
+        aero_ned = np.array(self.aero_stream())
         situation = self.situation_stream().name
 
         # ── kRPC attitude quaternion (used ONLY for frame rotation) ──
         krpc_att = self._read_krpc_quaternion()
-        rot_bw: R = R.from_quat(krpc_att)
+        rot_bw: R = R.from_quat(krpc_att)  # body → NED rotation
 
-        # ── Accelerometer: world-frame specific force + gravity ────
-        sf_world, gravity_world = self.accel_sensor.poll(np.zeros(3))
+        # ── Accelerometer: NED-frame specific force + gravity ──────
+        sf_ned, gravity_ned = self.accel_sensor.poll(np.zeros(3))
 
         # Rotate specific-force to body frame using kRPC truth attitude.
         # This gives both filters a correctly-framed input.
         # Noise is already added in accelerometer_sensor.poll() — no duplicate.
-        sf_body_noisy: np.ndarray = rot_bw.inv().apply(sf_world)
+        sf_body_noisy: np.ndarray = rot_bw.inv().apply(sf_ned)
 
         # ── Gyroscope: body-frame angular rates ─────────────────────
-        omega_body: np.ndarray = self.gyro_sensor.poll()
-        # Obtain raw gyroscope reading (noise added but bias not corrected)
-        # Read raw data from gyro sensor stream
+        # gyro_sensor.poll() returns ω in NED frame axes (the custom
+        # pad-relative frame).  Rotate to body frame, matching the
+        # pattern used for sf and aero above.
+        omega_ned: np.ndarray = self.gyro_sensor.poll()
+        omega_body: np.ndarray = rot_bw.inv().apply(omega_ned)
+
+        # Obtain raw gyroscope reading (NED frame), rotate to body
         av_raw = self.gyro_sensor.angular_velocity_stream()
         if hasattr(av_raw, "x"):
-            perfect_raw = np.array([av_raw.x, av_raw.y, av_raw.z])
+            perfect_raw_ned = np.array([av_raw.x, av_raw.y, av_raw.z])
         else:
-            perfect_raw = np.array(av_raw, dtype=float)
-        if config.NOISELESS_MODE:
-            raw_gyro = perfect_raw
-        else:
-            raw_gyro = perfect_raw + self.rng.normal(0, self.gyro_sensor.sigma_gyro, size=3)
+            perfect_raw_ned = np.array(av_raw, dtype=float)
+        raw_gyro_ned = perfect_raw_ned if config.NOISELESS_MODE else \
+            perfect_raw_ned + self.rng.normal(0, self.gyro_sensor.sigma_gyro, size=3)
+        raw_gyro: np.ndarray = rot_bw.inv().apply(raw_gyro_ned)
         # NOTE: gyroscope “raw” data includes noise but does not include bias correction.
 
 
         # ── Mahony filter update (attitude for EKF + guidance) ───────
         dt_mahony: float = 1.0 / config.TARGET_HZ
         mahony_attitude: np.ndarray = self.attitude_estimator.update(
-            omega_body, sf_body_noisy, gravity_world, dt_mahony
+            omega_body, sf_body_noisy, gravity_ned, dt_mahony
         )
 
         # ── Aero in body frame ─────────────────────────────────────
-        aero_body: np.ndarray = rot_bw.inv().apply(aero_world)
+        aero_body: np.ndarray = rot_bw.inv().apply(aero_ned)
 
         # ── Noise on alt and vel ───────────────────────────────────
         if config.NOISELESS_MODE:
@@ -174,7 +177,7 @@ class SensorModels:
             f"{mahony_attitude[2]:.3f}, {mahony_attitude[3]:.3f}]"
         )
         logger.debug(
-            f"Gravity world: [{gravity_world[0]:.3f}, {gravity_world[1]:.3f}, {gravity_world[2]:.3f}]"
+            f"Gravity NED: [{gravity_ned[0]:.3f}, {gravity_ned[1]:.3f}, {gravity_ned[2]:.3f}]"
         )
 
         return (
@@ -186,6 +189,6 @@ class SensorModels:
             situation,
             omega_body,
             noisy_vel,
-            gravity_world,
+            gravity_ned,
             raw_gyro,
         )

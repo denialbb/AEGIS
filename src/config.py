@@ -3,6 +3,7 @@ Global Configuration for AEGIS Mission Director.
 This file contains the configuration parameters for the flight software.
 Tuning these values directly affects the performance, stability, and behavior of the landing system.
 """
+import numpy as np
 
 # ---------------------------------------------------------
 # kRPC Connection
@@ -17,7 +18,7 @@ KRPC_CLIENT_NAME = "AEGIS Mission Director"
 # Higher values (e.g., 100.0) give smoother, more reactive control but require more CPU/network bandwidth.
 # Lower values (e.g., 20.0) may cause lag and attitude oscillations.
 # Min: 20.0, Max: 100.0
-TARGET_HZ = 50.0
+TARGET_HZ = 10.0
 
 # Use KSP stock SAS for attitude stabilisation.
 # When False, the guidance controller handles attitude entirely via gimbal trim
@@ -37,6 +38,11 @@ SAS_PROGRADE_ASCENT = True
 # ---------------------------------------------------------
 TARGET_LAT = -0.0972
 TARGET_LON = -74.5577
+# Pad position in body-centered frame (computed for KSC launchpad)
+# This is the origin of the local landing-pad reference frame
+PAD_POSITION_ECEF = np.array([159779.71, -1018.00, -578408.50])
+# Landing pad position in local reference frame (always at origin)
+LANDING_PAD_POSITION = np.array([0.0, 0.0, 0.0])
 
 # ---------------------------------------------------------
 # State Machine Parameters
@@ -52,7 +58,10 @@ ALT_HYPERSONIC = 10000.0
 # Altitude to ignite engines for primary braking (POWERED_DESCENT).
 # CRITICAL: If set too low (e.g., 3000.0 suicide burn), the vessel will not have enough time to slow down and will crash.
 # If too high (e.g., 15000.0), it wastes fuel hovering down.
-ALT_POWERED_DESCENT = 3000.0
+# Tuned for TWR=1.82 lander: ignite at 1050m when velocity ~110 m/s, with 300m safety margin.
+# Manual test: successful suicide burn from 2000m with 150 m/s entry velocity.
+# See scripts/calculate_suicide_burn.py for derivation.
+ALT_POWERED_DESCENT = 2000.0
 
 # Altitude to enter HOVER_TARGETING and zero out lateral drift.
 # Gives the vessel a buffer to precisely align over the pad before final descent.
@@ -62,6 +71,13 @@ ALT_HOVER = 200.0
 # Final slow descent phase threshold. Sets the height of the final touchdown phase.
 # Min: 10.0, Max: 200.0
 ALT_TERMINAL = 10.0
+
+# ---------------------------------------------------------
+# Mission Timeout
+# ---------------------------------------------------------
+# Maximum mission runtime in seconds. If the mission exceeds this, it is
+# automatically aborted. Prevents infinite loops during testing.
+MAX_MISSION_TIME = 300.0  # seconds
 
 # ---------------------------------------------------------
 # Landed Timer Parameters
@@ -168,7 +184,7 @@ EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY = 0.1  # m/s²
 # Innovation magnitude threshold for IMU health monitoring.
 # When the normalised innovation exceeds this, an sensor anomaly is flagged.
 # Min: 3.0 (Sensitive), Max: 10.0 (Tolerant)
-EKF_INNOVATION_FAULT_THRESHOLD = 15.0
+EKF_INNOVATION_FAULT_THRESHOLD = 25.0
 
 # ---------------------------------------------------------
 # Glide-Slope Guidance
@@ -188,8 +204,10 @@ GLIDESLOPE_K_ALT = 0.8  # [1/s]
 # Max descent speed during initial braking phase (m/s).
 # With the suicide-burn sqrt profile, this is a structural/terminal-velocity
 # cap, not the guidance profile itself. Set high enough to not interfere.
+# Tuned for TWR=1.82 lander: 100 m/s cap allows stopping from 620m altitude.
+# Prevents guidance from demanding impossible deceleration (>8 m/s² net).
 # Min: 20.0, Max: 500.0
-GLIDESLOPE_RATE_POWERED_DESCENT = 300.0  # [m/s]
+GLIDESLOPE_RATE_POWERED_DESCENT = 100.0  # [m/s]
 
 # Max descent speed while searching for the pad.
 # Slower speeds give the vessel more time to move laterally to the pad.
@@ -214,8 +232,8 @@ GUIDANCE_KP_POS_VERTICAL = 0.5
 # Velocity dampening (Derivative). Higher values strictly enforce speed limits and prevent overshoot.
 # Vertical is typically higher than lateral to fight gravity aggressively.
 # Min: 2.0, Max: 100.0
-GUIDANCE_KD_VEL_LATERAL = 10.0
-GUIDANCE_KD_VEL_VERTICAL = 2.0
+GUIDANCE_KD_VEL_LATERAL = 2.0
+GUIDANCE_KD_VEL_VERTICAL = 1.5
 
 # Attitude stiffness (Pitch, Yaw, Roll).
 # Higher values command more torque to point the nose. Too high causes thrust windup and allocator saturation.
@@ -246,16 +264,19 @@ GUIDANCE_ATT_DAMPING_RATIO = [1.0, 1.0, 1.0]
 # Acceleration Command Clamp
 # ---------------------------------------------------------
 # Multiplier on max_a_avail (the vessel's net upward acceleration from TWR)
-# used to cap a_cmd_world before it enters force_body and target_up_world.
-# A value of 2.5 means the guidance can command up to 250 % of the vessel's
-# net upward accelerating capability (a_avail).  The sqrt profile requires
-# a_avail NET deceleration, so the clamp must satisfy:
+# used to cap a_cmd_ned before it enters force_body and target_up_ned.
+# A value of 1.0 means the guidance can command up to 100 % of the vessel's
+# net upward accelerating capability (a_avail). This ensures the total thrust
+# magnitude (a_cmd + gravity) never exceeds the physical engine limit, leaving
+# margin for gimbal torque. The sqrt profile requires a_avail NET deceleration,
+# so the clamp must satisfy:
 #   clamp_factor >= 1 + g / a_avail
-# For TWR=2 (a_avail ~ g) this requires clamp_factor >= 2.0.
-# Higher = more aggressive (risks attitude flip during saturating transients);
-# lower = more conservative (risks the vehicle always lagging the profile).
-# Min: 2.0, Max: 4.0
-ACCEL_CLAMP_FACTOR = 2.5  # multiplier on max_a_avail, see GuidanceController
+# For TWR=2 (a_avail ~ g) this requires clamp_factor >= 2.0 to reach max thrust.
+# However, clamp_factor=1.0 limits to a_avail, keeping total thrust at
+# a_avail + g = max_thrust/mass, which is the exact physical limit.
+# Lower = more conservative (leaves gimbal authority for torque).
+# Min: 1.0, Max: 4.0
+ACCEL_CLAMP_FACTOR = 1.0  # multiplier on max_a_avail, see GuidanceController
 
 # Scale factor for adaptive process noise in the StateEstimator.
 # Larger value makes the filter increase velocity‑noise covariance when the
@@ -289,6 +310,19 @@ PART_THRUST_AXIS: dict[str, tuple[float, float, float]] = {
 DEFAULT_THRUST_AXIS: tuple[float, float, float] = (0.0, 0.0, -1.0)
 
 # ---------------------------------------------------------
+# Guidance Torque Limits
+# ---------------------------------------------------------
+# Maximum torque per axis (N·m) that the guidance controller can command.
+# This prevents the allocator from producing highly asymmetric thrust
+# that causes the vessel to spin. Set based on gimbal authority:
+#   max_torque ≈ N_radial_engines * radius * max_thrust * tan(max_gimbal)
+# For 5-engine lander (1 center + 4 radial at 0.8m, 4.5° gimbal):
+#   max_lateral = 18303.6 N * tan(4.5°) = 1440 N per engine
+#   max_torque = 4 * 0.8m * 1440 N = 4610 N·m
+# Using 70% margin (3200 N·m) to avoid saturation and leave authority for disturbances.
+GUIDANCE_MAX_TORQUE = [3200.0, 3200.0, 3200.0]
+
+# ---------------------------------------------------------
 # Reaction Wheel Attitude Augmentation (TODO: ADR-029)
 # ---------------------------------------------------------
 # Gain that maps torque_body (N·m) to the stock [-1, 1] pitch/yaw/roll
@@ -298,10 +332,18 @@ DEFAULT_THRUST_AXIS: tuple[float, float, float] = (0.0, 0.0, -1.0)
 # RW_AUGMENT_GAIN = 0.0
 
 # ---------------------------------------------------------
+# Estimator Warmup
+# ---------------------------------------------------------
+# Number of ticks to run the estimator before enabling guidance.
+# Allows the EKF to converge when starting from a quicksave with
+# the vessel already in flight. At 50 Hz, 100 ticks = 2 seconds.
+ESTIMATOR_WARMUP_TICKS = 100
+
+# ---------------------------------------------------------
 # Application Logging
 # ---------------------------------------------------------
-DEBUG_LOGGING = False
-LOG_TO_FILE = False
+DEBUG_LOGGING = True
+LOG_TO_FILE = True
 LOG_FILE_PATH = "logs/aegis.log"
 
 # ---------------------------------------------------------

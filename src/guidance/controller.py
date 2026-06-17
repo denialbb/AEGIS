@@ -2,6 +2,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R  # type: ignore
 from src.guidance.adrc import ADRCController, CTMCalculator
 from src.guidance.nn import NNFeedforward
+import src.config as config
+import logging
+
+logger = logging.getLogger(__name__)
 
 class GuidanceController:
     """
@@ -20,12 +24,13 @@ class GuidanceController:
                  kd_vel_vertical: float,
                  kp_att: np.ndarray,
                  kd_att: np.ndarray,
-                 gravity: np.ndarray = np.zeros(3),
+                 gravity_ned: np.ndarray = np.zeros(3),
                  inertia_tensor: np.ndarray | None = None,
                  adrc: ADRCController | None = None,
                  ctm_calculator: CTMCalculator | None = None,
                  nn_model: NNFeedforward | None = None,
-                 accel_clamp_factor: float = 1.5):
+                 accel_clamp_factor: float = 1.5,
+                 max_torque: np.ndarray | None = None):
         """
         Initializes the Guidance Controller with tunable gains.
 
@@ -36,7 +41,7 @@ class GuidanceController:
             kd_vel_vertical: Derivative gain for vertical velocity error.
             kp_att: (3,) Proportional gains for attitude error (pseudo-acceleration, rad/s^2).
             kd_att: (3,) Derivative gains for angular velocity damping (1/s).
-            gravity: (3,) Gravity vector in world frame (e.g. [0, 0, -9.81]).
+            gravity_ned: (3,) Gravity vector in NED frame (e.g. [0, 0, -9.81]).
             inertia_tensor: (3,3) Full inertia tensor in body frame. When provided,
                             torque = J*(Kp*e + Kd*omega_err) + omega x J*omega.
                             When None, falls back to direct PD (no inertia scaling).
@@ -52,7 +57,7 @@ class GuidanceController:
                       (Phase 4). The NN correction is added to the CTM feedforward
                       in torque space. Requires adrc and inertia_tensor.
             accel_clamp_factor: Multiplier on max_a_avail used to cap
-                a_cmd_world before force and attitude target computation.
+                a_cmd_ned before force and attitude target computation.
                 Default 1.5 (see config.ACCEL_CLAMP_FACTOR).
         """
         self.kp_pos_lateral = float(kp_pos_lateral)
@@ -61,8 +66,12 @@ class GuidanceController:
         self.kd_vel_vertical = float(kd_vel_vertical)
         self.kp_att = np.array(kp_att, dtype=float)
         self.kd_att = np.array(kd_att, dtype=float)
-        self.gravity = np.array(gravity, dtype=float)
+        self.gravity_ned = np.array(gravity_ned, dtype=float)
         self.accel_clamp_factor = float(accel_clamp_factor)
+        if max_torque is not None:
+            self.max_torque = np.array(max_torque, dtype=float)
+        else:
+            self.max_torque = np.array(config.GUIDANCE_MAX_TORQUE, dtype=float)
 
         self.inertia_tensor: np.ndarray | None = None
         if inertia_tensor is not None:
@@ -100,11 +109,11 @@ class GuidanceController:
         and an upright attitude.
 
         Args:
-            current_state: (6,) array [x, y, z, vx, vy, vz] in world frame.
+            current_state: (6,) array [x, y, z, vx, vy, vz] in NED frame.
             current_attitude: (4,) array [x, y, z, w] scalar-last quaternion (kRPC/scipy convention).
                               kRPC returns [x, y, z, w] matching scipy's R.from_quat.
             mass: Current vessel mass in kg.
-            target_state: (6,) array [x, y, z, vx, vy, vz] in world frame.
+            target_state: (6,) array [x, y, z, vx, vy, vz] in NED frame.
             dt: Time step for numerical differentiation of attitude error.
             angular_velocity: (3,) body-frame angular velocity (rad/s). Required when
                               inertia_tensor is set; falls back to numerical differentiation
@@ -122,7 +131,7 @@ class GuidanceController:
             dt = 1e-6
 
         # ---------------------------------------------------------
-        # 1. TRANSLATION CONTROL (World Frame)
+        # 1. TRANSLATION CONTROL (NED Frame)
         # ---------------------------------------------------------
         pos_err = target_state[:3] - current_state[:3]
         vel_err = target_state[3:] - current_state[3:]
@@ -133,30 +142,42 @@ class GuidanceController:
 
         vel_err_vert = np.dot(vel_err, up_vector) * up_vector
         vel_err_lat = vel_err - vel_err_vert
-
+        
         # Commanded Acceleration Equation:
         # a_cmd = Kp_pos * e_pos + Kd_vel * e_vel - g
         a_cmd_pos = (self.kp_pos_lateral * pos_err_lat) + (self.kp_pos_vertical * pos_err_vert)
         a_cmd_vel = (self.kd_vel_lateral * vel_err_lat) + (self.kd_vel_vertical * vel_err_vert)
 
-        a_cmd_world = a_cmd_pos + a_cmd_vel - self.gravity
+        logger.debug(f"[GUIDANCE] up_vector={up_vector} current_v={current_state[3:]} target_v={target_state[3:]}")
+        logger.debug(f"[GUIDANCE] current_pos={current_state[:3]} target_pos={target_state[:3]} pos_err={pos_err}")
+        logger.debug(f"[GUIDANCE] est_alt={np.dot(current_state[:3], up_vector):.2f}m state_vector={current_state}")
+        logger.debug(f"[GUIDANCE] dot(gravity_ned, up_vector)={np.dot(self.gravity_ned, up_vector):.4f} gravity_ned={self.gravity_ned}")
+        logger.debug(f"[GUIDANCE] a_cmd_pos={a_cmd_pos} a_cmd_vel={a_cmd_vel}")
+        logger.debug(f"[GUIDANCE] pos_err_lat={np.linalg.norm(pos_err_lat):.1f}m pos_err_vert={np.dot(pos_err_vert, up_vector):.1f}m")
+        logger.debug(f"[GUIDANCE] vel_err_lat={np.linalg.norm(vel_err_lat):.1f}m/s vel_err_vert={np.dot(vel_err_vert, up_vector):.1f}m/s")
 
-        # Clamp a_cmd_world magnitude to prevent the guidance from commanding
+        a_cmd_ned = a_cmd_pos + a_cmd_vel - self.gravity_ned
+        
+        logger.debug(f"[GUIDANCE] a_cmd_ned={a_cmd_ned} max_a_avail={max_a_avail}")
+
+        # Clamp a_cmd_ned magnitude to prevent the guidance from commanding
         # accelerations far beyond the vehicle's physical capability. This keeps
-        # the attitude target (target_up_world) from flipping wildly and lets the
+        # the attitude target from flipping wildly and lets the
         # allocator's existing saturation handling do its job without the
         # attitude-thrashing side effect.
         if max_a_avail is not None and max_a_avail > 0.0:
-            a_norm = np.linalg.norm(a_cmd_world)
+            a_norm = np.linalg.norm(a_cmd_ned)
             limit = self.accel_clamp_factor * max_a_avail
             if a_norm > limit:
-                a_cmd_world = (a_cmd_world / a_norm) * limit
+                a_cmd_ned = (a_cmd_ned / a_norm) * limit
 
         # ---------------------------------------------------------
-        # 2. FRAME ROTATION (World -> Body)
+        # 2. FRAME ROTATION (NED -> Body)
         # ---------------------------------------------------------
         rot = R.from_quat(current_attitude)
-        a_cmd_body = rot.inv().apply(a_cmd_world)
+        a_cmd_body = rot.inv().apply(a_cmd_ned)
+        
+        logger.debug(f"[GUIDANCE] attitude_q={current_attitude} a_cmd_ned={a_cmd_ned} a_cmd_body={a_cmd_body}")
 
         # Newton's Second Law: F = m * a
         force_body = mass * a_cmd_body
@@ -164,15 +185,15 @@ class GuidanceController:
         # ---------------------------------------------------------
         # 3. ATTITUDE CONTROL (Body Frame)
         # ---------------------------------------------------------
-        a_cmd_norm = np.linalg.norm(a_cmd_world)
+        a_cmd_norm = np.linalg.norm(a_cmd_ned)
         if a_cmd_norm > 1e-6:
-            target_up_world = a_cmd_world / a_cmd_norm
+            target_up_ned = a_cmd_ned / a_cmd_norm
         else:
-            target_up_world = up_vector
+            target_up_ned = up_vector
 
-        target_up_body = rot.inv().apply(target_up_world)
+        target_up_body = rot.inv().apply(target_up_ned)
 
-        # Cross product between current nose [0, 1, 0] and target up vector
+            # Cross product between current nose [0, 1, 0] and target up (NED) vector
         # gives the rotation axis and magnitude (sin(theta)) to align them.
         err_axis = np.cross(np.array([0.0, 1.0, 0.0]), target_up_body)
 
@@ -227,6 +248,13 @@ class GuidanceController:
             else:
                 d_err_axis = np.zeros(3)
             torque_body = (self.kp_att * err_axis) - (self.kd_att * d_err_axis)
+
+        # ---- Torque clamping to prevent asymmetric thrust ----
+        torque_body = np.clip(
+            torque_body,
+            -self.max_torque,
+            self.max_torque,
+        )
 
         # ---------------------------------------------------------
         # 4. ASSEMBLE WRENCH

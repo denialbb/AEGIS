@@ -75,7 +75,11 @@ class FlightReplayer:
         raw_gyro = np.array(self.data["raw_gyro"])
         noisy_alt = np.array(self.data["noisy_alt"])
         noisy_vel = np.array(self.data["noisy_vel"])
-        gravity_world = np.array(self.data["gravity_world"])
+        # Backward-compat: try "gravity_ned" first, fallback to "gravity_world"
+        # for recordings made before the rename.
+        gravity_ned = np.array(
+            self.data.get("gravity_ned", self.data.get("gravity_world"))
+        )
 
         N = len(ut)
         nis_vals = np.empty(N)
@@ -85,7 +89,7 @@ class FlightReplayer:
         for i in range(N):
             ekf.predict(
                 sf_body_noisy[i], raw_gyro[i],
-                mahony_att[i], gravity_world[i],
+                mahony_att[i], gravity_ned[i],
                 float(dt[i]),
             )
 

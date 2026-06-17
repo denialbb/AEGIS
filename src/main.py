@@ -57,7 +57,7 @@ class MissionDirector:
         target_lat = config.TARGET_LAT
         target_lon = config.TARGET_LON
 
-        self.ref_frame = self.conn.space_center.ReferenceFrame.create_relative(
+        self.ned_frame = self.conn.space_center.ReferenceFrame.create_relative(
             body.reference_frame,
             position=body.surface_position(target_lat, target_lon, body.reference_frame),
         )
@@ -164,7 +164,7 @@ class MissionDirector:
 
     def _init_sensors(self) -> None:
         """Create the sensor stack."""
-        self.sensors = SensorModels(self.conn, self.vessel, self.ref_frame, self.up_vector)
+        self.sensors = SensorModels(self.conn, self.vessel, self.ned_frame, self.up_vector)
 
     # ------------------------------------------------------------------
     # Estimator + FDI
@@ -172,11 +172,11 @@ class MissionDirector:
 
     def _init_estimator(self) -> None:
         """Initialise the Error-State EKF and FDI module."""
-        initial_alt = float(self.vessel.flight(self.ref_frame).surface_altitude)
-        # Use actual vessel position in pad-relative frame, not up_vector * alt
+        initial_alt = float(self.vessel.flight(self.ned_frame).surface_altitude)
+        # Use actual vessel position in NED frame, not up_vector * alt
         # This accounts for horizontal offset from the pad
-        initial_pos = np.array(self.vessel.position(self.ref_frame))
-        initial_vel = np.array(self.vessel.flight(self.ref_frame).velocity)
+        initial_pos = np.array(self.vessel.position(self.ned_frame))
+        initial_vel = np.array(self.vessel.flight(self.ned_frame).velocity)
 
         covariance = self._build_initial_covariance()
 
@@ -217,7 +217,7 @@ class MissionDirector:
             kd_vel_vertical=config.GUIDANCE_KD_VEL_VERTICAL,
             kp_att=kp_att,
             kd_att=kd_att,
-            gravity=np.zeros(3),
+            gravity_ned=np.zeros(3),
             inertia_tensor=self.inertia_tensor,
             accel_clamp_factor=config.ACCEL_CLAMP_FACTOR,
         )
