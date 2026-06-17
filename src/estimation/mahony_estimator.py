@@ -94,7 +94,9 @@ class MahonyAttitudeEstimator:
         #   When stationary, f = −g  →  normalised f should align
         #   with the expected gravity direction in body frame.
         g_mag: float = float(np.linalg.norm(gravity_ned))
-        g_ned_unit: np.ndarray = gravity_ned / g_mag if g_mag > 1e-6 else self.up_vector
+        # In NED, gravity points along +z (Down).  Fallback to (0,0,1) if
+        # the magnitude is negligible (should never happen near Kerbin).
+        g_ned_unit: np.ndarray = gravity_ned / g_mag if g_mag > 1e-6 else np.array([0.0, 0.0, 1.0])
 
         #   Expected gravity in body frame given current quaternion.
         #   gravity_ned is NED-frame → rotate to body via q⁻¹.

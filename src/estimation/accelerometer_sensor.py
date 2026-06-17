@@ -74,18 +74,18 @@ class AccelerometerSensor:
         self.last_vel = vel
         self.last_ut = ut
         
-        # Compute gravity using body's gravitational parameter and vessel's position
-        # relative to the body center (not the pad-relative NED frame).
+        # Compute gravity in NED: always along +z (Down axis).
+        # magnitude = mu / r² at the vessel's current distance.
         body = self.vessel.orbit.body
         mu = body.gravitational_parameter
         ecef_frame = body.reference_frame
         pos_ecef = np.array(self.vessel.position(ecef_frame))
         distance = np.linalg.norm(pos_ecef)
         if distance > 0:
-            gravity_ned = - (mu / distance**3) * pos_ecef
+            g_mag = mu / distance**2
         else:
-            # Fallback to avoid division by zero
-            gravity_ned = -self.up_vector * 9.81
+            g_mag = 9.81  # fallback
+        gravity_ned = np.array([0.0, 0.0, g_mag])
         
         # Proper acceleration (specific force) = coordinate acceleration - gravity
         # This is what an accelerometer actually measures
