@@ -48,12 +48,18 @@ class TestMissionDirector:
         
         # Mock parts with engines (for engine discovery)
         part = Mock()
+        part.name = "liquidEngineMini.v2"
         part.engine = Mock()
         part.engine.max_thrust = 1000.0
         part.engine.gimbal_range = 10.0
         part.engine.thrust_direction = (0.0, 0.0, -1.0)
         part.engine.has_fuel = True
         part.engine.part = part  # engine.part → part (needed for fallback path)
+        # Mock thrusters so part.engine.thrusters[0] works
+        thruster_mock = Mock()
+        thruster_mock.initial_thrust_direction = Mock(return_value=(0.0, 0.0, -1.0))
+        thruster_mock.thrust_direction = Mock(return_value=(0.0, 0.0, -1.0))
+        part.engine.thrusters = [thruster_mock]
         part.position = Mock(return_value=[0.0, 0.0, -1.0])
         part.reference_frame = Mock()
         part.modules = []

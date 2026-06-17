@@ -266,6 +266,29 @@ PROCESS_NOISE_THRUST_COEF = 0.735965  # (1/(m/s)^2) scaling of Q based on |a|^2
 GRAVITY = [0.0, 0.0, -9.81]
 
 # ---------------------------------------------------------
+# Engine Thrust Axes (Part-Local Frame)
+# ---------------------------------------------------------
+# Maps part names to their thrust direction axis in the part's local
+# coordinate frame.  Used as a fallback when the kRPC Thruster API
+# crashes (e.g. after space_center.load() which nulls the gimbal
+# Transform — see ISS-008).
+#
+# Convention: most stack-mounted engines thrust along -Z, radial
+# engines along +Y.  Add entries for any engine model used by the
+# vessel.
+PART_THRUST_AXIS: dict[str, tuple[float, float, float]] = {
+    "liquidEngineMini.v2": (0.0, 1.0, 0.0),  # 48-7S "Spark" — thrusts along part +Y
+    "liquidEngine2.v2": (0.0, 0.0, -1.0),   # LV-T45 "Swivel"
+    "liquidEngine3.v2": (0.0, 0.0, -1.0),   # LV-909 "Terrier"
+    "liquidEngine": (0.0, 0.0, -1.0),       # LV-T30 "Reliant"
+    "liquidEngineS2": (0.0, 0.0, -1.0),     # LV-T45 (variant)
+}
+
+# Default thrust axis used when the part name is not found in
+# PART_THRUST_AXIS and the thruster API is unavailable.
+DEFAULT_THRUST_AXIS: tuple[float, float, float] = (0.0, 0.0, -1.0)
+
+# ---------------------------------------------------------
 # Reaction Wheel Attitude Augmentation (TODO: ADR-029)
 # ---------------------------------------------------------
 # Gain that maps torque_body (N·m) to the stock [-1, 1] pitch/yaw/roll

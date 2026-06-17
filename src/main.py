@@ -86,17 +86,40 @@ class MissionDirector:
                 continue
             if part.engine is not None:
                 pos = np.array(part.position(vessel.reference_frame))
-                thrust_dir_part = tuple(part.engine.thrust_direction)
-                thrust_dir_vessel = np.array(
-                    self.conn.space_center.transform_direction(
-                        thrust_dir_part,
-                        part.reference_frame,
-                        vessel.reference_frame,
+                # Read thrust direction from the first thruster (avoids hardcoding
+                # which part axis the thrust aligns with, which varies by part model).
+                # Falls back if the server-side gimbal-stash call fails on some engines,
+                # and falls back further to a configured axis lookup when the Thruster
+                # API is entirely unavailable (e.g. after space_center.load()).
+                thruster = part.engine.thrusters[0]
+                thrust_dir = None
+                try:
+                    thrust_dir = np.array(
+                        thruster.initial_thrust_direction(vessel.reference_frame)
                     )
-                )
-                thrust_dir = thrust_dir_vessel / (
-                    np.linalg.norm(thrust_dir_vessel) + 1e-12
-                )
+                except Exception:
+                    try:
+                        thrust_dir = np.array(
+                            thruster.thrust_direction(vessel.reference_frame)
+                        )
+                    except Exception:
+                        pass
+                if thrust_dir is None:
+                    fallback_axis = config.PART_THRUST_AXIS.get(
+                        part.name, config.DEFAULT_THRUST_AXIS
+                    )
+                    thrust_dir = np.array(
+                        self.conn.space_center.transform_direction(
+                            fallback_axis,
+                            part.reference_frame,
+                            vessel.reference_frame,
+                        )
+                    )
+                    logger.warning(
+                        f"Thruster API unavailable for {part.name}, "
+                        f"using configured axis {fallback_axis} → {thrust_dir}"
+                    )
+                thrust_dir /= np.linalg.norm(thrust_dir) + 1e-12
                 gx_v = np.array(
                     self.conn.space_center.transform_direction(
                         (1.0, 0.0, 0.0),
@@ -291,8 +314,32 @@ class MissionDirector:
         # Landing timer: accumulates while vessel is low and slow, decays when not
         self._landed_timer = 0.0
 
+        # Pause detection via MET stall
+        try:
+            _last_met = float(self.vessel.met)
+        except Exception:
+            _last_met = 0.0  # Fallback for mocks/tests
+        _paused_ticks = 0
+
         while self.state not in ["HARD_ABORT", "LANDED"]:
             start_time = time.time()
+
+            # ── Game-pause detection ────────────────────────────────
+            # When KSP is paused, MET does not advance.  If we see 5+
+            # consecutive stalled MET readings (~100 ms), the game is
+            # paused — skip the control cycle and wait.
+            try:
+                _current_met = float(self.vessel.met)
+            except Exception:
+                _current_met = float(_last_met) + 1.0
+            if abs(_current_met - float(_last_met)) < 1e-6:
+                _paused_ticks += 1
+            else:
+                _paused_ticks = 0
+            _last_met = _current_met
+            if _paused_ticks > 5:
+                time.sleep(dt)
+                continue
 
             if self._exit_requested:
                 logger.info("SIGINT received. Requesting graceful shutdown.")
@@ -596,6 +643,18 @@ class MissionDirector:
                 if activated:
                     logger.info("AEGIS Activated. Smart Routing initialized.")
                     self.writer.log_event({"type": "ACTIVATION"})
+                    # Take over engines from pilot: independent throttle decouples
+                    # from vessel main throttle so the allocator has full authority.
+                    for e in self.engines:
+                        engine_obj = _safe_engine_access(e.part)
+                        if engine_obj:
+                            engine_obj.active = True
+                            engine_obj.independent_throttle = True
+                            engine_obj.throttle = 1.0
+                            for module in e.part.modules:
+                                if module.name == "ModuleGimbalTrim":
+                                    if "Toggle Trim" in module.events and "Gimbal X" not in module.fields:
+                                        module.trigger_event("Toggle Trim")
                     if config.USE_SAS:
                         self.vessel.control.sas = True
                     elif config.SAS_PROGRADE_ASCENT:
@@ -814,36 +873,6 @@ class MissionDirector:
                         engine_obj.independent_throttle = False
                 break  # Exit the control loop gracefully
 
-            if self.state not in [
-                "HARD_ABORT",
-                "STANDBY",
-                "ASCENT_COAST",
-                "DEORBIT_BURN",
-                "HYPERSONIC_COAST",
-            ]:
-                # Ensure engines are activated and decoupled from vessel main throttle
-                for e in active_engines:
-                    engine_obj = _safe_engine_access(e.part)
-                    if engine_obj:
-                        if not engine_obj.active:
-                            engine_obj.active = True
-                        # Independent throttle MUST be enabled so the engine ignores the vessel's
-                        # main throttle and responds strictly to the thrust_limit we command.
-                        if not engine_obj.independent_throttle:
-                            engine_obj.independent_throttle = True
-                        # ADR-023: Independent throttle uncouples from main vessel throttle.
-                        # It defaults to 0.0, so we MUST explicitly force it to 1.0 before modulating thrust_limit.
-                        engine_obj.throttle = 1.0
-
-                        # Enable Gimbal Trim mod if present
-                        for module in e.part.modules:
-                            if module.name == "ModuleGimbalTrim":
-                                if (
-                                    "Toggle Trim" in module.events
-                                    and "Gimbal X" not in module.fields
-                                ):
-                                    module.trigger_event("Toggle Trim")
-
             # Accumulate angular motion for Optuna rocking penalty
             self.total_angular_motion += float(np.linalg.norm(omega_body)) * dt
 
@@ -857,8 +886,8 @@ class MissionDirector:
                 angular_velocity=omega_body,
                 max_a_avail=a_avail,
             )
-        else:
-            desired_wrench = np.zeros(6)
+            if self.state in ["STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST"]:
+                desired_wrench = np.zeros(6)
 
             # 5. Allocate Thrust
             if active_engines and self.state not in [
