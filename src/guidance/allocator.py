@@ -96,6 +96,8 @@ class ControlAllocator:
         )  # Desired force per engine (before clamping)
         f_actual = np.zeros((N, 3))  # Actual force per engine (after clamping)
         saturated = np.zeros(N, dtype=bool)  # Tracks saturation per engine
+        gimbal_saturated = np.zeros(N, dtype=bool)  # Gimbal-specific sat flag
+        thrust_saturated = np.zeros(N, dtype=bool)  # Thrust-specific sat flag
 
         # Build B matrix once (constant across iterations)
         B = self._build_B(active_engines)  # Shape (6, 3N)
@@ -113,6 +115,8 @@ class ControlAllocator:
 
             # Check for saturation
             newly_saturated = np.zeros(N, dtype=bool)
+            newly_gimbal_sat = np.zeros(N, dtype=bool)
+            newly_thrust_sat = np.zeros(N, dtype=bool)
             f_actual[:] = f_desired  # Start with desired forces
 
             for i, engine in enumerate(active_engines):
@@ -124,6 +128,9 @@ class ControlAllocator:
                 lat_mag = np.linalg.norm(lateral_f_vec)
 
                 # --- clamp axial first ---
+                if axial_f > engine.max_thrust:
+                    newly_thrust_sat[i] = True
+                    newly_saturated[i] = True
                 axial_f_clamped = np.clip(axial_f, 0.0, engine.max_thrust)
 
                 # --- recompute gimbal limit based on clamped axial ---
@@ -132,6 +139,7 @@ class ControlAllocator:
                 )
 
                 if lat_mag > max_lat and lat_mag > 1e-8:
+                    newly_gimbal_sat[i] = True
                     newly_saturated[i] = True
                     lateral_f_vec = lateral_f_vec / lat_mag * max_lat
 
@@ -148,6 +156,10 @@ class ControlAllocator:
             # If no new saturation, we've converged
             if not np.any(newly_saturated):
                 break
+
+            # Track saturation types
+            gimbal_saturated |= newly_gimbal_sat
+            thrust_saturated |= newly_thrust_sat
 
             # Update saturated set
             saturated |= newly_saturated
@@ -192,10 +204,20 @@ class ControlAllocator:
         for i in newly_saturated_indices:
             engine = active_engines[i]
             f_mag = np.linalg.norm(f_actual[i])
-            logger.warning(
-                f"Engine {engine.index} thrust saturated "
-                f"(requested: {f_mag:.2f}, max: {engine.max_thrust:.2f})"
-            )
+            if gimbal_saturated[i]:
+                logger.warning(
+                    f"Engine {engine.index} gimbal saturated "
+                    f"(lateral demand {f_mag:.2f}N exceeds gimbal authority)"
+                )
+            elif thrust_saturated[i]:
+                logger.warning(
+                    f"Engine {engine.index} thrust saturated "
+                    f"(demand {f_mag:.2f}N, max {engine.max_thrust:.2f}N)"
+                )
+            else:
+                logger.warning(
+                    f"Engine {engine.index} saturated (reverse thrust prevented)"
+                )
         return throttles, gimbals, forces_out
 
 

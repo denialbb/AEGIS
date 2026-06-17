@@ -144,17 +144,15 @@ class TestMissionDirector:
         assert success is False
 
     def test_safe_engine_access(self):
-        """Test the _safe_engine_access helper function."""
-        from src.main import _safe_engine_access
-
+        """Test the _safe_engine_access static method."""
         # Test with valid part
         part = Mock()
         part.engine = Mock()
-        result = _safe_engine_access(part)
+        result = MissionDirector._safe_engine_access(part)
         assert result == part.engine
 
         # Test with None part
-        result = _safe_engine_access(None)
+        result = MissionDirector._safe_engine_access(None)
         assert result is None
 
         # Test with part that throws RuntimeError when accessing .engine
@@ -162,7 +160,7 @@ class TestMissionDirector:
         type(bad_part).engine = property(
             lambda self: (_ for _ in ()).throw(RuntimeError("No engine"))
         )
-        result = _safe_engine_access(bad_part)
+        result = MissionDirector._safe_engine_access(bad_part)
         assert result is None
 
     def test_compute_glideslope_target(self):

@@ -25,6 +25,8 @@
 - **Always use `conn.add_stream()`** for telemetry — never poll `vessel.flight()` directly (TCP latency).
 - Engine parts are discovered via `vessel.parts.with_tag("AegisEngine")` (ADR-016), not by querying all engines.
 - The WSL2 → Windows KSP connection requires the Windows host IP (typically from `/etc/resolv.conf` `nameserver`), not `127.0.0.1` (ADR-015).
+- kRPC server ports are **50000** (RPC) and **50001** (stream), not the default 5005/5006.
+- KSP save files are at `/mnt/c/Games/KSP - minimal install/saves/AEGIS/`.
 
 ## Type Safety
 
