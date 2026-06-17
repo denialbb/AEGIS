@@ -69,21 +69,14 @@ Code goes to `.agents/shared/queue/PENDING_REVIEW.md` following the template. Re
 - Open issues: `.agents/shared/context/OPEN_ISSUES.md`
 - Architecture doc: `docs/architecture_design.md`
 
-## Current Task: EKF with Gyro Integration and Gravity Modeling
+## Current Task: (none — all prior tasks complete)
 
-### Goal
-Implement an Extended Kalman Filter (EKF) that integrates gyroscope data for attitude estimation and properly models gravity using kRPC's `vessel.flight.g_force` and `body.gravitational_parameter` instead of hardcoded values.
-
-### Tasks
-- [ ] Review current use of gravity in the codebase (estimator, sensors, etc.)
-- [ ] Modify `src/telemetry/sensors.py` to output raw gyroscope readings (3D) with noise
-- [ ] Add IMU noise parameters to `src/config.py` (gyro noise, bias instability, etc.)
-- [ ] Design EKF state vector to include attitude (quaternion), gyro biases, position, velocity
-- [ ] Implement EKF prediction step using gyroscope integration and acceleration measurements
-- [ ] Implement EKF update step using altimeter, velocimeter, and possibly magnetometer (if available)
-- [ ] Replace hardcoded gravity values with dynamic gravity from kRPC
-- [ ] Update `src/main.py` to pass IMU data to the estimator and use estimated attitude for control
-- [ ] Ensure FDI module can monitor IMU health
-- [ ] Update all relevant unit tests
-- [ ] Verify the estimator still passes existing tests and improves robustness
+### Completed Work
+- ✅ **True NED reference frame**: `ecef_to_ned()` in `src/common/geometry.py`, 68 parametrized tests, 10-check live KSP validation
+- ✅ **Sensor warmup phase**: `SENSOR_WARMUP` (30 ticks) + `ESTIMATOR_WARMUP` (100 ticks) states, Mahony truth-attitude init, gyro/accel bias accumulation
+- ✅ **Mission Director refactoring**: monolithic `main.py` → `src/mission/` submodules (loop.py, flight_control.py, helpers.py, ui.py, states.py)
+- ✅ **Gyroscope integration**: `GyroSensor` with noise/bias modeling, ω rotation from NED→body fixed (FRAME-001)
+- ✅ **Dynamic gravity modeling**: `body.gravitational_parameter / r²` in NED along +Z, verified [0,0,+g] at all latitudes
+- ✅ **12-state Error-State EKF**: position(3), velocity(3), gyro_bias(3), accel_bias(3), adaptive Q, alt+vel update
+- ✅ **Pre-existing test failures fixed**: 149 passed, 13 skipped (recording-dependent), 0 failures
 

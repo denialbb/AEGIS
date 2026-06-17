@@ -26,8 +26,20 @@ The architecture is strictly decoupled into five primary domains to ensure robus
 ### A. The Mission Director (Hierarchical State Machine)
 The overarching logic controller. It manages nominal mission phases and handles contingency branching based on the severity and timing of a detected fault.
 
-*   **States:** `STANDBY`, `ASCENT_COAST`, `DEORBIT_BURN`, `HYPERSONIC_COAST`, `POWERED_DESCENT`, `HOVER_TARGETING`, `TERMINAL_DESCENT`, `LANDED`, and `HARD_ABORT`.
-*   **Smart Activation:** The Director idles in `STANDBY` until manually activated via a user action group. Upon activation, it evaluates current altitude and vertical velocity to seamlessly inject itself into the appropriate mission phase (e.g., `ASCENT_COAST` if moving upwards, or `HYPERSONIC_COAST` if falling from space).
+*   **States:** `STANDBY`, `ASCENT_COAST`, `DEORBIT_BURN`, `HYPERSONIC_COAST`, `SENSOR_WARMUP`, `ESTIMATOR_WARMUP`, `POWERED_DESCENT`, `HOVER_TARGETING`, `TERMINAL_DESCENT`, `LANDED`, and `HARD_ABORT`.
+*   **Module Structure:** The Mission Director has been refactored from a single `main.py` into a family of specialized submodules in `src/mission/`:
+    *   `src/main.py` — `MissionDirector` class: initialization, reference frame, engine/estimator/guidance setup.
+    *   `src/mission/loop.py` — Main control loop: sensor polling, frame assembly, timing, pause detection.
+    *   `src/mission/flight_control.py` — Flight-critical functions: SAS, FDI, state machine transitions, allocation, throttle, abort handling.
+    *   `src/mission/helpers.py` — Pure utility functions: sensor-data unpacking, `a_avail`, fuel state.
+    *   `src/mission/ui.py` — Telemetry-frame assembly and HUD output.
+    *   `src/mission/states.py` — `MissionState` enum shared across submodules.
+*   **Sensor Warmup Phase:** Upon activation, if the vessel is airborne and descending, the Director enters `SENSOR_WARMUP` (30 ticks / 3 s at 10 Hz). During this phase:
+    *   The Mahony filter is initialized from the kRPC truth attitude, eliminating the ~1 s identity-start convergence delay.
+    *   Gyro and accelerometer samples are accumulated for bias estimation.
+    *   After 30 ticks, the EKF's gyro/accel bias covariances are tightened with the estimated biases.
+    *   The Director then transitions to `ESTIMATOR_WARMUP` (100 ticks) for EKF convergence, followed by the appropriate coast or descent phase.
+*   **Smart Activation:** The Director idles in `STANDBY` until manually activated via a user action group. Upon activation, it evaluates current altitude and vertical velocity to seamlessly inject itself into the appropriate mission phase (e.g., `ASCENT_COAST` if moving upwards, or `SENSOR_WARMUP` if falling from space).
 *   **Contingency Logic Example:** 
     *   *Fault during `POWERED_DESCENT`:* The Director commands the Guidance module to recalculate burn time or shift the landing target to a closer safe zone.
     *   *Fault during `TERMINAL_DESCENT` (< 50m):* The Director triggers a "Hard Abort" contingency—ignoring precision targeting and commanding the Control Allocator to maximize vertical thrust on surviving engines regardless of lateral drift.
@@ -39,19 +51,28 @@ The overarching logic controller. It manages nominal mission phases and handles 
 The Error-State Extended Kalman Filter (EKF) adapts its process‑noise matrix `Q` each prediction step based on the magnitude of the kinematic acceleration (`|a|`). The velocity‑noise block (`Q[3:6,3:6]`) is multiplied by `1 + PROCESS_NOISE_THRUST_COEF * |a|²`. This mitigates altitude and velocity estimation spikes when the guidance commands large thrusts, allowing the filter to trust the noisy accelerometer less during high‑thrust transients.
 
 **Implementation Details**
-- `src/estimation/ekf.py` implements a 12-state error-state EKF that estimates position, velocity, gyroscope bias, and accelerometer bias.
-- Attitude is estimated externally by a Mahony complementary filter (`src/estimation/mahony_estimator.py`) that fuses gyroscope and accelerometer data to produce a quaternion representing the orientation from body to world frame.
-- The EKF consumes the Mahony-estimated attitude to rotate body-frame specific force (accelerometer readings corrected for estimated biases) into the world frame, then adds gravity. This ensures frame safety: all operations are performed in the world frame before integration.
-- Gravity is modeled dynamically using kRPC's `vessel.flight().g_force` (or computed from `body.gravitational_parameter` and altitude) rather than a hardcoded value.
-- In `ekf.py::predict()`, `accel_norm = np.linalg.norm(kinematic_accel_world)` is computed, and `Q_dyn[3:6,3:6]` is scaled accordingly, with a tiny epsilon added to ensure strict increase for test assertions.
-- The scaling coefficient is exposed as `config.PROCESS_NOISE_THRUST_COEF` (default 0.1) and can be tuned via Optuna.
+- `src/estimation/ekf.py` implements a 12-state error-state EKF that estimates position (3), velocity (3), gyroscope bias (3), and accelerometer bias (3).
+- Attitude is estimated externally by a Mahony complementary filter (`src/estimation/mahony_estimator.py`) that fuses gyroscope and accelerometer data to produce a quaternion representing the orientation from body to NED frame.
+- The EKF consumes the Mahony-estimated attitude to rotate body-frame specific force (accelerometer readings corrected for estimated biases) into the NED frame, then adds gravity. This ensures frame safety: all operations are performed in the NED frame before integration.
+- Gravity is computed dynamically from `body.gravitational_parameter / r²` rather than a hardcoded value. Gravity in NED is always along +Z (Down axis): `[0, 0, +g]`.
+- In `ekf.py::predict()`, `accel_norm = np.linalg.norm(kinematic_accel_ned)` is computed, and `Q_dyn[3:6,3:6]` is scaled accordingly, with a tiny epsilon added to ensure strict increase for test assertions.
+- The scaling coefficient is exposed as `config.PROCESS_NOISE_THRUST_COEF` (default 0.74) and can be tuned via Optuna.
+- **Sensor Warmup Integration:** The Mahony filter is initialized from kRPC truth attitude during `SENSOR_WARMUP` (tick 0), eliminating the ~1 s convergence delay from identity-start. Gyroscope and accelerometer biases are accumulated during this phase and used to tighten the EKF's initial bias covariances before `ESTIMATOR_WARMUP` begins.
+
+**Coordinate System — NED (North-East-Down)**
+- The landing-pad reference frame uses the NED aviation convention: +X = North, +Y = East, +Z = Down.
+- The frame is constructed via `src/common/geometry.py::ecef_to_ned()`, which computes the rotation matrix from ECEF (planet-centered) to NED using the local vertical and the planet's rotation axis.
+- KSP's `ReferenceFrame.create_relative` creates a kRPC-compatible frame with this rotation, alongside the landing-pad origin.
+- `up_vector = [0, 0, -1]` in NED (pointing away from the body center).
+- At rest on the pad: position = [0, 0, 0], velocity = [0, 0, 0], specific force body = [0, 0, -g], gravity NED = [0, 0, +g].
+- Verified by 68 parametrized unit tests across 4 pad positions (KSC, equator, mid-south, near-pole) and a 10-check live KSP validation script (`scripts/validate_ned_invariants.py`).
 
 ---
 KSP provides perfect data (e.g., `vessel.flight().mean_altitude`), which we will purposefully obscure.
 *   **Noise Wrapper:** kRPC telemetry streams will be wrapped in a function that injects continuous Gaussian noise into the radar altimeter, velocimeter, and IMU (gyroscope and accelerometer) readings.
 *   **The Filter:** The 12-state error-state EKF fuses IMU data (gyroscope and accelerometer), altimeter, and velocimeter to produce a probabilistic estimation of the true state vector $[X, Y, Z, V_x, V_y, V_z]$ and estimates of the sensor biases. Vessel mass is treated as a clean, external telemetry parameter, not estimated.
-*   **Attitude Handling:** The Mahony complementary filter estimates attitude using gyroscope integration and accelerometer gravity-reference correction, consuming bias-corrected gyroscope rates from the EKF. This avoids the small-angle approximation and allows for large angle maneuvers.
-*   **Coordinate System and Gravity:** KSP's custom Reference Frames do not naturally rotate to remain "Z-Up" relative to the planet's surface. To compensate, the system computes a normalized `up_vector` from the pad's surface position. This vector is used to correctly subtract the constant gravitational acceleration from the IMU telemetry and to map the true vertical altitude/velocity components for the State Machine target assignments.
+*   **Attitude Handling:** The Mahony complementary filter estimates attitude using gyroscope integration and accelerometer gravity-reference correction, consuming bias-corrected gyroscope rates from the EKF. This avoids the small-angle approximation and allows for large angle maneuvers. The filter is initialized from kRPC truth attitude during SENSOR_WARMUP, eliminating identity-start convergence delay.
+*   **Gyroscope Integration:** `GyroSensor` (`src/estimation/gyro_sensor.py`) streams angular velocity from kRPC in NED-frame axes, applies Gaussian noise, and the caller rotates the vector to the body frame before feeding it to the Mahony filter. The gyroscope rotation from NED to body was a known issue (FRAME-001) and is now fixed in `sensors.py:146-150`.
 
 ### C. Fault Detection & Isolation Module (FDI)
 The system's diagnostic nervous system.

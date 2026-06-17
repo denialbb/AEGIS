@@ -165,39 +165,20 @@ At the north pole, `pad_ECEF ≈ [0, 0, R]`, so `up ≈ [0, 0, 1]`. The polar ax
 
 ## 5. Known Issues
 
-### 5.1 FRAME-001: Gyroscope ω Not Rotated to Body Frame
+### ~~5.1 FRAME-001: Gyroscope ω Not Rotated to Body Frame~~ (RESOLVED)
 
-**Location**: `src/estimation/gyro_sensor.py:37`, `src/telemetry/sensors.py:138`
-
-`vessel.angular_velocity(ref_frame)` returns the angular velocity expressed in the **reference frame's axes** (ECEF/planet-fixed). The code labels this as `omega_body` (body-frame angular rates) but the data is actually in ECEF axes.
-
-The accelerometer path correctly applies `rot_bw.inv().apply(sf_world)` to convert ECEF→body. The gyro path skips this conversion:
+**Resolution**: `src/telemetry/sensors.py:146-150` now rotates `omega_ned` to body frame:
 
 ```python
-# sensors.py:127 — accelerometer is correct
-sf_body_noisy = rot_bw.inv().apply(sf_world)      # ✓  ECEF → body
-
-# sensors.py:138 — gyroscope is WRONG
-omega_body = self.gyro_sensor.poll()               # ✗  still in ECEF
+omega_ned = self.gyro_sensor.poll()
+omega_body = rot_bw.inv().apply(omega_ned)
 ```
 
-**Fix**: Rotate ω from ECEF to body frame using the same attitude quaternion:
+The gyro_sensor still returns ω in NED-frame axes (as its docstring notes), but the caller correctly applies the body→NED rotation. The Mahony filter receives proper body-frame angular rates. Fixed in the SENSOR_WARMUP / refactor round.
 
-```python
-omega_body = rot_bw.inv().apply(omega_ECEF)
-```
+### ~~5.2 FRAME-002: NED Not Yet Implemented~~ (RESOLVED)
 
-**Impact**: The Mahony filter integrates this as if it were body-frame ω, causing attitude drift proportional to the misalignment between body and ECEF axes. During hover (nose-up) the error is small; during translation maneuvers with significant tilt the error grows.
-
-### 5.2 FRAME-002: NED Not Yet Implemented
-
-The current custom pad-relative frame (`create_relative(body.reference_frame, position=pad_pos)`) shifts the origin but **keeps ECEF axes**. This means:
-
-- The Z axis is the planet polar axis, NOT local down
-- `up_vector` is used to project position onto altitude, but X/Y are still in planet-fixed coordinates, not local north/east
-- Guidance decomposes errors into vertical/lateral using `up_vector`, which works but is less intuitive than NED
-
-**Target state**: Replace the raw `ref_frame` usage with a proper NED frame built from §2, so guidance and EKF operate in local navigation coordinates.
+**Resolution**: The NED reference frame is fully implemented. `src/main.py::_init_reference_frame` constructs a true NED frame using `ecef_to_ned()` from `src/common/geometry.py`. The frame is created via `ReferenceFrame.create_relative` with a rotation quaternion aligned to local north/east/down. All guidance and estimation operate in NED coordinates. Verified by 68 parametrized unit tests (`tests/test_ned_frame.py`) and a 10-check live KSP validation script (`scripts/validate_ned_invariants.py`).
 
 ### 5.3 Pole Degeneracy
 

@@ -107,21 +107,23 @@ The hardcoded placeholder (9999.0) was replaced with `config.FDI_THRESHOLD = 3.0
 
 ---
 
-### ISS-003 — Kalman filter Q and R matrices are uninitialised placeholders
+### ISS-003 — Kalman filter Q and R matrix tuning not empirically validated
 
 - **Severity:** 🔴 CRITICAL
-- **Status:** OPEN
+- **Status:** IN PROGRESS
 - **Date opened:** 2026-06-13
 - **Module(s):** State Estimator
-- **Related ADR:** ADR-007
+- **Related ADR:** ADR-007 (superseded by ADR-030)
 - **Related Review:** None
 
 **Description**
-The process noise covariance (Q) and measurement noise covariance (R) matrices are required inputs to the Kalman filter and directly determine its behaviour. These values must match the actual noise characteristics of the injected Gaussian noise and the vessel's true dynamics. Incorrectly tuned Q/R causes the filter to either trust noisy measurements too much (R too high) or ignore them and drift (R too low). Currently these are set to identity matrices as a scaffold.
+The process noise covariance (Q) and measurement noise covariance (R) matrices are critical inputs to the 12-state Error-State EKF (ADR-030). These values must match the actual noise characteristics of the injected Gaussian noise and the vessel's true dynamics. Incorrectly tuned Q/R causes the filter to either trust noisy measurements too much or ignore them and drift.
+
+Current state: Q and R are no longer identity matrices — they are constructed from configured sigma values (SIGMA_ALT, SIGMA_VEL, PROCESS_NOISE_THRUST_COEF, etc.) that have been partially tuned via Optuna. However, the tuning has not been validated against actual flight recordings to confirm filter RMS errors are acceptable.
 
 **Acceptance Criteria**
 
-- R tuned to match the variance of the injected noise wrapper for each sensor (altimeter, accelerometer).
+- R tuned to match the variance of the injected noise wrapper for each sensor (altimeter, accelerometer, velocimeter).
 - Q tuned empirically — filter output should track true state without lag during a nominal descent.
 - Filter performance documented: RMS error of estimated altitude vs true altitude across 3 test runs.
 
