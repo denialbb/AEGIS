@@ -42,7 +42,7 @@ class GyroSensor:
         
         # Bias states (to be estimated/filtered)
         self.gyro_bias = np.zeros(3)  # Estimated bias in each axis
-        self.bias_update_gain = 0.001  # How quickly we adapt to bias changes
+        self.bias_update_gain = config.GYRO_BIAS_UPDATE_GAIN if hasattr(config, 'GYRO_BIAS_UPDATE_GAIN') else 0.001
         
         # Isolated RNG for determinism
         self.rng = np.random.default_rng(config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 42)
@@ -69,7 +69,10 @@ class GyroSensor:
         else:
             perfect_angular_velocity = np.array(av_raw, dtype=float)
 
-        noisy_angular_velocity = perfect_angular_velocity + self.rng.normal(0, self.sigma_gyro, size=3)
+        if config.NOISELESS_MODE:
+            noisy_angular_velocity = perfect_angular_velocity
+        else:
+            noisy_angular_velocity = perfect_angular_velocity + self.rng.normal(0, self.sigma_gyro, size=3)
 
         logger.debug(
             f"Gyro: raw=[{perfect_angular_velocity[0]:.3f}, {perfect_angular_velocity[1]:.3f}, {perfect_angular_velocity[2]:.3f}] "

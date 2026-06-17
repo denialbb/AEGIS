@@ -20,13 +20,99 @@ import os
 import sys
 import time
 import signal
+import functools
 import numpy as np
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
+from optuna.storages import RDBStorage
+from optuna.exceptions import StorageInternalError
 import src.config as config
 from src.estimation.ekf import ErrorStateEKF
 from src.simulation.flights import FlightReplayer
 from scripts.trial_dashboard import TrialDashboard
+
+# Pin BLAS to 1 thread so parallel Optuna workers don't oversubscribe cores.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+
+def _retry_write(method):
+    """Decorator: retry *method* with exponential backoff on SQLite lock contention."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                return method(self, *args, **kwargs)
+            except StorageInternalError as e:
+                last_exc = e
+                if attempt < self._max_retries - 1:
+                    time.sleep(self._base_delay * (2.0 ** attempt))
+        if last_exc is not None:
+            raise last_exc
+        return None
+    return wrapper
+
+
+class RetryableRDBStorage(RDBStorage):
+    """RDBStorage with exponential-backoff retry on SQLite commit conflicts.
+
+    Optuna's SQLite backend raises ``StorageInternalError`` when parallel
+    workers contend for the same database file.  This wrapper catches the
+    error on every write operation and retries with an exponentially
+    increasing delay, making multi-worker tuning practical without
+    switching to PostgreSQL.
+    """
+
+    def __init__(
+        self,
+        max_retries: int = 5,
+        base_delay: float = 0.1,
+        **kwargs,
+    ) -> None:
+        self._max_retries = max_retries
+        self._base_delay = base_delay
+        super().__init__(**kwargs)
+
+    # ── Write operations: all retry-wrapped ──────────────────────────
+
+    @_retry_write
+    def create_new_study(self, *args, **kwargs):
+        return super().create_new_study(*args, **kwargs)
+
+    @_retry_write
+    def create_new_trial(self, *args, **kwargs):
+        return super().create_new_trial(*args, **kwargs)
+
+    @_retry_write
+    def set_trial_param(self, *args, **kwargs):
+        return super().set_trial_param(*args, **kwargs)
+
+    @_retry_write
+    def set_trial_state(self, *args, **kwargs):
+        return super().set_trial_state(*args, **kwargs)
+
+    @_retry_write
+    def set_trial_user_attr(self, *args, **kwargs):
+        return super().set_trial_user_attr(*args, **kwargs)
+
+    @_retry_write
+    def set_trial_system_attr(self, *args, **kwargs):
+        return super().set_trial_system_attr(*args, **kwargs)
+
+    @_retry_write
+    def set_study_user_attr(self, *args, **kwargs):
+        return super().set_study_user_attr(*args, **kwargs)
+
+    @_retry_write
+    def set_trial_intermediate_value(self, *args, **kwargs):
+        return super().set_trial_intermediate_value(*args, **kwargs)
+
+    @_retry_write
+    def set_trial_values(self, *args, **kwargs):
+        return super().set_trial_values(*args, **kwargs)
+
 
 _dashboard: TrialDashboard | None = None
 
@@ -131,32 +217,11 @@ def _trial_banner(
     n_total: int | None,
     params: dict[str, float],
 ) -> None:
-    print(_hr("─"))
-    print(f"Trial {trial_num + 1}")
-
-
-def _trial_result(
-    trial_num: int,
-    score: float,
-    rmse_pos: float,
-    rmse_vel: float,
-    nis: float,
-    best_score: float,
-    elapsed: float,
-) -> None:
-    improved = "NEW BEST" if score <= best_score else ""
     assert _dashboard is not None
-    _dashboard.report_trial(
-        trial_num, score, rmse_pos, rmse_vel, nis, best_score, elapsed
-    )
-    print(f"  ┌─ Trial {trial_num + 1} result{improved}")
-    print(f"  │  Score    = {_fmt_pct(score)}")
-    print(f"  │  RMSE pos = {_fmt(rmse_pos)}")
-    print(f"  │  RMSE vel = {_fmt(rmse_vel)}")
-    print(f"  │  NIS      = {_fmt(nis)}")
-    print(f"  │  Best     = {_fmt_pct(best_score)}")
-    print(f"  │  Time     = {elapsed:.1f}s")
-    print(f"  └{_hr('─')[1:]}")
+    _dashboard.status(f"Trial {trial_num + 1} / {n_total} running …")
+
+
+_best_raw_score: float = float("inf")
 
 
 def objective(trial: optuna.trial.Trial) -> float:
@@ -226,17 +291,14 @@ def objective(trial: optuna.trial.Trial) -> float:
         print(_hr("═"))
         sys.exit(1)
 
+    trial.set_user_attr("raw_score", score)
+
+    global _best_raw_score
+    if score < _best_raw_score:
+        _best_raw_score = score
+    best_so_far = _best_raw_score
+
     elapsed = time.perf_counter() - t0
-    best_so_far = trial.study.best_value if trial.number > 0 else score
-    _trial_result(
-        trial_num,
-        score,
-        total_rmse_pos / max(n_flights, 1),
-        total_rmse_vel / max(n_flights, 1),
-        total_nis / max(n_flights, 1),
-        best_so_far,
-        elapsed,
-    )
     if _dashboard is not None:
         _dashboard.report_trial(
             trial_num,
@@ -247,7 +309,8 @@ def objective(trial: optuna.trial.Trial) -> float:
             best_so_far,
             elapsed,
         )
-    return score
+        _dashboard.status("")
+    return abs(score - 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -268,13 +331,20 @@ _PARAM_NAMES = [
 if __name__ == "__main__":
     os.makedirs("logs", exist_ok=True)
 
-    _recordings_cache = sorted(glob.glob("recordings/*.npz"))
+    _recordings_cache = sorted(
+        f for f in glob.glob("recordings/*.npz")
+        if np.load(f, allow_pickle=True)["ut"].size > 0
+    )
     n_flights = len(_recordings_cache)
 
     study_name = "ekf-tuning"
-    storage = f"sqlite:///logs/{study_name}.db"
+    storage = RetryableRDBStorage(
+        url=f"sqlite:///logs/{study_name}.db",
+        max_retries=5,
+        base_delay=0.1,
+    )
 
-    n_trials_arg = int(sys.argv[1]) if len(sys.argv) > 1 else 500
+    n_trials_arg = int(sys.argv[1]) if len(sys.argv) > 1 else 150
     _N_TOTAL = n_trials_arg * n_flights
 
     study = optuna.create_study(
@@ -293,9 +363,13 @@ if __name__ == "__main__":
     _flight_banner(n_flights, _recordings_cache)
 
     if completed > 0:
+        raw = study.best_trial.user_attrs.get("raw_score")
+        best_raw: float = (
+            raw if isinstance(raw, (int, float)) else study.best_value or 0.0
+        )
         print(
             f"  Resuming from trial {completed}  "
-            f"(best so far: {_fmt_pct(study.best_value)})"
+            f"(best so far: {_fmt_pct(best_raw)})"
         )
         print(_hr("─"))
 
@@ -327,10 +401,11 @@ if __name__ == "__main__":
             title="EKF Hyperparameter Search",
         ) as dash:
             globals()["_dashboard"] = dash
+            dash.advance(completed)
             study.optimize(
                 objective,
                 n_trials=n_trials_arg,
-                n_jobs=1,
+                n_jobs=10,
                 callbacks=[_should_stop],
             )
 
@@ -349,12 +424,21 @@ if __name__ == "__main__":
     print(
         f"  Completed trials : {completed_final}/{total_expected} ({percent:.1f}%)"
     )
-    print(f"  Best score       : {_fmt_pct(study.best_value)}")
-    print(f"  Best trial       : #{study.best_trial.number}")
-    print()
-    print("  Best hyper-parameters:")
-    for k, v in study.best_trial.params.items():
-        print(f"    {k:>14s} = {v:.6f}")
-    print()
+    completed_trials = [
+        t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
+    ]
+    if completed_trials:
+        best_trial = study.best_trial
+        raw = best_trial.user_attrs.get("raw_score")
+        final_best: float = (
+            raw if isinstance(raw, (int, float)) else (best_trial.value or 0.0)
+        )
+        print(f"  Best score       : {_fmt_pct(final_best)}")
+        print(f"  Best trial       : #{best_trial.number}")
+        print()
+        print("  Best hyper-parameters:")
+        for k, v in best_trial.params.items():
+            print(f"    {k:>14s} = {v:.6f}")
+        print()
     print(f"  Database : {storage}")
     print(_hr("═"))

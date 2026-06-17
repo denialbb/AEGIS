@@ -42,7 +42,7 @@ class AccelerometerSensor:
         
         # Bias states
         self.accel_bias = np.zeros(3)  # Estimated bias in each axis
-        self.bias_update_gain = 0.001  # How quickly we adapt to bias changes
+        self.bias_update_gain = config.ACCEL_BIAS_UPDATE_GAIN if hasattr(config, 'ACCEL_BIAS_UPDATE_GAIN') else 0.001
         
         # Isolated RNG for determinism
         self.rng = np.random.default_rng(config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 42)
@@ -95,14 +95,16 @@ class AccelerometerSensor:
         # This is what an accelerometer actually measures
         perfect_specific_force_world = perfect_accel_world - gravity_world
         
-        # Add noise to simulate real accelerometer
-        noisy_specific_force_world = perfect_specific_force_world + self.rng.normal(0, self.sigma_accel, size=3)
-        
-        # Simple bias estimation
-        bias_corrected_world = noisy_specific_force_world - self.accel_bias
-        
-        # Update bias estimate using low-pass filter
-        self.accel_bias = self.accel_bias * (1 - self.bias_update_gain) + noisy_specific_force_world * self.bias_update_gain
+        if config.NOISELESS_MODE:
+            noisy_specific_force_world = perfect_specific_force_world
+            bias_corrected_world = perfect_specific_force_world
+        else:
+            # Add noise to simulate real accelerometer
+            noisy_specific_force_world = perfect_specific_force_world + self.rng.normal(0, self.sigma_accel, size=3)
+            # Simple bias estimation
+            bias_corrected_world = noisy_specific_force_world - self.accel_bias
+            # Update bias estimate using low-pass filter
+            self.accel_bias = self.accel_bias * (1 - self.bias_update_gain) + noisy_specific_force_world * self.bias_update_gain
         
         logger.debug(
             f"Accel: world_coord=[{perfect_accel_world[0]:.3f}, {perfect_accel_world[1]:.3f}, {perfect_accel_world[2]:.3f}] "

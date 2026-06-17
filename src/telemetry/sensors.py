@@ -143,7 +143,10 @@ class SensorModels:
             perfect_raw = np.array([av_raw.x, av_raw.y, av_raw.z])
         else:
             perfect_raw = np.array(av_raw, dtype=float)
-        raw_gyro = perfect_raw + self.rng.normal(0, self.gyro_sensor.sigma_gyro, size=3)
+        if config.NOISELESS_MODE:
+            raw_gyro = perfect_raw
+        else:
+            raw_gyro = perfect_raw + self.rng.normal(0, self.gyro_sensor.sigma_gyro, size=3)
         # NOTE: gyroscope “raw” data includes noise but does not include bias correction.
 
 
@@ -157,8 +160,12 @@ class SensorModels:
         aero_body: np.ndarray = rot_bw.inv().apply(aero_world)
 
         # ── Noise on alt and vel ───────────────────────────────────
-        noisy_alt: float = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
-        noisy_vel: np.ndarray = vel + self.rng.normal(0, self.sigma_vel, size=3)
+        if config.NOISELESS_MODE:
+            noisy_alt = float(perfect_alt)
+            noisy_vel = vel
+        else:
+            noisy_alt = float(perfect_alt + self.rng.normal(0, self.sigma_alt))
+            noisy_vel = vel + self.rng.normal(0, self.sigma_vel, size=3)
 
         logger.debug(
             f"Gyro: [{omega_body[0]:.3f}, {omega_body[1]:.3f}, {omega_body[2]:.3f}] "

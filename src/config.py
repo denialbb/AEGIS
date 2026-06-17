@@ -75,24 +75,23 @@ LANDED_VEL_THRESHOLD = 0.5  # m/s
 # The timer only accumulates when altitude < LANDED_ALT_THRESHOLD.
 # Min: 0.01, Max: 10.0
 LANDED_ALT_THRESHOLD = 1.0  # m
-
 # ---------------------------------------------------------
 # Sensor Noise Modeling (Standard Deviations)
 # ---------------------------------------------------------
 # Standard deviation of altitude noise (meters).
 # Higher values make the estimator trust the IMU (accelerometer) more for vertical position.
 # Min: 0.1 (Perfect radar), Max: 10.0 (Noisy radar)
-SIGMA_ALT = 2.0  # meters
+SIGMA_ALT = 11.767953  # meters
 
 # Standard deviation of accelerometer noise (m/s^2).
 # Higher values make the estimator trust the altitude sensor more, slowing velocity reaction time.
 # Min: 0.05 (High-end IMU), Max: 2.0 (Cheap IMU)
-SIGMA_ACCEL = 0.39  # m/s^2
+SIGMA_ACCEL = 0.723311  # m/s^2
 
 # Standard deviation of velocity noise (m/s).
 # Higher values make the estimator trust the altitude sensor more for velocity.
 # Min: 0.1 (High-end GPS), Max: 5.0 (Noisy GPS)
-SIGMA_VEL = 1.7  # m/s
+SIGMA_VEL = 8.486261  # m/s
 
 # ---------------------------------------------------------
 # Fault Detection & Isolation
@@ -108,23 +107,28 @@ FDI_THRESHOLD = 5.0
 # ---------------------------------------------------------
 RANDOM_SEED = 42
 
+# When True, sensor models skip noise injection (used during Optuna tuning).
+# The estimator's R/Q matrices still use the configured SIGMA_* values,
+# creating a controlled mismatch between assumed and actual noise.
+NOISELESS_MODE = False
+
 # ---------------------------------------------------------
 # IMU & Inertial Navigation Parameters
 # ---------------------------------------------------------
 # Standard deviation of gyroscope noise (rad/s).
 # Higher values make the attitude estimate more reliant on accelerometer (slower but less drift).
 # Min: 0.001 (High-end gyro), Max: 0.1 (Low-end gyro)
-SIGMA_GYRO = 0.01  # rad/s
+SIGMA_GYRO = 0.012799  # rad/s
 
 # Gyroscope bias instability (rad/s/sqrt(Hz)).
 # Models random walk of gyroscope bias over time.
 # Min: 1e-6 (Very stable), Max: 0.01 (Unstable)
-GYRO_BIAS_INSTABILITY = 0.017362  # rad/s/sqrt(Hz)
+GYRO_BIAS_INSTABILITY = 0.005510  # rad/s/sqrt(Hz)
 
 # Standard deviation of accelerometer noise (m/s^2).
 # Already defined above as SIGMA_ACCEL, keeping for clarity
 # ACCEL_BIAS_INSTABILITY models random walk of accelerometer bias
-ACCEL_BIAS_INSTABILITY = 0.060669  # m/s^2/sqrt(Hz)
+ACCEL_BIAS_INSTABILITY = 0.077992  # m/s^2/sqrt(Hz)
 
 # Mahony filter proportional gain.
 # Higher values increase correction from accelerometer (reduces drift but increases noise sensitivity).
@@ -135,6 +139,15 @@ MAHONY_KP = 2.0
 # Higher values better estimate and remove gyroscope bias but can cause overshoot.
 # Min: 0.0 (No integral action), Max: 0.1 (Aggressive bias estimation)
 MAHONY_KI = 0.01
+
+# GyroSensor bias tracking gain (low-pass filter gain).
+# How quickly the onboard GyroSensor adapts to bias changes.
+# Min: 0.0001 (very slow drift correction), Max: 0.01 (fast tracking, noisy).
+GYRO_BIAS_UPDATE_GAIN = 0.001
+
+# AccelerometerSensor bias tracking gain (low-pass filter gain).
+# Min: 0.0001, Max: 0.01
+ACCEL_BIAS_UPDATE_GAIN = 0.001
 
 # ---------------------------------------------------------
 # Error-State EKF Parameters
@@ -248,7 +261,7 @@ ACCEL_CLAMP_FACTOR = 2.5  # multiplier on max_a_avail, see GuidanceController
 # Larger value makes the filter increase velocity‑noise covariance when the
 # commanded acceleration magnitude grows (helps during high‑thrust phases).
 # Recommended range: 0.05 – 0.2 (tune experimentally).
-PROCESS_NOISE_THRUST_COEF = 0.1  # (1/(m/s)^2) scaling of Q based on |a|^2
+PROCESS_NOISE_THRUST_COEF = 0.735965  # (1/(m/s)^2) scaling of Q based on |a|^2
 
 GRAVITY = [0.0, 0.0, -9.81]
 

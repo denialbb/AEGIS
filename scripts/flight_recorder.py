@@ -12,6 +12,8 @@ import os
 import datetime
 import time
 import logging
+import signal
+import sys
 from typing import Any
 
 from src.telemetry.sensors import SensorModels
@@ -28,6 +30,18 @@ RECORD_GROUP = 1
 
 # Seconds between checks for a new active vessel after the current one is lost
 VESSEL_POLL_INTERVAL = 0.5
+
+# ── Graceful exit state (written by signal handler) ──────────────────
+_exit_requested: bool = False
+
+
+def _handle_exit(signum: int, frame: Any) -> None:
+    """Set the exit flag — the main loop will save & quit on its next iteration."""
+    global _exit_requested
+    if _exit_requested:
+        sys.exit(1)  # second Ctrl+C → force quit
+    logging.getLogger(__name__).info("Shutdown requested — saving recording and exiting …")
+    _exit_requested = True
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -76,10 +90,15 @@ def _save_recording(file_path: str, data: dict) -> None:
 
 
 def main() -> None:
+    global _exit_requested
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s: %(message)s",
     )
+    signal.signal(signal.SIGINT, _handle_exit)
+    signal.signal(signal.SIGTERM, _handle_exit)
+
     conn = krpc.connect(
         name=config.KRPC_CLIENT_NAME, address=config.KRPC_DEFAULT_ADDRESS
     )
@@ -104,10 +123,25 @@ def main() -> None:
         "noisy_alt": [],
         "noisy_vel": [],
         "gravity_world": [],
+        # -- new fields --
+        "mass": [],
+        "aero_body": [],
+        "situation": [],
+        "clean_alt": [],
+        "clean_angular_vel": [],
+        "throttle": [],
+        "active_engine_count": [],
     }
     last_ut: float | None = None
 
     while True:
+        # ── Graceful exit check ──────────────────────────────────────
+        if _exit_requested:
+            if running and file_path:
+                _save_recording(file_path, data)
+            logger.info("Exiting")
+            break
+
         # ── Check Action Group toggle ────────────────────────────────
         try:
             group_on = vessel.control.get_action_group(RECORD_GROUP)
@@ -166,9 +200,9 @@ def main() -> None:
                 noisy_alt,
                 sf_body_noisy,
                 mahony_attitude,
-                _mass,
-                _aero_body,
-                _situation,
+                mass,
+                aero_body,
+                situation,
                 omega_body,
                 noisy_vel,
                 gravity_world,
@@ -188,6 +222,28 @@ def main() -> None:
             time.sleep(VESSEL_POLL_INTERVAL)
             continue
 
+        # ── Clean sensor values (direct kRPC reads, no noise) ──────
+        clean_alt = float(flight.surface_altitude)
+        av_raw = sensors.gyro_sensor.angular_velocity_stream()
+        if hasattr(av_raw, "x"):
+            clean_angular_vel = np.array([av_raw.x, av_raw.y, av_raw.z])
+        else:
+            clean_angular_vel = np.array(av_raw, dtype=float)
+
+        # ── Engine status ───────────────────────────────────────────
+        throttle = float(vessel.control.throttle)
+        active_engine_count = 0
+        try:
+            tagged_parts = vessel.parts.with_tag("AegisEngine")
+            for p in tagged_parts:
+                try:
+                    if p.engine is not None and p.engine.active:
+                        active_engine_count += 1
+                except RPCError:
+                    continue
+        except RPCError:
+            pass
+
         # ── Store ────────────────────────────────────────────────────
         data["ut"].append(ut)
         data["dt"].append(dt)
@@ -200,6 +256,13 @@ def main() -> None:
         data["noisy_alt"].append(noisy_alt)
         data["noisy_vel"].append(noisy_vel.tolist())
         data["gravity_world"].append(gravity_world.tolist())
+        data["mass"].append(mass)
+        data["aero_body"].append(aero_body.tolist())
+        data["situation"].append(situation)
+        data["clean_alt"].append(clean_alt)
+        data["clean_angular_vel"].append(clean_angular_vel.tolist())
+        data["throttle"].append(throttle)
+        data["active_engine_count"].append(active_engine_count)
 
 
 if __name__ == "__main__":

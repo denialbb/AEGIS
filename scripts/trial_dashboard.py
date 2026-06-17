@@ -74,6 +74,7 @@ class TrialDashboard:
         self._started = False
         self._last_render = 0.0
         self._min_interval = 0.05  # seconds; throttles redraw rate during fast loops
+        self._status_msg: str = ""
 
     # ---------------------------------------------------------------- lifecycle
     def start(self) -> "TrialDashboard":
@@ -114,6 +115,12 @@ class TrialDashboard:
         self.stop()
 
     # ----------------------------------------------------------------- updates
+    def status(self, msg: str) -> None:
+        """Set a status message displayed below the title."""
+        with self._lock:
+            self._status_msg = msg
+            self._render(force=True)
+
     def advance(self, n: int = 1) -> None:
         """Call once per unit of work (e.g. once per flight)."""
         with self._lock:
@@ -164,6 +171,12 @@ class TrialDashboard:
                 scr.addnstr(0, 0, self.title.center(max_x), max_x, curses.A_BOLD | curses.color_pair(3))
             except curses.error:
                 pass
+
+            if self._status_msg:
+                try:
+                    scr.addnstr(1, 0, self._status_msg.ljust(max_x)[:max_x], max_x)
+                except curses.error:
+                    pass
 
             pct = self._completed / self.total_steps
             bar_width = max(max_x - 22, 10)

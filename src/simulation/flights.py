@@ -95,9 +95,16 @@ class FlightReplayer:
             pos_errs[i] = ekf.pos - gt_pos[i]
             vel_errs[i] = ekf.vel - gt_vel[i]
 
-        rmse_pos = float(np.sqrt(np.mean(np.sum(pos_errs**2, axis=1))))
-        rmse_vel = float(np.sqrt(np.mean(np.sum(vel_errs**2, axis=1))))
-        mean_nis = float(np.mean(nis_vals))
+        # Guard against NaN/Inf from filter divergence during tuning
+        pos_se = np.sum(pos_errs**2, axis=1)
+        vel_se = np.sum(vel_errs**2, axis=1)
+        good = np.isfinite(pos_se) & np.isfinite(vel_se) & np.isfinite(nis_vals)
+        n_good = int(np.sum(good))
+        if n_good == 0:
+            return {"rmse_pos": 1e6, "rmse_vel": 1e6, "nis": 1e6, "score": 1e6}
+        rmse_pos = float(np.sqrt(np.mean(pos_se[good])))
+        rmse_vel = float(np.sqrt(np.mean(vel_se[good])))
+        mean_nis = float(np.mean(nis_vals[good]))
 
         if weights is None:
             w_pos = w_vel = w_nis = 1.0 / 3.0

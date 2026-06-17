@@ -99,25 +99,43 @@ def run_simulation(trial: optuna.Trial) -> float:
     pad_pos = np.array(vessel.orbit.body.surface_position(config.TARGET_LAT, config.TARGET_LON, vessel.orbit.body.reference_frame))
     current_pos = np.array(vessel.position(vessel.orbit.body.reference_frame))
     distance_to_pad = float(np.linalg.norm(current_pos - pad_pos))
-    
+    angular_motion = director.total_angular_motion
+
     conn.close()
 
-    # Angular motion penalty (rocking): penalizes attitude oscillation.
-    # Weight 0.01 means 100 rad of total rotation ≡ 1 m of distance error.
-    angular_penalty = 0.01 * director.total_angular_motion
+    trial.set_user_attr("landing_distance", round(distance_to_pad, 2))
+    trial.set_user_attr("fuel_used", round(fuel_used, 2))
+    trial.set_user_attr("angular_motion", round(angular_motion, 2))
 
     if director.state != "LANDED":
-        # Vessel crashed or aborted.  Penalty scales with how much simulation
-        # time was wasted — a trial that survives 200 s and nearly reaches
-        # the pad is punished less than one that falls out of the sky in 10 s.
+        # Vessel crashed or aborted.  Hard penalty — no normalization.
         elapsed = min(end_time - start_time, max_duration)
-        time_bonus = elapsed * 10.0  # subtract ~1/s of survival
+        time_bonus = elapsed * 10.0
+        angular_penalty = 0.01 * angular_motion
         return max(1e4, 1e5 + distance_to_pad - time_bonus + angular_penalty)
 
-    # Fitness: Primary minimize distance. Secondary minimize fuel.
-    # 1 kg of fuel is penalized equivalent to 0.1 meters of distance error.
-    # Angular penalty discourages gains that produce attitude oscillation.
-    fitness = distance_to_pad + (fuel_used * 0.1) + angular_penalty
+    # ── Normalized score (equal-weight contributions) ─────────────────
+    # Each component is divided by its running median so all three
+    # contribute equally regardless of scale, matching
+    # scripts/tune_estimator_optuna.py.
+    landed = [
+        t for t in trial.study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE
+        and t.number != trial.number
+        and "landing_distance" in t.user_attrs
+    ]
+    if len(landed) >= 10:
+        med_dist = float(np.nanmedian([t.user_attrs["landing_distance"] for t in landed]))
+        med_fuel = float(np.nanmedian([t.user_attrs["fuel_used"] for t in landed]))
+        med_ang  = float(np.nanmedian([t.user_attrs["angular_motion"] for t in landed]))
+    else:
+        med_dist, med_fuel, med_ang = 500.0, 5000.0, 500.0
+
+    norm_dist = distance_to_pad / max(med_dist, 1e-12)
+    norm_fuel = fuel_used / max(med_fuel, 1e-12)
+    norm_ang  = angular_motion / max(med_ang, 1e-12)
+
+    fitness = 0.34 * norm_dist + 0.33 * norm_fuel + 0.33 * norm_ang
     trial.report(fitness, step=0)
     return fitness
 
@@ -150,11 +168,12 @@ if __name__ == "__main__":
         # Run indefinitely. Can be interrupted with Ctrl+C.
         study.optimize(run_simulation, n_trials=None)
     except KeyboardInterrupt:
-        print("\nOptimization interrupted by user. Best parameters found so far:")
+        print("\nOptimization interrupted by user.")
         
-    print(f"Number of finished trials: {len(study.trials)}")
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    print(f"Number of finished trials: {len(completed)}")
     
-    if len(study.trials) > 0:
+    if len(completed) > 0:
         best_trial = study.best_trial
         print(f"\n{'='*60}")
         print(f"  Best trial value: {best_trial.value:.4f}")
