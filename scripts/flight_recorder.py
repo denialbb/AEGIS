@@ -67,7 +67,7 @@ def _wait_for_active_vessel(conn: Any) -> Any:
 
 def _init_sensors(
     conn: Any, vessel: Any
-) -> tuple[Any, Any, np.ndarray, SensorModels]:
+) -> tuple[Any, np.ndarray, SensorModels]:
     """Build a true NED reference frame and SensorModels for *vessel*."""
     body = vessel.orbit.body
     target_lat = config.TARGET_LAT

@@ -64,7 +64,19 @@ def test_flight_recorder_basic(tmp_path, monkeypatch):
 
     # Replace SensorModels with a deterministic stub.
     class DummySensor:
+        def __init__(self):
+            # The recorder accesses sensors.gyro_sensor.angular_velocity_stream()
+            gyro_mock = MagicMock()
+            gyro_mock.angular_velocity_stream = MagicMock(return_value=MagicMock())
+            gyro_mock.angular_velocity_stream().x = 0.0
+            gyro_mock.angular_velocity_stream().y = 0.0
+            gyro_mock.angular_velocity_stream().z = 0.0
+            self.gyro_sensor = gyro_mock
+
         def _read_krpc_quaternion(self):
+            return np.array([0.0, 0.0, 0.0, 1.0])
+
+        def get_truth_attitude(self):
             return np.array([0.0, 0.0, 0.0, 1.0])
 
         def poll(self):
@@ -112,13 +124,20 @@ def test_flight_recorder_basic(tmp_path, monkeypatch):
         "noisy_vel",
         "sf_body_noisy",
         "mahony_attitude",
-        "gravity_world",
+        "gravity_ned",
         "raw_gyro",
+        "mass",
+        "aero_body",
+        "situation",
+        "clean_alt",
+        "clean_angular_vel",
+        "throttle",
+        "active_engine_count",
     }
     assert set(recorded.files) == expected_keys, "Missing keys in the recording"
     # Verify that the gravity vector matches the stubbed value.
     np.testing.assert_allclose(
-        recorded["gravity_world"][0], np.array([0.0, 0.0, -9.81]), rtol=1e-6
+        recorded["gravity_ned"][0], np.array([0.0, 0.0, -9.81]), rtol=1e-6
     )
 
     # Ensure the data arrays are non‑empty

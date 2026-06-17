@@ -9,6 +9,7 @@ convergence.
 This is the primary regression test for EKF tracking performance.
 """
 
+import pytest
 import numpy as np
 import os
 import logging
