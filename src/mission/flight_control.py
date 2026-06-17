@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R  # type: ignore
 
 import src.config as config
 from src.guidance.allocator import AllocationDegenerateError
@@ -20,12 +21,13 @@ logger = logging.getLogger(__name__)
 
 VALID_STATES = frozenset({
     "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST",
-    "ESTIMATOR_WARMUP", "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT", "LANDED",
+    "SENSOR_WARMUP", "ESTIMATOR_WARMUP",
+    "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT", "LANDED",
 })
 
 UNGUIDED_STATES = frozenset({
     "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST",
-    "ESTIMATOR_WARMUP",
+    "SENSOR_WARMUP", "ESTIMATOR_WARMUP",
 })
 
 # ---------------------------------------------------------------------------
@@ -324,7 +326,7 @@ def handle_standby(director: Any, data: dict, est_alt: float, est_vz: float) -> 
 
 
 def _do_activation(director: Any, est_alt: float, est_vz: float) -> None:
-    """Activate all engines and determine the initial mission state."""
+    """Activate all engines and enter SENSOR_WARMUP."""
     logger.info("AEGIS Activated. Smart Routing initialized.")
     director.writer.log_event({"type": "ACTIVATION"})
 
@@ -332,28 +334,19 @@ def _do_activation(director: Any, est_alt: float, est_vz: float) -> None:
         _activate_single_engine(director, e)
         e.active = True
 
-    # Throttle down during coast phases to avoid accelerating away
-    if est_vz > 0:
-        director.state = "ASCENT_COAST"
-        for e in director.engines:
-            engine_obj = director._safe_engine_access(e.part)
-            if engine_obj:
-                engine_obj.thrust_limit = 0.0
-    elif est_alt > config.ALT_HYPERSONIC:
-        director.state = "DEORBIT_BURN"
-        for e in director.engines:
-            engine_obj = director._safe_engine_access(e.part)
-            if engine_obj:
-                engine_obj.thrust_limit = 0.0
-    elif est_alt > config.ALT_POWERED_DESCENT:
-        director.state = "HYPERSONIC_COAST"
-        for e in director.engines:
-            engine_obj = director._safe_engine_access(e.part)
-            if engine_obj:
-                engine_obj.thrust_limit = 0.0
-    else:
-        director.state = "ESTIMATOR_WARMUP"
-        director._warmup_ticks = 0
+    # Always enter SENSOR_WARMUP first to initialise attitude from
+    # truth and collect static samples for bias estimation.
+    director.state = "SENSOR_WARMUP"
+    director._sensor_warmup_ticks = 0
+    director._warmup_bg_accum = np.zeros(3)
+    director._warmup_ba_accum = np.zeros(3)
+    director._warmup_sample_count = 0
+
+    # Throttle down all engines — guidance is inhibited during warmup.
+    for e in director.engines:
+        engine_obj = director._safe_engine_access(e.part)
+        if engine_obj:
+            engine_obj.thrust_limit = 0.0
 
     if config.USE_SAS:
         director.vessel.control.sas = True
@@ -365,6 +358,105 @@ def _do_activation(director: Any, est_alt: float, est_vz: float) -> None:
         "from": "STANDBY",
         "to": director.state,
     })
+
+
+def _init_mahony_from_truth(director: Any) -> None:
+    """Initialise the Mahony attitude filter from the kRPC truth rotation.
+
+    Called on the first tick of SENSOR_WARMUP so the filter starts at the
+    actual vessel attitude instead of the identity quaternion, eliminating
+    the ~1s convergence delay.
+    """
+    truth_q = director.sensors.get_truth_attitude()
+    director.sensors.attitude_estimator.quaternion = truth_q
+    logger.info("Mahony initialised from kRPC truth attitude q=%s", truth_q)
+
+
+def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
+    """Run one tick of the sensor-warmup phase.
+
+    Ticks 0..N-1: accumulate gyro + accel samples for bias estimation.
+    Tick 0:       initialise Mahony from kRPC truth attitude.
+    Tick N-1:     finalise biases, set EKF state, transition to next state.
+    """
+    ticks: int = getattr(director, "_sensor_warmup_ticks", 0)
+
+    # ── Tick 0: initialise Mahony from truth ────────────────────────
+    if ticks == 0:
+        _init_mahony_from_truth(director)
+
+    # ── Accumulate samples for bias estimation ──────────────────────
+    bg_accum: np.ndarray = director._warmup_bg_accum
+    ba_accum: np.ndarray = director._warmup_ba_accum
+    count: int = director._warmup_sample_count
+
+    # Gyro bias: at rest the true ω is zero, so any reading is bias
+    bg_accum += data["omega_body"]
+
+    # Accel bias: at rest, f_body = -R(q)⁻¹ · g_ned.
+    #   bias = f_measured - f_expected
+    #        = f_measured + R(q)⁻¹ · g_ned
+    rot_bw = R.from_quat(data["attitude"])
+    g_body = rot_bw.inv().apply(data["gravity_ned"])
+    ba_accum += data["sf_body"] + g_body
+
+    count += 1
+    director._warmup_bg_accum = bg_accum
+    director._warmup_ba_accum = ba_accum
+    director._warmup_sample_count = count
+
+    ticks += 1
+    director._sensor_warmup_ticks = ticks
+
+    # ── Finalise after N ticks ──────────────────────────────────────
+    if ticks >= config.SENSOR_WARMUP_TICKS:
+        bg_mean: np.ndarray = bg_accum / count
+        ba_mean: np.ndarray = ba_accum / count
+
+        director.estimator.bg = bg_mean
+        director.estimator.ba = ba_mean
+        director.estimator.P[6:9, 6:9] = (
+            np.eye(3) * config.SENSOR_WARMUP_GYRO_BIAS_SIGMA**2
+        )
+        director.estimator.P[9:12, 9:12] = (
+            np.eye(3) * config.SENSOR_WARMUP_ACCEL_BIAS_SIGMA**2
+        )
+
+        logger.info(
+            "Sensor warmup complete (%d samples). bg=%s, ba=%s",
+            count,
+            np.round(bg_mean, 6),
+            np.round(ba_mean, 6),
+        )
+        director.writer.log_event({
+            "type": "SENSOR_WARMUP_COMPLETE",
+            "samples": count,
+            "bg_x": float(bg_mean[0]),
+            "bg_y": float(bg_mean[1]),
+            "bg_z": float(bg_mean[2]),
+            "ba_x": float(ba_mean[0]),
+            "ba_y": float(ba_mean[1]),
+            "ba_z": float(ba_mean[2]),
+        })
+
+        # Transition to the appropriate next state (same altitude/vel
+        # logic that was in _do_activation before SENSOR_WARMUP existed).
+        est_vz = float(np.dot(director.estimator.vel, director.up_vector))
+        if est_vz > 0:
+            _transition_to(director, "ASCENT_COAST")
+        elif est_alt > config.ALT_HYPERSONIC:
+            _transition_to(director, "DEORBIT_BURN")
+        elif est_alt > config.ALT_POWERED_DESCENT:
+            _transition_to(director, "HYPERSONIC_COAST")
+        else:
+            director.state = "ESTIMATOR_WARMUP"
+            director._warmup_ticks = 0
+            director.writer.log_event({
+                "type": "STATE_TRANSITION",
+                "from": "SENSOR_WARMUP",
+                "to": "ESTIMATOR_WARMUP",
+                "reason": "warmup_complete",
+            })
 
 
 def _activate_single_engine(director: Any, e: Any) -> None:
@@ -388,6 +480,10 @@ def process_state_transitions(
     director: Any, est_alt: float, est_vz: float, data: dict, dt: float
 ) -> None:
     """Advance the state machine based on altitude / velocity."""
+    if director.state == "SENSOR_WARMUP":
+        _run_sensor_warmup(director, data, est_alt)
+        return
+
     if director.state == "ESTIMATOR_WARMUP":
         director._warmup_ticks = getattr(director, "_warmup_ticks", 0) + 1
         if director._warmup_ticks >= config.ESTIMATOR_WARMUP_TICKS:

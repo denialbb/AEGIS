@@ -332,11 +332,29 @@ GUIDANCE_MAX_TORQUE = [3200.0, 3200.0, 3200.0]
 # RW_AUGMENT_GAIN = 0.0
 
 # ---------------------------------------------------------
+# Sensor Warmup
+# ---------------------------------------------------------
+# Number of ticks to collect static sensor samples for bias estimation
+# before starting the EKF. During this phase the Mahoni filter is
+# initialised from the kRPC truth attitude (eliminating the identity-
+# start convergence delay) and gyro/accel biases are estimated from
+# a running average of stationary readings. At 10 Hz, 30 ticks = 3 s.
+SENSOR_WARMUP_TICKS = 30
+
+# Post-warmup gyro bias uncertainty (rad/s, 1-σ).
+# Reduced from EKF_INITIAL_GYRO_BIAS_UNCERTAINTY (0.01) after collecting
+# N static samples. Min: 1e-6 (Well-calibrated), Max: 0.01 (Uncalibrated)
+SENSOR_WARMUP_GYRO_BIAS_SIGMA = 0.003
+
+# Post-warmup accel bias uncertainty (m/s², 1-σ).
+SENSOR_WARMUP_ACCEL_BIAS_SIGMA = 0.03
+
+# ---------------------------------------------------------
 # Estimator Warmup
 # ---------------------------------------------------------
 # Number of ticks to run the estimator before enabling guidance.
 # Allows the EKF to converge when starting from a quicksave with
-# the vessel already in flight. At 50 Hz, 100 ticks = 2 seconds.
+# the vessel already in flight. At 10 Hz, 100 ticks = 10 seconds.
 ESTIMATOR_WARMUP_TICKS = 100
 
 # ---------------------------------------------------------

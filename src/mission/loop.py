@@ -94,7 +94,8 @@ def _poll_telemetry(director: Any) -> dict:
 
 
 _ALLOCATION_INHIBITED = frozenset({
-    "HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "LANDED",
+    "HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST",
+    "SENSOR_WARMUP", "LANDED",
 })
 
 # ---------------------------------------------------------------------------

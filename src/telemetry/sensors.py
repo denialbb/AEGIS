@@ -66,6 +66,14 @@ class SensorModels:
             f"sigma_accel={self.sigma_accel}, sigma_vel={self.sigma_vel}"
         )
 
+    def get_truth_attitude(self) -> np.ndarray:
+        """Return kRPC truth attitude quaternion [x,y,z,w] (body→NED).
+
+        Uses the kRPC flight.rotation stream directly — this is the
+        ground-truth attitude from KSP physics, NOT the Mahony estimate.
+        """
+        return self._read_krpc_quaternion()
+
     def _read_krpc_quaternion(self) -> np.ndarray:
         """
         Read the kRPC rotation and convert to [x,y,z,w] (scipy convention).

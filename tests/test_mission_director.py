@@ -44,7 +44,10 @@ class TestMissionDirector:
         flight = Mock()
         vessel.flight = Mock(return_value=flight)
         flight.velocity = [0.0, 0.0, 0.0]
+        flight.surface_altitude = 100.0
         vessel.inertia_tensor = [1000.0, 0.0, 0.0, 0.0, 1000.0, 0.0, 0.0, 0.0, 1000.0]  # Diagonal matrix
+        # vessel.position is used in _init_estimator → must return a real array
+        vessel.position = Mock(return_value=[0.0, 0.0, -100.0])
         
         # Mock parts with engines (for engine discovery)
         part = Mock()
@@ -121,9 +124,10 @@ class TestMissionDirector:
         md.sensors.poll = Mock(return_value=(0.0, np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]),
                                              1000.0, np.zeros(3), "flying", np.zeros(3), np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, -9.81])))
 
-        # Mock estimator to return specific state
+        # Mock estimator to return specific state and skip real predict
         md.estimator.update = Mock(return_value=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
         md.estimator.get_state = Mock(return_value=np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))
+        md.estimator.predict = Mock()
 
         # The loop must reach a terminal state. With est_alt=0, est_vz=0,
         # action_group=False, situation="flying", none of the exit paths
@@ -169,7 +173,9 @@ class TestMissionDirector:
         md = MissionDirector(conn)
         
         # Set up test parameters
-        state_vector = np.array([0.0, 0.0, 100.0, 0.0, 0.0, -10.0])  # [x, y, z, vx, vy, vz]
+        # NED convention: up_vector = [0,0,-1], positive z = Down
+        # A vessel 100m above the pad has z = -100
+        state_vector = np.array([0.0, 0.0, -100.0, 0.0, 0.0, 10.0])  # [x, y, z, vx, vy, vz]
         floor_alt = 50.0
         max_descent_rate = 20.0
         a_avail = 15.0  # m/s^2 net upward acceleration
@@ -181,16 +187,16 @@ class TestMissionDirector:
         assert isinstance(target_state, np.ndarray)
         assert target_state.shape == (6,)
         
-        # With up_vector = [0,0,1] (from mock surface_position=[0,0,600000]):
-        # est_alt = dot([0,0,100], [0,0,1]) = 100
-        # target_state[:3] = 100 * [0,0,1] = [0,0,100]
+        # With up_vector = [0,0,-1] (NED convention):
+        # est_alt = dot([0,0,-100], [0,0,-1]) = 100
+        # target_state[:3] = 100 * [0,0,-1] = [0,0,-100]
         # alt_above_floor = max(100-50, 0) = 50
         # desired_speed = min(20.0, sqrt(2*15*50)) = min(20.0, 38.7) = 20.0
-        # target_state[3:] = -[0,0,1] * 20.0 = [0,0,-20.0]
+        # target_state[3:] = -[0,0,-1] * 20.0 = [0,0,20.0]
         assert target_state[0] == 0.0
         assert target_state[1] == 0.0
-        assert target_state[2] == 100.0
-        assert target_state[5] == -20.0
+        assert target_state[2] == -100.0
+        assert target_state[5] == 20.0
 
     def test_mission_director_handles_hard_abort(self):
         """Test that MissionDirector properly handles HARD_ABORT state."""
