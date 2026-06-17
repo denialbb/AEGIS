@@ -11,9 +11,9 @@ from typing import Any, List, Tuple
 import krpc
 import logging
 import numpy as np
-from scipy.spatial.transform import Rotation as R  # type: ignore
 
 import src.config as config
+from src.common.geometry import ecef_to_ned
 from src.common.logger import setup_logging
 from src.common.engine import Engine
 from src.estimation.ekf import ErrorStateEKF
@@ -67,30 +67,8 @@ class MissionDirector:
             body.surface_position(target_lat, target_lon, body.reference_frame),
             dtype=float,
         )
-        pad_norm = float(np.linalg.norm(pad_ecef))
 
-        # ── Local vertical (radial) and Down axis ──────────────────────
-        up_vec = pad_ecef / pad_norm          # points away from body centre
-        down = -up_vec                        # NED Down axis in ECEF
-
-        # ── East = normalize(up × north_pole) ──────────────────────────
-        # Kerbin's rotation axis in ECEF is +Z.
-        north_pole_ecef = np.array([0.0, 0.0, 1.0])
-        east_ecef = np.cross(up_vec, north_pole_ecef)
-        east_norm = float(np.linalg.norm(east_ecef))
-        if east_norm < 1e-10:
-            east_ecef = np.array([0.0, 1.0, 0.0])   # fallback at poles
-        else:
-            east_ecef = east_ecef / east_norm
-
-        # ── North = cross(up, east)  (points along local meridian) ─────
-        north_ecef = np.cross(up_vec, east_ecef)
-
-        # ── Build rotation: ECEF → NED ─────────────────────────────────
-        # Columns of R_ned→ecef = [north, east, down]_ecef
-        # R_ecef→ned = R_ned→ecef^T
-        R_ecef_to_ned = np.column_stack([north_ecef, east_ecef, down]).T
-        ned_quat = R.from_matrix(R_ecef_to_ned).as_quat()  # [x,y,z,w] scipy convention
+        R_ecef_to_ned, ned_quat, _north, _east = ecef_to_ned(pad_ecef)
 
         self.ned_frame = self.conn.space_center.ReferenceFrame.create_relative(
             body.reference_frame,

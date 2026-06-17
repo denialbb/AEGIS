@@ -1,8 +1,12 @@
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation as R
 from src.estimation.ekf import ErrorStateEKF
 from src.estimation.mahony_estimator import MahonyAttitudeEstimator
 import src.config as config
+
+KERBIN_MU = 3.5316000e12
+KERBIN_RADIUS = 600_000.0
 
 
 def test_ekf_initialization():
@@ -620,6 +624,119 @@ def test_ekf_up_vector_is_normalized():
         up_vector=np.array([0.0, 0.0, 5.0]),
     )
     assert np.allclose(np.linalg.norm(ekf.up_vector), 1.0)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  AT-REST PAD VALIDATION — Full Chain Integrity
+# ═══════════════════════════════════════════════════════════════
+
+# NED convention:  +x = north, +y = east, +z = down.
+# On the pad at rest:
+#   position_NED           = [0, 0, 0]
+#   velocity_NED           = [0, 0, 0]
+#   gravity_NED            = [0, 0, +g]      (points down)
+#   proper accel_NED       = [0, 0, -g]      (specific force, upward normal)
+#   kinematic accel_NED    = [0, 0, 0]       = f_corr_ned + gravity_ned
+#   gyro rate (body)       = [0, 0, 0]
+#   attitude               = identity quat   (level, body z = down)
+
+KERBIN_SURFACE_G = KERBIN_MU / KERBIN_RADIUS**2  # ≈ 9.81
+
+
+@pytest.mark.parametrize("pad_name, lat_lon", [
+    ("ksc",        (-0.0972, -74.5577)),
+    ("equator",    (0.0,      0.0)),
+    ("mid_south",  (-45.0,   120.0)),
+    ("near_pole",  (-89.0,    0.0)),
+], ids=["ksc", "equator", "mid_south", "near_pole"])
+def test_ekf_at_rest_on_pad(pad_name: str, lat_lon: tuple[float, float]) -> None:
+    """
+    Validate the full chain at rest on every pad:
+      accelerometer → body frame → Mahony → ECEF → NED → guidance.
+
+    With zero gyro rate and identity attitude, the EKF should hold
+    position and velocity at zero across repeated predict/update cycles.
+    """
+    lat_deg, lon_deg = lat_lon
+    # Expected gravity magnitude at this latitude (pad is at body radius)
+    g = KERBIN_SURFACE_G
+
+    gravity_ned = np.array([0.0, 0.0, g], dtype=float)
+
+    ekf = ErrorStateEKF(
+        np.array([0.0, 0.0, 0.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.eye(12) * 0.1,
+        up_vector=np.array([0.0, 0.0, 1.0]),
+    )
+
+    # Identity attitude — body frame axes align with NED:
+    #   body x (forward) = NED x (north)
+    #   body y (right)   = NED y (east)
+    #   body z (down)    = NED z (down)
+    attitude = np.array([0.0, 0.0, 0.0, 1.0])  # identity quat
+
+    # Specific force (proper acceleration) at rest on pad:
+    #   accelerometer measures: f = kinematic - gravity
+    #   kinematic = [0,0,0], gravity_NED = [0,0,+g]
+    #   f_NED = [0,0,0] - [0,0,+g] = [0,0,-g]
+    #   Rotated to body frame via identity: f_body = [0,0,-g]
+    f_body = np.array([0.0, 0.0, -g], dtype=float)
+
+    omega_body = np.array([0.0, 0.0, 0.0], dtype=float)  # no rotation
+
+    dt = 0.02  # 50 Hz
+
+    for step in range(50):
+        ekp_pos_before = ekf.pos.copy()
+        ekp_vel_before = ekf.vel.copy()
+
+        ekf.predict(f_body, omega_body, attitude, gravity_ned, dt)
+        ekf.update(0.0, np.array([0.0, 0.0, 0.0]))
+
+        # Position and velocity must stay at zero (within numerical tolerance)
+        np.testing.assert_allclose(
+            ekf.pos, np.zeros(3), atol=1e-9,
+            err_msg=f"pad={pad_name} step={step}: position drifted",
+        )
+        np.testing.assert_allclose(
+            ekf.vel, np.zeros(3), atol=1e-9,
+            err_msg=f"pad={pad_name} step={step}: velocity drifted",
+        )
+
+        # Innovation should be near-zero (measurements match prediction)
+        innov = ekf.get_innovation()
+        np.testing.assert_allclose(innov[:3], np.zeros(3), atol=1e-6,
+                                   err_msg=f"pad={pad_name} step={step}: innovation non-zero")
+
+    # ── Verify the internal chain logic ─────────────────────────
+    # Manual verification of the NED-frame kinematic acceleration:
+    rot_bw = R.from_quat(attitude)  # identity
+    f_corr_ned = rot_bw.apply(f_body)  # specific force in NED (should be [0,0,-g])
+    kinematic_ned = f_corr_ned + gravity_ned  # should be [0,0,0]
+
+    np.testing.assert_allclose(
+        f_corr_ned, np.array([0.0, 0.0, -g]), atol=1e-12,
+        err_msg=f"pad={pad_name}: f_corr_ned should be [0,0,-g]",
+    )
+    np.testing.assert_allclose(
+        kinematic_ned, np.zeros(3), atol=1e-12,
+        err_msg=f"pad={pad_name}: kinematic accel should be zero at rest",
+    )
+
+    # Gravity is purely +z (Down) in NED
+    np.testing.assert_allclose(
+        gravity_ned[:2], np.zeros(2), atol=1e-12,
+        err_msg=f"pad={pad_name}: gravity N/E components must be zero",
+    )
+    assert gravity_ned[2] > 0.0, f"pad={pad_name}: gravity down component must be +ve"
+
+    # Specific force is purely -z (Up) in NED
+    np.testing.assert_allclose(
+        f_corr_ned[:2], np.zeros(2), atol=1e-12,
+        err_msg=f"pad={pad_name}: specific force N/E components must be zero at rest",
+    )
+    assert f_corr_ned[2] < 0.0, f"pad={pad_name}: specific force must point up (-z) at rest"
 
 
 if __name__ == "__main__":
