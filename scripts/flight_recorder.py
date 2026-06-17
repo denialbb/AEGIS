@@ -15,6 +15,7 @@ import logging
 import signal
 import sys
 from typing import Any
+from scipy.spatial.transform import Rotation as R  # type: ignore
 
 from src.telemetry.sensors import SensorModels
 import src.config as config
@@ -40,7 +41,9 @@ def _handle_exit(signum: int, frame: Any) -> None:
     global _exit_requested
     if _exit_requested:
         sys.exit(1)  # second Ctrl+C → force quit
-    logging.getLogger(__name__).info("Shutdown requested — saving recording and exiting …")
+    logging.getLogger(__name__).info(
+        "Shutdown requested — saving recording and exiting …"
+    )
     _exit_requested = True
 
 
@@ -61,21 +64,48 @@ def _wait_for_active_vessel(conn: Any) -> Any:
         time.sleep(VESSEL_POLL_INTERVAL)
 
 
-def _init_sensors(conn: Any, vessel: Any) -> tuple[Any, Any, np.ndarray, SensorModels]:
-    """Build a pad-centred reference frame and SensorModels for *vessel*."""
+def _init_sensors(
+    conn: Any, vessel: Any
+) -> tuple[Any, Any, np.ndarray, SensorModels]:
+    """Build a true NED reference frame and SensorModels for *vessel*."""
     body = vessel.orbit.body
     target_lat = config.TARGET_LAT
     target_lon = config.TARGET_LON
 
-    ref_frame = conn.space_center.ReferenceFrame.create_relative(
-        body.reference_frame,
-        position=body.surface_position(target_lat, target_lon, body.reference_frame),
+    # ── Pad position in ECEF ──────────────────────────────────────────
+    pad_ecef = np.array(
+        body.surface_position(target_lat, target_lon, body.reference_frame),
+        dtype=float,
     )
-    pin = np.array(body.surface_position(target_lat, target_lon, body.reference_frame))
-    up_vector: np.ndarray = pin / np.linalg.norm(pin)
+    pad_norm = float(np.linalg.norm(pad_ecef))
+    up_vec = pad_ecef / pad_norm
+    down = -up_vec
 
-    sensors = SensorModels(conn, vessel, ref_frame, up_vector)
-    return ref_frame, up_vector, sensors
+    # ── East = normalize(up × north_pole) ─────────────────────────────
+    north_pole_ecef = np.array([0.0, 0.0, 1.0])
+    east_ecef = np.cross(up_vec, north_pole_ecef)
+    east_norm = float(np.linalg.norm(east_ecef))
+    if east_norm < 1e-10:
+        east_ecef = np.array([0.0, 1.0, 0.0])
+    else:
+        east_ecef = east_ecef / east_norm
+
+    # ── North = cross(up, east) ───────────────────────────────────────
+    north_ecef = np.cross(up_vec, east_ecef)
+
+    # ── ECEF → NED rotation ──────────────────────────────────────────
+    R_ecef_to_ned = np.column_stack([north_ecef, east_ecef, down]).T
+    ned_quat = R.from_matrix(R_ecef_to_ned).as_quat()
+
+    ned_frame = conn.space_center.ReferenceFrame.create_relative(
+        body.reference_frame,
+        position=tuple(float(v) for v in pad_ecef),
+        rotation=tuple(float(v) for v in ned_quat),
+    )
+    up_vector: np.ndarray = np.array([0.0, 0.0, -1.0])
+
+    sensors = SensorModels(conn, vessel, ned_frame, up_vector)
+    return ned_frame, up_vector, sensors
 
 
 def _save_recording(file_path: str, data: dict) -> None:
@@ -105,7 +135,7 @@ def main() -> None:
 
     # Initial vessel acquisition (blocks until a vessel exists).
     vessel = _wait_for_active_vessel(conn)
-    ref_frame, up_vector, sensors = _init_sensors(conn, vessel)
+    ned_frame, up_vector, sensors = _init_sensors(conn, vessel)
     logger = logging.getLogger(__name__)
     logger.info(f"Connected, tracking vessel {vessel.name}")
 
@@ -122,7 +152,7 @@ def main() -> None:
         "mahony_attitude": [],
         "noisy_alt": [],
         "noisy_vel": [],
-        "gravity_world": [],
+        "gravity_ned": [],
         # -- new fields --
         "mass": [],
         "aero_body": [],
@@ -155,7 +185,7 @@ def main() -> None:
             file_path = None
 
             vessel = _wait_for_active_vessel(conn)
-            ref_frame, up_vector, sensors = _init_sensors(conn, vessel)
+            ned_frame, up_vector, sensors = _init_sensors(conn, vessel)
             logger.info(f"Re‑acquired vessel {vessel.name}")
             time.sleep(VESSEL_POLL_INTERVAL)
             continue
@@ -183,7 +213,7 @@ def main() -> None:
 
         # ── Record a single telemetry frame ──────────────────────────
         try:
-            flight = vessel.flight(ref_frame)
+            flight = vessel.flight(ned_frame)
             ut = conn.space_center.ut
             dt = 0.0 if last_ut is None else ut - last_ut
             last_ut = ut
@@ -191,7 +221,7 @@ def main() -> None:
             gt_pos = (
                 np.array(flight.position)
                 if hasattr(flight, "position")
-                else np.array(vessel.position(ref_frame))
+                else np.array(vessel.position(ned_frame))
             )
             gt_vel = np.array(flight.velocity)
             gt_att = sensors._read_krpc_quaternion()
@@ -205,7 +235,7 @@ def main() -> None:
                 situation,
                 omega_body,
                 noisy_vel,
-                gravity_world,
+                gravity_ned,
                 raw_gyro,
             ) = sensors.poll()
 
@@ -217,7 +247,7 @@ def main() -> None:
             file_path = None
 
             vessel = _wait_for_active_vessel(conn)
-            ref_frame, up_vector, sensors = _init_sensors(conn, vessel)
+            ned_frame, up_vector, sensors = _init_sensors(conn, vessel)
             logger.info(f"Re‑acquired vessel {vessel.name}")
             time.sleep(VESSEL_POLL_INTERVAL)
             continue
@@ -255,7 +285,7 @@ def main() -> None:
         data["mahony_attitude"].append(mahony_attitude.tolist())
         data["noisy_alt"].append(noisy_alt)
         data["noisy_vel"].append(noisy_vel.tolist())
-        data["gravity_world"].append(gravity_world.tolist())
+        data["gravity_ned"].append(gravity_ned.tolist())
         data["mass"].append(mass)
         data["aero_body"].append(aero_body.tolist())
         data["situation"].append(situation)

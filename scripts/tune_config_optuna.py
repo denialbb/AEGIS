@@ -59,7 +59,7 @@ def run_simulation(trial: optuna.Trial) -> float:
     damping = trial.suggest_float("GUIDANCE_ATT_DAMPING_RATIO_SCALAR", 0.5, 2.0)
     config.GUIDANCE_ATT_DAMPING_RATIO = [damping, damping, damping]
 
-    # Acceleration clamp factor limits a_cmd_world to ACCEL_CLAMP_FACTOR × a_avail.
+    # Acceleration clamp factor limits a_cmd_ned to ACCEL_CLAMP_FACTOR × a_avail.
     # Prevents attitude target flip during saturating transients.
     config.ACCEL_CLAMP_FACTOR = trial.suggest_float(
         "ACCEL_CLAMP_FACTOR", 2.0, 4.0

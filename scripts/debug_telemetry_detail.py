@@ -5,9 +5,10 @@ Logs estimated state, raw sensors, desired wrench, per-engine throttles/gimbals,
 FDI diagnostics, allocator health, and timing — all in one CSV per run.
 
 Usage:
-  KRPC_ADDRESS=172.xx.xx.xx .venv/bin/python scripts/debug_telemetry_detail.py
+  KRPC_ADDRESS=172.xx.xx.xx .venv/bin/python scripts/debug_telemetry_detail.py [save_name]
 
-Waits at STANDBY — activate the action group (default AG-9) to start the mission.
+If save_name is provided, loads that save before starting (e.g., "quicksave").
+Otherwise waits at STANDBY — activate the action group (default AG-9) to start.
 Logs written to logs/debug_detail_<timestamp>.csv for post-flight review.
 """
 
@@ -54,8 +55,25 @@ def _vec(v, n=3):
 
 def main():
     address = os.environ.get("KRPC_ADDRESS", config.KRPC_DEFAULT_ADDRESS)
+    save_name = sys.argv[1] if len(sys.argv) > 1 else None
+
     conn = krpc.connect(name="AEGIS_DebugDetail", address=address)
-    vessel = conn.space_center.active_vessel
+    print(f"Connected to KSP at {address}")
+
+    if save_name:
+        print(f"Loading save '{save_name}'...")
+        conn.space_center.load(save_name)
+        print("Waiting for vessel to load...")
+        time.sleep(2.0)
+        # After loading, the active_vessel reference may need refresh
+        vessel = conn.space_center.active_vessel
+        if vessel is None:
+            print("ERROR: No active vessel after loading save.")
+            conn.close()
+            return
+    else:
+        vessel = conn.space_center.active_vessel
+        print(f"Active vessel: {vessel.name if vessel else 'None'}")
 
     log_path = f"logs/debug_detail_{_ts()}.csv"
     os.makedirs("logs", exist_ok=True)
@@ -86,7 +104,7 @@ def main():
         noisy_vel = getattr(director, "_dbg_noisy_vel", np.zeros(3))
         sf_body = getattr(director, "_dbg_sf_body", np.zeros(3))
         omega_body = getattr(director, "_dbg_omega_body", np.zeros(3))
-        gravity_world = getattr(director, "_dbg_gravity_world", np.zeros(3))
+        gravity_ned = getattr(director, "_dbg_gravity_ned", np.zeros(3))
         attitude = getattr(director, "_dbg_attitude", np.array([0, 0, 0, 1]))
         aero_body = getattr(director, "_dbg_aero_body", np.zeros(3))
         mass = getattr(director, "_dbg_mass", 0.0)
@@ -159,7 +177,7 @@ def main():
         row += _vec(noisy_vel, 3)
         row += _vec(sf_body, 3)
         row += _vec(omega_body, 3)
-        row += _vec(gravity_world, 3)
+        row += _vec(gravity_ned, 3)
         row += _vec(raw_gyro, 3)
         row += [mass]
         row += _vec(aero_body, 3)
@@ -237,7 +255,7 @@ def main():
             _situation,  # not stored, captured from self.state
             director._dbg_omega_body,
             director._dbg_noisy_vel,
-            director._dbg_gravity_world,
+            director._dbg_gravity_ned,
             director._dbg_raw_gyro,
         ) = result
         return result
@@ -259,7 +277,13 @@ def main():
 
     # ── Run ────────────────────────────────────────────────────────
     print(f"Logging to {log_path}")
-    print("Director ready. Activate the action group to start.")
+
+    if save_name:
+        print("Auto-activating action group to start mission...")
+        director.vessel.control.set_action_group(config.ACTIVATION_ACTION_GROUP, True)
+        print(f"Mission started via action group {config.ACTIVATION_ACTION_GROUP}.")
+    else:
+        print("Director ready. Activate the action group to start.")
     print("Press Ctrl+C to stop.")
 
     try:
@@ -304,7 +328,7 @@ def _write_header(writer, N_engines):
     cols += ["noisy_vx", "noisy_vy", "noisy_vz"]
     cols += ["sf_bx", "sf_by", "sf_bz"]
     cols += ["omega_bx", "omega_by", "omega_bz"]
-    cols += ["grav_wx", "grav_wy", "grav_wz"]
+    cols += ["grav_nx", "grav_ny", "grav_nz"]
     cols += ["raw_gyro_x", "raw_gyro_y", "raw_gyro_z"]
     cols += ["mass"]
     cols += ["aero_bx", "aero_by", "aero_bz"]
