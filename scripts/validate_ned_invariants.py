@@ -10,6 +10,7 @@ import numpy as np
 
 import src.config as config
 from src.common.geometry import ecef_to_ned
+from src.common.reference_frame import build_ned_frame, get_pad_ecef, compute_gravity_ned
 
 
 def main() -> int:
@@ -36,10 +37,7 @@ def main() -> int:
 
     target_lat = config.TARGET_LAT
     target_lon = config.TARGET_LON
-    pad_ecef = np.array(
-        body.surface_position(target_lat, target_lon, body.reference_frame),
-        dtype=float,
-    )
+    pad_ecef = get_pad_ecef(body, target_lat, target_lon)
     pad_r = float(np.linalg.norm(pad_ecef))
     g_mag_local = mu / pad_r**2
 
@@ -50,11 +48,7 @@ def main() -> int:
 
     # ── Build NED frame (same method as main.py) ────────────────────────
     R_ecef_to_ned, ned_quat, north_e, east_e = ecef_to_ned(pad_ecef)
-    ned_frame = conn.space_center.ReferenceFrame.create_relative(
-        body.reference_frame,
-        position=tuple(float(v) for v in pad_ecef),
-        rotation=tuple(float(v) for v in ned_quat),
-    )
+    ned_frame, _up_vector = build_ned_frame(conn, body, target_lat, target_lon)
 
     # ── Read vessel state in NED frame ──────────────────────────────────
     flight = vessel.flight(ned_frame)
@@ -65,8 +59,7 @@ def main() -> int:
     vessel_pos_ecef = np.array(vessel.position(body.reference_frame))
     vessel_r = float(np.linalg.norm(vessel_pos_ecef))
     vessel_g_mag = mu / vessel_r**2
-    vessel_gravity_ecef = -(mu / vessel_r**3) * vessel_pos_ecef
-    vessel_gravity_ned = R_ecef_to_ned @ vessel_gravity_ecef
+    vessel_gravity_ned = compute_gravity_ned(body, vessel_pos_ecef)
 
     # Proper acceleration (g-force) in NED frame.
     # kRPC Flight.g_force returns magnitude in Gs (multiples of 9.80665 m/s²).

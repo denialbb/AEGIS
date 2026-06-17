@@ -973,3 +973,40 @@ Module structure:
 - `src/mission/helpers.py` — unpack_sensor_poll, compute_a_avail, build_fuel_state
 - `src/mission/ui.py` — make_telemetry_frame, update_hud
 - `src/mission/states.py` — MissionState enum
+
+---
+
+### ADR-034 — Reference Frame Utilities Module (`src/common/reference_frame.py`)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-18
+- **Author:** Agent
+- **Module(s):** Cross-cutting
+
+**Context**
+The NED reference frame construction code was duplicated verbatim in three places: `main.py::_init_reference_frame()`, `flight_recorder.py::_init_sensors()`, and `validate_ned_invariants.py`. Each duplicate was 15–20 lines of identical kRPC boilerplate (querying `body.surface_position`, calling `ecef_to_ned`, creating `ReferenceFrame.create_relative`). Additionally, the gravity computation (`mu / r²`) was inlined in `accelerometer_sensor.py::poll()` and `validate_ned_invariants.py`, and vessel state queries (`vessel.position(ned_frame)`, `vessel.flight(ned_frame).velocity`) were duplicated across `main.py`, `flight_recorder.py`, and various scripts.
+
+**Options Considered**
+1. **Keep duplication** — No refactoring cost. Each copy is self-contained but creates maintenance burden — any change to the frame construction must be replicated across all callers.
+2. **Inline helper per caller** — Each file adds a small private helper. Reduces duplication minimally but doesn't provide a single importable reference.
+3. **Single `src/common/reference_frame.py` module** — Exports `build_ned_frame()`, `compute_gravity_ned()`, `get_pad_ecef()`, and vessel-state query helpers. All callers import from one place.
+
+**Decision**
+Option 3: A dedicated `src/common/reference_frame.py` module that exports:
+- `build_ned_frame(conn, body, target_lat, target_lon) → (ned_frame, up_vector)` — single authoritative implementation of NED frame construction
+- `get_pad_ecef(body, target_lat, target_lon) → ndarray` — thin wrapper for `body.surface_position`
+- `compute_gravity_ned(body, pos_ecef) → ndarray` — `[0, 0, +g]` from `μ / r²`
+- `get_vessel_position_ned(vessel, ned_frame) → ndarray`
+- `get_vessel_velocity_ned(vessel, ned_frame) → ndarray`
+- `get_vessel_altitude_ned(vessel, ned_frame) → float`
+- `get_vessel_state_ned(vessel, ned_frame) → (pos, vel, alt)`
+
+**Consequences**
+- ✅ Canonical NED frame construction — one place to fix, all callers benefit
+- ✅ Gravity computation reused by `accelerometer_sensor.py` and `validate_ned_invariants.py`
+- ✅ Vessel state queries now have typed, documented signatures instead of inline `np.array(...)` casts
+- ✅ Pure-math rotation (`geometry.py::ecef_to_ned`) stays separate from kRPC integration (`reference_frame.py`)
+- ⚠️ Functions accept `Any` for kRPC objects (conn, body, vessel, ned_frame) — no type-safe kRPC stubs available
+- ⚠️ Debug scripts (`debug_ref_frames.py`, `debug_frame_experiment.py`) still construct frames ad-hoc; not refactored to avoid breaking experimental code
+
+**Review Notes**
+Callers updated: `main.py`, `flight_recorder.py`, `validate_ned_invariants.py`, `accelerometer_sensor.py`. The module is importable by any script without creating circular dependencies — it depends only on `geometry.py` (pure math).

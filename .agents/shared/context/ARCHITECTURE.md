@@ -22,6 +22,39 @@ class Engine:
 
 ---
 
+### Reference Frame Utilities (`src/common/reference_frame.py`)
+
+Reusable kRPC-integration functions for building and querying the NED navigation frame. The pure-math rotation logic lives in `src/common/geometry.py::ecef_to_ned()`; this module wraps it for kRPC interaction.
+
+```python
+def build_ned_frame(conn, body, target_lat, target_lon) -> tuple[Any, np.ndarray]:
+    """
+    Build a kRPC ReferenceFrame aligned to North-East-Down at the target pad.
+    Returns (ned_frame, up_vector=[0,0,-1]).
+    Used by MissionDirector._init_reference_frame() and flight_recorder._init_sensors().
+    """
+
+def get_pad_ecef(body, target_lat, target_lon) -> np.ndarray:
+    """Surface position of the landing site in ECEF (body-centred) coordinates."""
+
+def compute_gravity_ned(body, pos_ecef) -> np.ndarray:
+    """Gravitational acceleration [0, 0, +g] in NED from ECEF position."""
+
+def get_vessel_position_ned(vessel, ned_frame) -> np.ndarray:
+    """(3,) position in NED frame."""
+
+def get_vessel_velocity_ned(vessel, ned_frame) -> np.ndarray:
+    """(3,) velocity in NED frame. Downward positive."""
+
+def get_vessel_altitude_ned(vessel, ned_frame) -> float:
+    """Surface altitude in metres."""
+
+def get_vessel_state_ned(vessel, ned_frame) -> tuple[np.ndarray, np.ndarray, float]:
+    """Convenience — (pos, vel, alt) in one call."""
+```
+
+---
+
 ## 2. State Estimator (`src/estimation/estimator.py`)
 
 Fuses noisy telemetry into a clean state vector using an Error-State Extended Kalman Filter (ADR-030).

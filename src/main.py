@@ -13,7 +13,7 @@ import logging
 import numpy as np
 
 import src.config as config
-from src.common.geometry import ecef_to_ned
+from src.common.reference_frame import build_ned_frame, get_vessel_state_ned
 from src.common.logger import setup_logging
 from src.common.engine import Engine
 from src.estimation.ekf import ErrorStateEKF
@@ -53,31 +53,13 @@ class MissionDirector:
     # ------------------------------------------------------------------
 
     def _init_reference_frame(self) -> None:
-        """
-        Create a true NED (North-East-Down) reference frame at the target
-        landing site, constructed from the local vertical and planet rotation
-        axis.  See docs/REFERENCE_FRAMES.md for details.
-        """
-        body = self.vessel.orbit.body
-        target_lat = config.TARGET_LAT
-        target_lon = config.TARGET_LON
-
-        # ── Pad position in ECEF (body-centred, non-rotating) ──────────
-        pad_ecef = np.array(
-            body.surface_position(target_lat, target_lon, body.reference_frame),
-            dtype=float,
+        """Create a true NED reference frame at the landing target."""
+        self.ned_frame, self.up_vector = build_ned_frame(
+            self.conn,
+            self.vessel.orbit.body,
+            config.TARGET_LAT,
+            config.TARGET_LON,
         )
-
-        R_ecef_to_ned, ned_quat, _north, _east = ecef_to_ned(pad_ecef)
-
-        self.ned_frame = self.conn.space_center.ReferenceFrame.create_relative(
-            body.reference_frame,
-            position=tuple(float(v) for v in pad_ecef),
-            rotation=tuple(float(v) for v in ned_quat),
-        )
-
-        # In true NED, the vertical axis is z = Down; up_vector = (0, 0, -1).
-        self.up_vector = np.array([0.0, 0.0, -1.0])
 
     # ------------------------------------------------------------------
     # Engine discovery  (ADR-016)
@@ -186,11 +168,7 @@ class MissionDirector:
 
     def _init_estimator(self) -> None:
         """Initialise the Error-State EKF and FDI module."""
-        initial_alt = float(self.vessel.flight(self.ned_frame).surface_altitude)
-        # Use actual vessel position in NED frame, not up_vector * alt
-        # This accounts for horizontal offset from the pad
-        initial_pos = np.array(self.vessel.position(self.ned_frame))
-        initial_vel = np.array(self.vessel.flight(self.ned_frame).velocity)
+        initial_pos, initial_vel, _alt = get_vessel_state_ned(self.vessel, self.ned_frame)
 
         covariance = self._build_initial_covariance()
 

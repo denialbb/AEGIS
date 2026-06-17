@@ -180,7 +180,21 @@ The gyro_sensor still returns ω in NED-frame axes (as its docstring notes), but
 
 **Resolution**: The NED reference frame is fully implemented. `src/main.py::_init_reference_frame` constructs a true NED frame using `ecef_to_ned()` from `src/common/geometry.py`. The frame is created via `ReferenceFrame.create_relative` with a rotation quaternion aligned to local north/east/down. All guidance and estimation operate in NED coordinates. Verified by 68 parametrized unit tests (`tests/test_ned_frame.py`) and a 10-check live KSP validation script (`scripts/validate_ned_invariants.py`).
 
-### 5.3 Pole Degeneracy
+### 5.3 `src/common/reference_frame.py` Module
+
+The reusable frame-building and query logic lives in `src/common/reference_frame.py`. It wraps the pure-math `ecef_to_ned()` from `geometry.py` with kRPC integration:
+
+| Function | Returns | Used By |
+|----------|---------|---------|
+| `build_ned_frame(conn, body, lat, lon)` | `(ned_frame, up_vector)` | `main.py`, `flight_recorder.py`, `validate_ned_invariants.py` |
+| `get_pad_ecef(body, lat, lon)` | `(3,) ndarray` — ECEF position | `validate_ned_invariants.py` |
+| `compute_gravity_ned(body, pos_ecef)` | `(3,) ndarray` — `[0, 0, +g]` | `accelerometer_sensor.py` |
+| `get_vessel_position_ned(vessel, ned_frame)` | `(3,) ndarray` | Any script needing NED-state |
+| `get_vessel_velocity_ned(vessel, ned_frame)` | `(3,) ndarray` | Same |
+| `get_vessel_altitude_ned(vessel, ned_frame)` | `float` — metres | Same |
+| `get_vessel_state_ned(vessel, ned_frame)` | `(pos, vel, alt)` tuple | `main.py` `_init_estimator` |
+
+### 5.4 Pole Degeneracy
 
 The NED construction fails at/near the poles. For AEGIS's KSC landing site (lat ≈ -0.1°) this is irrelevant.
 

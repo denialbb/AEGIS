@@ -2,6 +2,7 @@ import numpy as np
 import logging
 from typing import Any
 import src.config as config
+from src.common.reference_frame import compute_gravity_ned
 
 logger = logging.getLogger(__name__)
 
@@ -74,18 +75,10 @@ class AccelerometerSensor:
         self.last_vel = vel
         self.last_ut = ut
         
-        # Compute gravity in NED: always along +z (Down axis).
-        # magnitude = mu / r² at the vessel's current distance.
+        # Compute gravity in NED from ECEF position.
         body = self.vessel.orbit.body
-        mu = body.gravitational_parameter
-        ecef_frame = body.reference_frame
-        pos_ecef = np.array(self.vessel.position(ecef_frame))
-        distance = np.linalg.norm(pos_ecef)
-        if distance > 0:
-            g_mag = mu / distance**2
-        else:
-            g_mag = 9.81  # fallback
-        gravity_ned = np.array([0.0, 0.0, g_mag])
+        pos_ecef = np.array(self.vessel.position(body.reference_frame))
+        gravity_ned = compute_gravity_ned(body, pos_ecef)
         
         # Proper acceleration (specific force) = coordinate acceleration - gravity
         # This is what an accelerometer actually measures
