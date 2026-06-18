@@ -336,6 +336,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AEGIS Mission Director")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--log-to-file", action="store_true", help="Log to file")
+    parser.add_argument("--hud", action="store_true", help="Enable HUD display (suppresses terminal logging)")
     return parser.parse_args()
 
 
@@ -344,6 +345,11 @@ def _apply_args(args: argparse.Namespace) -> None:
         config.DEBUG_LOGGING = True
     if args.log_to_file:
         config.LOG_TO_FILE = True
+    if args.hud:
+        config.HUD_ENABLED = True
+        config.LOG_TO_FILE = True
+    else:
+        config.HUD_ENABLED = False
 
 
 def _connect_krpc() -> Any:

@@ -15,6 +15,7 @@ from rich.progress_bar import ProgressBar
 from rich import box
 
 import src.config as config
+from src.common.logger import suppress_stdout_logging
 
 
 class HudDisplay:
@@ -68,6 +69,7 @@ class HudDisplay:
             vertical_overflow="visible",
         )
         self._live.__enter__()
+        suppress_stdout_logging()
 
     def stop(self) -> None:
         if self._live is not None:
