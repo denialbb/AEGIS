@@ -38,4 +38,4 @@ print("Disconnected. Starting AEGIS...")
 
 echo ""
 echo "Running AEGIS mission..."
-.venv/bin/python src/main.py "$@"
+.venv/bin/python src/main.py --hud "$@"
