@@ -16,7 +16,9 @@ import optuna
 import optuna.logging as optuna_logging
 
 import glob
+import json
 import os
+import re
 import sys
 import time
 import signal
@@ -30,6 +32,22 @@ import src.config as config
 from src.estimation.ekf import ErrorStateEKF
 from src.simulation.flights import FlightReplayer
 from scripts.trial_dashboard import TrialDashboard
+
+# ------------------------------------------------------------
+# Config package layout — maps each estimator-tuner param to
+# its corresponding config key and target .conf file.
+# ------------------------------------------------------------
+ESTIMATOR_PARAM_MAP: dict[str, tuple[str, str]] = {
+    "sigma_gyro": ("SIGMA_GYRO", "sensors.conf"),
+    "sigma_accel": ("SIGMA_ACCEL", "sensors.conf"),
+    "sigma_alt": ("SIGMA_ALT", "sensors.conf"),
+    "sigma_vel": ("SIGMA_VEL", "sensors.conf"),
+    "bg_inst": ("GYRO_BIAS_INSTABILITY", "sensors.conf"),
+    "ba_inst": ("ACCEL_BIAS_INSTABILITY", "sensors.conf"),
+    "process_coef": ("PROCESS_NOISE_THRUST_COEF", "aegis.conf"),
+}
+
+CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "config")
 
 # Pin BLAS to 1 thread so parallel Optuna workers don't oversubscribe cores.
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -314,6 +332,58 @@ def objective(trial: optuna.trial.Trial) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Apply best params to .conf files
+# ---------------------------------------------------------------------------
+
+
+def _apply_best_params_to_config(params: dict[str, float]) -> None:
+    """Overwrite the appropriate ``.conf`` files with the best EKF params."""
+    replacements: dict[str, str] = {}
+    for optuna_key, value in params.items():
+        entry = ESTIMATOR_PARAM_MAP.get(optuna_key)
+        if entry is None:
+            continue
+        config_key, _ = entry
+        if isinstance(value, bool):
+            s = str(value)
+        elif isinstance(value, int):
+            s = str(value)
+        else:
+            s = f"{value!r}"
+            if len(s) > 10:
+                s = f"{value:.6g}"
+        replacements[config_key] = s
+
+    file_map: dict[str, dict[str, str]] = {}
+    for key, val_str in replacements.items():
+        for optuna_key, (ck, fname) in ESTIMATOR_PARAM_MAP.items():
+            if ck == key:
+                file_map.setdefault(fname, {})[key] = val_str
+                break
+
+    p = re.compile(r"^(\w+)(?::[^=]*?)?\s*=")
+    for fname, rep in file_map.items():
+        fpath = os.path.join(CONFIG_DIR, fname)
+        with open(fpath) as f:
+            lines = f.readlines()
+        new_lines: list[str] = []
+        for line in lines:
+            m = p.match(line.lstrip())
+            if m and m.group(1) in rep:
+                k = m.group(1)
+                indent = line[: len(line) - len(line.lstrip())]
+                cmt = re.search(r"(#.*)$", line)
+                suffix = f"  {cmt.group(1)}" if cmt else ""
+                new_lines.append(f"{indent}{k} = {rep[k]}{suffix}\n")
+            else:
+                new_lines.append(line)
+        with open(fpath, "w") as f:
+            f.writelines(new_lines)
+        print(f"  ✓ Applied to src/config/{fname}")
+    print(f"\n  ✓ Best EKF parameters written to src/config/")
+
+
+# ---------------------------------------------------------------------------
 # Main execution
 # ---------------------------------------------------------------------------
 _N_TOTAL: int | None = None
@@ -440,5 +510,13 @@ if __name__ == "__main__":
         for k, v in best_trial.params.items():
             print(f"    {k:>14s} = {v:.6f}")
         print()
+
+        params_path = "logs/best_ekf_params.json"
+        with open(params_path, "w") as f:
+            json.dump(best_trial.params, f, indent=2)
+        print(f"  Full params written to {params_path}")
+
+        _apply_best_params_to_config(best_trial.params)
+
     print(f"  Database : {storage}")
     print(_hr("═"))
