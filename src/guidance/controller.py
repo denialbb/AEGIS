@@ -90,6 +90,28 @@ class GuidanceController:
         if nn_model is not None and inertia_tensor is None:
             raise ValueError("NNFeedforward requires inertia_tensor to be set")
 
+    def set_phase_gains(
+        self,
+        kp_pos_lateral: float,
+        kd_vel_lateral: float,
+        kp_pos_vertical: float | None = None,
+        kd_vel_vertical: float | None = None,
+    ) -> None:
+        """Update translation PD gains mid-flight for phase-specific behavior.
+
+        Args:
+            kp_pos_lateral: Proportional gain for lateral position error.
+            kd_vel_lateral: Derivative gain for lateral velocity error.
+            kp_pos_vertical: Optional vertical position gain (None = keep current).
+            kd_vel_vertical: Optional vertical velocity gain (None = keep current).
+        """
+        self.kp_pos_lateral = float(kp_pos_lateral)
+        self.kd_vel_lateral = float(kd_vel_lateral)
+        if kp_pos_vertical is not None:
+            self.kp_pos_vertical = float(kp_pos_vertical)
+        if kd_vel_vertical is not None:
+            self.kd_vel_vertical = float(kd_vel_vertical)
+
     def reset(self) -> None:
         """Resets the internal state of the controller and ADRC if active."""
         if self.adrc is not None:

@@ -258,6 +258,11 @@ class MissionDirector:
         # Landing timer (initialised each run in loop.py)
         self._landed_timer: float = 0.0
 
+        # Phase-entry tracking for horizontal-target blending
+        self._phase_entry_ticks: int = 0
+        self._phase_entry_horizontal: np.ndarray | None = None
+        self._early_translation: bool = False
+
     # ------------------------------------------------------------------
     # Glideslope guidance
     # ------------------------------------------------------------------
@@ -268,6 +273,7 @@ class MissionDirector:
         floor_alt: float,
         max_descent_rate: float,
         a_avail: float,
+        horizontal_target: np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Generate a target state for vertical descent using a sqrt profile.
@@ -281,13 +287,19 @@ class MissionDirector:
             floor_alt: altitude [m] this phase descends toward
             max_descent_rate: structural / terminal-velocity cap [m/s]
             a_avail: net upward acceleration from TWR [m/s²]
+            horizontal_target: optional (2,) target for (north, east).
+                               If None, defaults to the landing pad [0, 0].
 
         Returns:
             target_state: (6,) [x, y, z, vx, vy, vz]
         """
         est_alt = float(np.dot(state_vector[:3], self.up_vector))
         target = np.zeros(6)
-        target[:3] = est_alt * self.up_vector
+        if horizontal_target is not None:
+            target[:2] = horizontal_target
+            target[2] = est_alt * self.up_vector[2]
+        else:
+            target[:3] = est_alt * self.up_vector
 
         alt_above_floor = max(est_alt - floor_alt, 0.0)
         desired_speed = min(

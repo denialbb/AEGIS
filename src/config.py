@@ -219,6 +219,49 @@ GLIDESLOPE_RATE_HOVER = 10.0  # [m/s]
 GLIDESLOPE_RATE_TERMINAL = 5.0  # [m/s]
 
 # ---------------------------------------------------------
+# Phase-Specific Horizontal Translation Gains (PD)
+# ---------------------------------------------------------
+# Phase-specific lateral PD gains for each descent phase.  During POWERED_DESCENT
+# the horizontal target is the current position (no position error), so only the
+# velocity-derivative term is active — low kd prevents thrust competition with
+# vertical braking.  During HOVER_TARGETING the vessel smoothly translates from
+# its current position to the pad [0, 0] — moderate kp + high kd for damped
+# convergence.  During TERMINAL_DESCENT the vessel holds position over the pad.
+
+# POWERED_DESCENT — gentle lateral drift damping only
+PD_KP_POS_LATERAL = 0.2
+PD_KD_VEL_LATERAL = 0.5
+
+# HOVER_TARGETING — translate to pad with moderate stiffness
+HOVER_KP_POS_LATERAL = 0.5
+HOVER_KD_VEL_LATERAL = 3.0
+
+# TERMINAL_DESCENT — precision position hold over pad
+TERMINAL_KP_POS_LATERAL = 0.8
+TERMINAL_KD_VEL_LATERAL = 4.0
+
+# ---------------------------------------------------------
+# Horizontal Target Smoothing
+# ---------------------------------------------------------
+# Number of ticks to blend the horizontal target from the phase-entry position
+# to the landing pad [0, 0] when entering HOVER_TARGETING.  Prevents a step
+# change in position error that would cause an attitude jerk.
+TARGET_BLEND_TICKS = 30  # 3 seconds at 10 Hz
+
+# ---------------------------------------------------------
+# Early Translation During Braking
+# ---------------------------------------------------------
+# If the horizontal offset from the pad exceeds this threshold (m) at the start
+# of POWERED_DESCENT, gradually nudge toward the pad during the braking phase
+# instead of waiting for HOVER_TARGETING.  This prevents having too far to go
+# when the hover phase begins at ALT_HOVER (~200 m).
+PAD_OFFSET_EARLY_THRESHOLD = 500.0  # meters
+
+# Fraction of remaining offset to correct per tick during early translation.
+# At TARGET_HZ=10 Hz, alpha=0.03 reduces a 1000 m offset by ~30 m each second.
+PAD_OFFSET_EARLY_ALPHA = 0.03  # per-tick fraction
+
+# ---------------------------------------------------------
 # Guidance Controller Gains (PD)
 # ---------------------------------------------------------
 # Translation gains are broken into lateral and vertical components to correctly

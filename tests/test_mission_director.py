@@ -189,14 +189,16 @@ class TestMissionDirector:
         
         # With up_vector = [0,0,-1] (NED convention):
         # est_alt = dot([0,0,-100], [0,0,-1]) = 100
-        # target_state[:3] = 100 * [0,0,-1] = [0,0,-100]
+        # target_state[:2] = [0, 0] (pad, from default horizontal_target=None)
+        # target_state[2] = 100 * [0,0,-1][2] = -100
         # alt_above_floor = max(100-50, 0) = 50
-        # desired_speed = min(20.0, sqrt(2*15*50)) = min(20.0, 38.7) = 20.0
-        # target_state[3:] = -[0,0,-1] * 20.0 = [0,0,20.0]
+        # raw_desired_speed = min(20.0, sqrt(2*15*50)) = min(20.0, 38.7) = 20.0
+        # FRAME-002 clamp: current_speed = 10.0, desired = min(20.0, 9.0) = 9.0
+        # target_state[3:] = -[0,0,-1] * 9.0 = [0,0,9.0]
         assert target_state[0] == 0.0
         assert target_state[1] == 0.0
         assert target_state[2] == -100.0
-        assert target_state[5] == 20.0
+        assert target_state[5] == 9.0
 
     def test_mission_director_handles_hard_abort(self):
         """Test that MissionDirector properly handles HARD_ABORT state."""

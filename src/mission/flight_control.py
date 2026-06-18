@@ -551,6 +551,12 @@ def _transition_to(director: Any, new_state: str) -> None:
     })
     director.state = new_state
 
+    # Reset phase-tracking flags for horizontal-target blending
+    if new_state in ("POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"):
+        director._phase_entry_horizontal = None
+        director._phase_entry_ticks = director._dbg_tick_count
+        director._early_translation_checked = False
+
 
 def _check_landed(director: Any, est_alt: float, est_vz: float, data: dict, dt: float) -> None:
     """Update the landed timer and transition to LANDED if conditions hold.
@@ -588,6 +594,14 @@ def refresh_engine_data(director: Any, active_engines: list) -> None:
 #  Target-state computation (glideslope)
 # ---------------------------------------------------------------------------
 
+def _check_early_translation(director: Any, state_vector: np.ndarray) -> None:
+    """Lazy-init the early-translation flag on first tick of POWERED_DESCENT."""
+    if not getattr(director, '_early_translation_checked', False):
+        offset = float(np.linalg.norm(state_vector[:2]))
+        director._early_translation = offset > config.PAD_OFFSET_EARLY_THRESHOLD
+        director._early_translation_checked = True
+
+
 def compute_target_state(
     director: Any, state_vector: np.ndarray, a_avail: float
 ) -> np.ndarray:
@@ -598,31 +612,67 @@ def compute_target_state(
         return np.zeros(6)
 
     if director.state == "POWERED_DESCENT":
+        _check_early_translation(director, state_vector)
+
+        # During braking, horizontal target = current position — no position
+        # error, just damp lateral velocity.  All thrust goes to vertical
+        # deceleration.  If early_translation is active, nudge toward the pad.
+        horiz = state_vector[:2].copy()
+        if director._early_translation:
+            alpha = config.PAD_OFFSET_EARLY_ALPHA
+            horiz = (1.0 - alpha) * horiz + alpha * np.zeros(2)
+        director.guidance.set_phase_gains(
+            kp_pos_lateral=config.PD_KP_POS_LATERAL,
+            kd_vel_lateral=config.PD_KD_VEL_LATERAL,
+        )
         result = director._compute_glideslope_target(
             state_vector,
             floor_alt=config.ALT_HOVER,
             max_descent_rate=config.GLIDESLOPE_RATE_HOVER,
             a_avail=a_avail,
+            horizontal_target=horiz,
         )
         logger.debug(f"[COMPUTE_TARGET] PD_glideslope target={result}")
         return result
 
     if director.state == "HOVER_TARGETING":
+        # Lazy-init the blend start position on first tick after entry.
+        if director._phase_entry_horizontal is None:
+            director._phase_entry_horizontal = state_vector[:2].copy()
+            director._phase_entry_ticks = director._dbg_tick_count
+
+        # Blend from entry position to pad [0, 0] over TARGET_BLEND_TICKS.
+        entry = director._phase_entry_horizontal
+        elapsed = director._dbg_tick_count - director._phase_entry_ticks
+        blend = min(elapsed / config.TARGET_BLEND_TICKS, 1.0)
+        horiz = (1.0 - blend) * entry + blend * np.zeros(2)
+
+        director.guidance.set_phase_gains(
+            kp_pos_lateral=config.HOVER_KP_POS_LATERAL,
+            kd_vel_lateral=config.HOVER_KD_VEL_LATERAL,
+        )
         return director._compute_glideslope_target(
             state_vector,
             floor_alt=config.ALT_TERMINAL,
             max_descent_rate=config.GLIDESLOPE_RATE_HOVER,
             a_avail=a_avail,
+            horizontal_target=horiz,
         )
 
     if director.state == "TERMINAL_DESCENT":
         if director._landed_timer >= 5.0:
             return np.zeros(6)
+        # Target the pad directly — should already be near [0, 0] by this point.
+        director.guidance.set_phase_gains(
+            kp_pos_lateral=config.TERMINAL_KP_POS_LATERAL,
+            kd_vel_lateral=config.TERMINAL_KD_VEL_LATERAL,
+        )
         return director._compute_glideslope_target(
             state_vector,
             floor_alt=0.0,
             max_descent_rate=config.GLIDESLOPE_RATE_TERMINAL,
             a_avail=a_avail,
+            horizontal_target=np.zeros(2),
         )
 
     return np.zeros(6)
