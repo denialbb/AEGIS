@@ -245,6 +245,7 @@ class MissionDirector:
         self._dt_spike_count: int = 0
         self._alloc_cond: float = 0.0
         self._saturated_engines_set: set[int] = set()
+        self._diagnostic_axial_forces: np.ndarray = np.zeros(len(self.engines))
 
         # Debug attributes  (used by scripts/debug_telemetry_detail.py)
         self._dbg_actual_dt: float = 1.0 / config.TARGET_HZ
@@ -314,7 +315,10 @@ class MissionDirector:
         # → all throttles clamped to zero (see allocator.py reverse-thrust
         # logic at line 150).
         current_speed = -float(np.dot(state_vector[3:], self.up_vector))
-        desired_speed = min(desired_speed, max(current_speed * 0.9, 0.1))
+        # FRAME-003: target ratio 0.5 gives ~13 m/s equilibrium vs 0.9 giving ~65 m/s.
+        # A lower ratio means the velocity error (target - current) is larger,
+        # producing stronger braking from the PD controller.
+        desired_speed = min(desired_speed, max(current_speed * 0.5, 0.1))
         target[3:] = -self.up_vector * desired_speed
         return target
 

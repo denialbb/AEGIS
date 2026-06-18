@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 def make_telemetry_frame(
     director: Any, timestamp: float, data: dict, state_vector: np.ndarray, skip_predict: bool,
+    est_alt: float = 0.0, a_avail: float = 0.0, wrench_force: np.ndarray = np.zeros(3),
 ) -> TelemetryFrame:
     """Build a TelemetryFrame from the current loop state."""
     num = max(len(director.engines), 1)
@@ -23,6 +24,7 @@ def make_telemetry_frame(
         else np.zeros((num, 2))
     )
     fuel_state = build_fuel_state(director, num)
+    axial = getattr(director, "_diagnostic_axial_forces", np.zeros(num))
     return TelemetryFrame(
         timestamp=timestamp,
         altitude=data["noisy_alt"],
@@ -32,6 +34,10 @@ def make_telemetry_frame(
         fuel_state=fuel_state,
         gimbals=gimbals,
         skip_predict=skip_predict,
+        est_alt=est_alt,
+        a_avail=a_avail,
+        force_body=wrench_force,
+        axial_forces=axial,
     )
 
 

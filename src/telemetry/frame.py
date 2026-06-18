@@ -9,12 +9,16 @@ class TelemetryFrame:
     
     Attributes:
         timestamp: Simulation or system timestamp.
-        altitude: Current vehicle altitude.
+        altitude: Current vehicle noisy altitude (kRPC measurement).
         velocity: Vehicle velocity vector. Shape: (3,)
         noisy_accel: Noisy accelerometer readings. Shape: (3,)
         throttles: Commanded throttles. Shape: (N,) where N is engine count.
         gimbals: Commanded gimbal angles (pitch, yaw). Shape: (N, 2) where N is engine count.
         skip_predict: Flag indicating if Kalman filter predict step was skipped due to dt spike.
+        est_alt: EKF estimated altitude for comparison with measurement.
+        a_avail: Available vertical acceleration (m/s²).
+        force_body: Guidance force command body frame (3,).
+        axial_forces: Per-engine axial forces (N,).
     """
     timestamp: float
     altitude: float
@@ -24,6 +28,10 @@ class TelemetryFrame:
     fuel_state: np.ndarray
     gimbals: np.ndarray
     skip_predict: bool = False
+    est_alt: float = 0.0
+    a_avail: float = 0.0
+    force_body: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
+    axial_forces: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(1))
 
     def flatten(self) -> Dict[str, Any]:
         """
@@ -33,7 +41,9 @@ class TelemetryFrame:
         flat_data: Dict[str, Any] = {
             "timestamp": self.timestamp,
             "altitude": self.altitude,
-            "skip_predict": int(self.skip_predict),  # ISS-010: Log skip_predict for debugging
+            "est_alt": self.est_alt,
+            "a_avail": self.a_avail,
+            "skip_predict": int(self.skip_predict),
         }
         
         # Flatten velocity (3,)
@@ -68,6 +78,15 @@ class TelemetryFrame:
                 flat_data[f"gimbal_{i}_0"] = float(self.gimbals[i * 2])
                 flat_data[f"gimbal_{i}_1"] = float(self.gimbals[i * 2 + 1])
 
+        # Flatten guidance force body (3,)
+        for i, axis in enumerate(['x', 'y', 'z']):
+            if i < self.force_body.size:
+                flat_data[f"fb_{axis}"] = float(self.force_body[i])
+
+        # Flatten per-engine axial forces
+        for i in range(self.axial_forces.size):
+            flat_data[f"axial_{i}"] = float(self.axial_forces[i])
+
         return flat_data
     
     @classmethod
@@ -76,7 +95,7 @@ class TelemetryFrame:
         Get the ordered list of CSV headers based on engine count.
         """
         headers = [
-            "timestamp", "altitude", "skip_predict",
+            "timestamp", "altitude", "est_alt", "a_avail", "skip_predict",
             "vel_x", "vel_y", "vel_z",
             "accel_x", "accel_y", "accel_z"
         ]
@@ -86,4 +105,8 @@ class TelemetryFrame:
         for i in range(num_engines):
             headers.append(f"gimbal_{i}_0")
             headers.append(f"gimbal_{i}_1")
+        for i in range(3):
+            headers.append(f"fb_{['x','y','z'][i]}")
+        for i in range(num_engines):
+            headers.append(f"axial_{i}")
         return headers

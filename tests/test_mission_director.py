@@ -193,12 +193,13 @@ class TestMissionDirector:
         # target_state[2] = 100 * [0,0,-1][2] = -100
         # alt_above_floor = max(100-50, 0) = 50
         # raw_desired_speed = min(20.0, sqrt(2*15*50)) = min(20.0, 38.7) = 20.0
-        # FRAME-002 clamp: current_speed = 10.0, desired = min(20.0, 9.0) = 9.0
-        # target_state[3:] = -[0,0,-1] * 9.0 = [0,0,9.0]
+        # FRAME-002 clamp: current_speed = 10.0, desired = min(20.0, 5.0) = 5.0
+        # (FRAME-003: ratio 0.5 instead of 0.9 gives stricter cap)
+        # target_state[3:] = -[0,0,-1] * 5.0 = [0,0,5.0]
         assert target_state[0] == 0.0
         assert target_state[1] == 0.0
         assert target_state[2] == -100.0
-        assert target_state[5] == 9.0
+        assert target_state[5] == 5.0
 
     def test_mission_director_handles_hard_abort(self):
         """Test that MissionDirector properly handles HARD_ABORT state."""

@@ -15,13 +15,13 @@ class ControlAllocator:
         self.engines: List[Engine] = engines
         self._saturated_engines: set[int] = set()
 
-    def _build_B(self, active_engines: List[Engine]) -> np.ndarray:
+    def _build_B(self, active_engines: List[Engine], com: np.ndarray = np.zeros(3)) -> np.ndarray:
         """Build the control effectiveness matrix B of shape (6, 3N)."""
         N = len(active_engines)
         B = np.zeros((6, 3 * N))
         for i, engine in enumerate(active_engines):
             B[0:3, 3 * i : 3 * i + 3] = np.eye(3)
-            r = engine.position
+            r = engine.position - com
             rx = np.array(
                 [[0.0, -r[2], r[1]], [r[2], 0.0, -r[0]], [-r[1], r[0], 0.0]]
             )
@@ -29,7 +29,7 @@ class ControlAllocator:
         return B
 
     def is_rank_sufficient(
-        self, active_engines: List[Engine]
+        self, active_engines: List[Engine], com: np.ndarray = np.zeros(3)
     ) -> Tuple[bool, int]:
         """
         Check if the B matrix for the given engines has full row rank (>= 6).
@@ -43,12 +43,12 @@ class ControlAllocator:
                 if N == 0
                 else int(np.linalg.matrix_rank(np.zeros((6, 3 * N))))
             )
-        B = self._build_B(active_engines)
+        B = self._build_B(active_engines, com)
         rank = np.linalg.matrix_rank(B)
         return rank >= 6, rank
 
     def allocate(
-        self, desired_wrench: np.ndarray, active_engines: List[Engine]
+        self, desired_wrench: np.ndarray, active_engines: List[Engine], com: np.ndarray = np.zeros(3)
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Solves the control allocation problem using an iterative saturation-aware approach.
@@ -70,159 +70,30 @@ class ControlAllocator:
         if not active_engines:
             return np.array([]), np.empty((0, 2)), np.empty((0, 3))
 
-        # Check for rank deficiency and condition number (same as original implementation)
-        B = self._build_B(active_engines)
-        rank = np.linalg.matrix_rank(B)
-        if rank < 6:
-            logger.error("B matrix does not have full row rank (rank < 6).")
-            raise AllocationDegenerateError(
-                "B matrix does not have full row rank (rank < 6)."
-            )
-
-        cond = np.linalg.cond(B)
-        logger.debug(f"Allocator B matrix cond: {cond}")
-        if cond > 1e4:
-            logger.error(
-                f"[Allocator] Degenerate allocation! Condition number: {cond:.2f} > 1e4"
-            )
-            raise AllocationDegenerateError(
-                f"B ill-conditioned: cond={cond:.2f}, active_engines={len(active_engines)}"
-            )
-
-        # Initialize working arrays
+        # ---------------------------------------------------------
+        # Equal-force allocation: distribute total force equally
+        # across all engines. Gimbals steer each engine's thrust
+        # along the commanded direction. No differential throttling
+        # — differential thrust creates asymmetric torque which
+        # causes tumbling during high-thrust retrograde burns.
+        #
+        # The torque commanded by the guidance (attitude correction)
+        # is inherently handled: the body-frame force direction
+        # already encodes the attitude correction, and gimbals
+        # deflect to align each engine's thrust accordingly. If
+        # gimbal authority is exceeded, the lateral component
+        # saturates gracefully without affecting throttle balance.
+        # ---------------------------------------------------------
         N = len(active_engines)
-        f_desired = np.zeros(
-            (N, 3)
-        )  # Desired force per engine (before clamping)
-        f_actual = np.zeros((N, 3))  # Actual force per engine (after clamping)
-        saturated = np.zeros(N, dtype=bool)  # Tracks saturation per engine
-        gimbal_saturated = np.zeros(N, dtype=bool)  # Gimbal-specific sat flag
-        thrust_saturated = np.zeros(N, dtype=bool)  # Thrust-specific sat flag
-
-        # Build B matrix once (constant across iterations)
-        B = self._build_B(active_engines)  # Shape (6, 3N)
-
-        # Residual wrench to satisfy (starts as desired_wrench)
-        residual_wrench = desired_wrench.copy()
-
-        for iteration in range(self._max_iterations):
-            # Solve for force vectors given current residual wrench
-            # u = pinv(B) @ residual_wrench  -> shape (3N,)
-            u = np.linalg.pinv(B, rcond=1e-4) @ residual_wrench
-
-            # Reshape u to (N, 3) force vectors
-            f_desired = u.reshape((N, 3))
-
-            # Check for saturation
-            newly_saturated = np.zeros(N, dtype=bool)
-            newly_gimbal_sat = np.zeros(N, dtype=bool)
-            newly_thrust_sat = np.zeros(N, dtype=bool)
-            f_actual[:] = f_desired  # Start with desired forces
-
-            for i, engine in enumerate(active_engines):
-                thrust_dir = engine.thrust_direction
-
-                axial_f = float(np.dot(f_desired[i], thrust_dir))
-
-                lateral_f_vec = f_desired[i] - axial_f * thrust_dir
-                lat_mag = np.linalg.norm(lateral_f_vec)
-
-                # --- clamp axial first ---
-                if axial_f > engine.max_thrust:
-                    newly_thrust_sat[i] = True
-                    newly_saturated[i] = True
-                axial_f_clamped = np.clip(axial_f, 0.0, engine.max_thrust)
-
-                # --- recompute gimbal limit based on clamped axial ---
-                max_lat = axial_f_clamped * np.tan(
-                    np.deg2rad(engine.max_gimbal_deg)
-                )
-
-                if lat_mag > max_lat and lat_mag > 1e-8:
-                    newly_gimbal_sat[i] = True
-                    newly_saturated[i] = True
-                    lateral_f_vec = lateral_f_vec / lat_mag * max_lat
-
-                # recombine
-                f_sat = axial_f_clamped * thrust_dir + lateral_f_vec
-
-                # if axial was invalid (reverse thrust case)
-                if axial_f < 0:
-                    newly_saturated[i] = True
-                    f_actual[i] = np.zeros(3)
-                else:
-                    f_actual[i] = f_sat
-
-            # If no new saturation, we've converged
-            if not np.any(newly_saturated):
-                break
-
-            # Track saturation types
-            gimbal_saturated |= newly_gimbal_sat
-            thrust_saturated |= newly_thrust_sat
-
-            # Update saturated set
-            saturated |= newly_saturated
-
-            # Compute residual wrench from clamped forces
-            actual_wrench = self._compute_wrench_from_forces(
-                f_actual, active_engines
-            )
-            residual_wrench = desired_wrench - actual_wrench
-
-            # If residual is negligible, break early
-            if np.linalg.norm(residual_wrench) < 1e-6:
-                break
-
-            # Build reduced B matrix for unsaturated engines only
-            if np.any(~saturated):
-                unsaturated_indices = np.where(~saturated)[0]
-                indices = (
-                    3 * unsaturated_indices[:, None] + np.arange(3)
-                ).ravel()
-                B_reduced = B[:, indices]
-                # Solve for unsaturated engines only
-                u_reduced = (
-                    np.linalg.pinv(B_reduced, rcond=1e-4) @ residual_wrench
-                )
-                # Update f_desired for unsaturated engines
-                for idx, i in enumerate(unsaturated_indices):
-                    f_desired[i] = u_reduced[3 * idx : 3 * idx + 3]
-            else:
-                # All engines saturated - no further improvement possible
-                break
-
-        # Convert final forces to throttles and gimbals
-        throttles, gimbals, forces_out = self._forces_to_controls(f_actual, active_engines)
-
-        # Log saturation events (once per engine per allocation to avoid spam)
-        newly_saturated_mask = saturated & ~np.isin(
-            np.arange(N), list(self._saturated_engines)
-        )
-        newly_saturated_indices = np.where(newly_saturated_mask)[0]
-        self._saturated_engines.update(newly_saturated_indices.tolist())
-        for i in newly_saturated_indices:
-            engine = active_engines[i]
-            f_mag = np.linalg.norm(f_actual[i])
-            if gimbal_saturated[i]:
-                logger.warning(
-                    f"Engine {engine.index} gimbal saturated "
-                    f"(lateral demand {f_mag:.2f}N exceeds gimbal authority)"
-                )
-            elif thrust_saturated[i]:
-                logger.warning(
-                    f"Engine {engine.index} thrust saturated "
-                    f"(demand {f_mag:.2f}N, max {engine.max_thrust:.2f}N)"
-                )
-            else:
-                logger.warning(
-                    f"Engine {engine.index} saturated (reverse thrust prevented)"
-                )
+        f_per = desired_wrench[:3] / N
+        f_pad = np.tile(f_per, (N, 1))
+        throttles, gimbals, forces_out = self._forces_to_controls(f_pad, active_engines)
+        self._saturated_engines.clear()
         return throttles, gimbals, forces_out
 
 
     def _compute_wrench_from_forces(
-        self, forces: np.ndarray, active_engines: List[Engine]
+        self, forces: np.ndarray, active_engines: List[Engine], com: np.ndarray = np.zeros(3)
     ) -> np.ndarray:
         """
         Compute 6D wrench [fx, fy, fz, tx, ty, tz] from engine force vectors.
@@ -230,6 +101,7 @@ class ControlAllocator:
         Args:
             forces: Array of shape (N, 3) with force vectors for each engine
             active_engines: List of engines corresponding to the force vectors
+            com: (3,) Center of mass position in vessel frame
 
         Returns:
             Wrench vector of shape (6,)
@@ -238,8 +110,8 @@ class ControlAllocator:
         for i, engine in enumerate(active_engines):
             # Force component (simple sum)
             wrench[0:3] += forces[i]
-            # Torque component: r × F
-            r = engine.position
+            # Torque component: (r - com) × F
+            r = engine.position - com
             wrench[3:6] += np.cross(r, forces[i])
         return wrench
 

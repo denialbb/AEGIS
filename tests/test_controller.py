@@ -71,7 +71,8 @@ def test_controller_gyroscopic_term():
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
         gravity_ned=np.array([0.0, 0.0, -9.81]),
-        inertia_tensor=np.diag([1000.0, 500.0, 800.0])
+        inertia_tensor=np.diag([1000.0, 500.0, 800.0]),
+        max_torque=np.array([3200.0, 3200.0, 3200.0])
     )
 
     # Match target to current so pos_err and vel_err are zero -> a_cmd = -gravity

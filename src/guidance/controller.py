@@ -30,7 +30,8 @@ class GuidanceController:
                  ctm_calculator: CTMCalculator | None = None,
                  nn_model: NNFeedforward | None = None,
                  accel_clamp_factor: float = 1.5,
-                 max_torque: np.ndarray | None = None):
+                 max_torque: np.ndarray | None = None,
+                 torque_filter_alpha: float = 1.0):
         """
         Initializes the Guidance Controller with tunable gains.
 
@@ -90,6 +91,9 @@ class GuidanceController:
         if nn_model is not None and inertia_tensor is None:
             raise ValueError("NNFeedforward requires inertia_tensor to be set")
 
+        self.torque_filter_alpha = torque_filter_alpha
+        self._filtered_torque: np.ndarray = np.zeros(3)
+
     def set_phase_gains(
         self,
         kp_pos_lateral: float,
@@ -116,6 +120,7 @@ class GuidanceController:
         """Resets the internal state of the controller and ADRC if active."""
         if self.adrc is not None:
             self.adrc.reset()
+        self._filtered_torque = np.zeros(3)
 
     def compute_wrench(self,
                        current_state: np.ndarray,
@@ -277,6 +282,10 @@ class GuidanceController:
             -self.max_torque,
             self.max_torque,
         )
+
+        # ---- Low-pass filter to smooth torque commands ----
+        torque_body = self.torque_filter_alpha * torque_body + (1.0 - self.torque_filter_alpha) * self._filtered_torque
+        self._filtered_torque = torque_body
 
         # ---------------------------------------------------------
         # 4. ASSEMBLE WRENCH

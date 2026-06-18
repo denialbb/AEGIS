@@ -614,13 +614,15 @@ def compute_target_state(
     if director.state == "POWERED_DESCENT":
         _check_early_translation(director, state_vector)
 
-        # During braking, horizontal target = current position — no position
-        # error, just damp lateral velocity.  All thrust goes to vertical
-        # deceleration.  If early_translation is active, nudge toward the pad.
-        horiz = state_vector[:2].copy()
-        if director._early_translation:
-            alpha = config.PAD_OFFSET_EARLY_ALPHA
-            horiz = (1.0 - alpha) * horiz + alpha * np.zeros(2)
+        # Blend from entry position to pad [0, 0] over TARGET_BLEND_TICKS.
+        if director._phase_entry_horizontal is None:
+            director._phase_entry_horizontal = state_vector[:2].copy()
+            director._phase_entry_ticks = director._dbg_tick_count
+        entry = director._phase_entry_horizontal
+        elapsed = director._dbg_tick_count - director._phase_entry_ticks
+        blend = min(elapsed / config.TARGET_BLEND_TICKS, 1.0)
+        horiz = (1.0 - blend) * entry + blend * np.zeros(2)
+
         director.guidance.set_phase_gains(
             kp_pos_lateral=config.PD_KP_POS_LATERAL,
             kd_vel_lateral=config.PD_KD_VEL_LATERAL,
@@ -628,7 +630,7 @@ def compute_target_state(
         result = director._compute_glideslope_target(
             state_vector,
             floor_alt=config.ALT_HOVER,
-            max_descent_rate=config.GLIDESLOPE_RATE_HOVER,
+            max_descent_rate=config.GLIDESLOPE_RATE_POWERED_DESCENT,
             a_avail=a_avail,
             horizontal_target=horiz,
         )
@@ -710,6 +712,7 @@ def allocate_control(
     mass: float,
     desired_wrench: np.ndarray,
     data: dict,
+    com: np.ndarray = np.zeros(3),
 ) -> bool:
     """Allocate wrench to throttles & gimbals.  Returns False (and transitions to HARD_ABORT) on degenerate allocation."""
     if not active_engines:
@@ -721,7 +724,7 @@ def allocate_control(
     
     try:
         throttles, gimbals, forces_out = director.allocator.allocate(
-            desired_wrench, active_engines
+            desired_wrench, active_engines, com
         )
     except AllocationDegenerateError as e:
         logger.error("CRITICAL: %s. HARD ABORT triggered.", str(e))
@@ -750,6 +753,7 @@ def _apply_allocation(
 ) -> None:
     """Write throttle/gimbal commands to kRPC and update expected state."""
     alpha = 0.95
+    THROTTLE_RATE_LIMIT = 0.05
     expected_force = np.zeros(3)
     new_throttles: list[float] = []
     num_engines = max(len(director.engines), 1)
@@ -766,14 +770,30 @@ def _apply_allocation(
             engine.expected_throttle = alpha * engine.expected_throttle + (1.0 - alpha) * throttle
         new_throttles.append(engine.expected_throttle)
 
+        # Rate-limit throttle to prevent abrupt changes
+        if not is_first_allocation and hasattr(director, '_prev_throttles') and len(director._prev_throttles) > i:
+            prev = director._prev_throttles[i]
+            throttle = float(np.clip(throttle, prev - THROTTLE_RATE_LIMIT, prev + THROTTLE_RATE_LIMIT))
+
         logger.debug(f"[APPLY] Engine {i}: throttle_cmd={throttle:.3f}, throttle_exp={engine.expected_throttle:.3f}")
 
         if throttle > 1e-6 and engine.max_thrust > 0:
             gimballed_dir = forces_out[i] / (throttle * engine.max_thrust)
             expected_force += gimballed_dir * engine.max_thrust * engine.expected_throttle
 
-        current_gimbals[engine.index, :] = gimbals[i, :]
-        _set_engine_throttle_and_gimbal(director, engine, throttle, gimbals[i, :])
+        # Rate-limit gimbal to prevent rapid deflections
+        gimbal_rate_limit = np.deg2rad(20.0)
+        if not is_first_allocation and hasattr(director, '_prev_gimbals') and i < len(director._prev_gimbals):
+            prev_g = director._prev_gimbals[i]
+            gimbal_xy = np.clip(gimbals[i, :], prev_g - gimbal_rate_limit, prev_g + gimbal_rate_limit)
+        else:
+            gimbal_xy = gimbals[i, :]
+
+        current_gimbals[engine.index, :] = gimbal_xy
+        _set_engine_throttle_and_gimbal(director, engine, throttle, gimbal_xy)
+
+    director._prev_throttles = np.array([throttles[i] for i in range(len(active_engines))])
+    director._prev_gimbals = np.array([gimbals[i, :] for i in range(len(active_engines))])
 
     director.current_gimbals = current_gimbals
     director.expected_throttles = np.array(new_throttles)
@@ -786,6 +806,12 @@ def _apply_allocation(
 
     for i, engine in enumerate(active_engines):
         director._expected_forces[engine.index] = forces_out[i]
+
+    # Per-engine axial force for diagnostic logging
+    director._diagnostic_axial_forces = np.array([
+        float(np.dot(forces_out[i], engine.thrust_direction))
+        for i, engine in enumerate(active_engines)
+    ])
 
 
 def _set_engine_throttle_and_gimbal(

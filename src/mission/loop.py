@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 #  Loop infrastructure
 # ---------------------------------------------------------------------------
 
+
 def _check_paused(
     director: Any, last_met: float, paused_ticks: int, dt: float
 ) -> tuple[float, int, bool]:
@@ -37,23 +38,24 @@ def _check_paused(
     return current_met, paused_ticks, paused_ticks > 5
 
 
-def _handle_timing(director: Any, start_time: float, dt: float) -> tuple[bool, float]:
+def _handle_timing(
+    director: Any, start_time: float, dt: float
+) -> tuple[bool, float]:
     """Compute actual dt, detect dt spikes, set debug attrs.  Returns (skip_predict, ekf_dt)."""
     if director.last_tick_time > 0:
         actual_dt = start_time - director.last_tick_time
         if actual_dt > 5 * dt:
-            director.writer.log_event({
-                "type": "DT_SPIKE",
-                "actual_dt": actual_dt,
-                "expected_dt": dt,
-            })
-            skip_predict = True
+            director.writer.log_event(
+                {
+                    "type": "DT_SPIKE",
+                    "actual_dt": actual_dt,
+                    "expected_dt": dt,
+                }
+            )
             director.guidance.reset()
             director._dt_spike_count += 1
-            ekf_dt = dt
-        else:
-            skip_predict = False
-            ekf_dt = actual_dt
+        ekf_dt = actual_dt
+        skip_predict = False
     else:
         actual_dt = dt
         skip_predict = False
@@ -93,20 +95,30 @@ def _poll_telemetry(director: Any) -> dict:
     return data
 
 
-_ALLOCATION_INHIBITED = frozenset({
-    "HARD_ABORT", "STANDBY", "ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST",
-    "SENSOR_WARMUP", "LANDED",
-})
+_ALLOCATION_INHIBITED = frozenset(
+    {
+        "HARD_ABORT",
+        "STANDBY",
+        "ASCENT_COAST",
+        "DEORBIT_BURN",
+        "HYPERSONIC_COAST",
+        "SENSOR_WARMUP",
+        "LANDED",
+    }
+)
 
 # ---------------------------------------------------------------------------
 #  Debug helpers
 # ---------------------------------------------------------------------------
 
+
 def _maybe_log_tick(director: Any) -> None:
     """Log tick count every 10 iterations."""
     director._dbg_tick_count += 1
     if director._dbg_tick_count % 10 == 0:
-        logger.info("DEBUG: Tick %d, state=%s", director._dbg_tick_count, director.state)
+        logger.debug(
+            "Tick %d, state=%s", director._dbg_tick_count, director.state
+        )
 
 
 def _log_sleep(director: Any, dt: float, start_time: float) -> None:
@@ -122,6 +134,7 @@ def _log_sleep(director: Any, dt: float, start_time: float) -> None:
 #  Main entry point
 # ---------------------------------------------------------------------------
 
+
 def run_mission_loop(director: Any) -> bool:
     """Execute the main control loop.
 
@@ -135,8 +148,14 @@ def run_mission_loop(director: Any) -> bool:
     success = False
     ves_orientation = "stability"
 
-    signal.signal(signal.SIGINT, lambda sig, fr: setattr(director, "_exit_requested", True))
-    signal.signal(signal.SIGTERM, lambda sig, fr: setattr(director, "_exit_requested", True))
+    signal.signal(
+        signal.SIGINT,
+        lambda sig, fr: setattr(director, "_exit_requested", True),
+    )
+    signal.signal(
+        signal.SIGTERM,
+        lambda sig, fr: setattr(director, "_exit_requested", True),
+    )
 
     director.hud.start()
     director._landed_timer = 0.0
@@ -152,7 +171,9 @@ def run_mission_loop(director: Any) -> bool:
         start_time = time.time()
 
         # Pause detection
-        last_met, paused_ticks, is_paused = _check_paused(director, last_met, paused_ticks, dt)
+        last_met, paused_ticks, is_paused = _check_paused(
+            director, last_met, paused_ticks, dt
+        )
         if is_paused:
             time.sleep(dt)
             continue
@@ -169,7 +190,10 @@ def run_mission_loop(director: Any) -> bool:
 
         # Mission timeout (safety net)
         if time.time() - director._mission_start_time > config.MAX_MISSION_TIME:
-            logger.error("Mission timeout after %.0f s. Aborting.", config.MAX_MISSION_TIME)
+            logger.error(
+                "Mission timeout after %.0f s. Aborting.",
+                config.MAX_MISSION_TIME,
+            )
             director.writer.log_event({"type": "MISSION_TIMEOUT"})
             director.state = "HARD_ABORT"
             break
@@ -185,7 +209,9 @@ def run_mission_loop(director: Any) -> bool:
         if new_state == "HARD_ABORT":
             break
         if new_state == "LANDED":
-            flight_control.handle_landed_shutdown(director, [e for e in director.engines if e.active])
+            flight_control.handle_landed_shutdown(
+                director, [e for e in director.engines if e.active]
+            )
             success = True
             break
 
@@ -193,12 +219,16 @@ def run_mission_loop(director: Any) -> bool:
         flight_control.set_throttle_for_state(director)
 
         # 4. EKF estimate
-        state_vector = flight_control.update_estimator(director, data, ekf_dt, skip_predict)
+        state_vector = flight_control.update_estimator(
+            director, data, ekf_dt, skip_predict
+        )
         est_alt = float(np.dot(director.estimator.pos, director.up_vector))
         est_vz = float(np.dot(director.estimator.vel, director.up_vector))
 
         # 4b. Catastrophic impact detection
-        if flight_control.check_catastrophic_impact(director, data, est_alt, est_vz):
+        if flight_control.check_catastrophic_impact(
+            director, data, est_alt, est_vz
+        ):
             break
 
         # 5. IMU health
@@ -217,24 +247,32 @@ def run_mission_loop(director: Any) -> bool:
 
         # 9. Estimated altitude/velocity
         est_vz = float(np.dot(state_vector[3:], director.up_vector))
-        ves_orientation = flight_control.handle_sas(director, est_vz, ves_orientation)
+        ves_orientation = flight_control.handle_sas(
+            director, est_vz, ves_orientation
+        )
 
         # 10. STANDBY activation
         est_alt = float(np.dot(state_vector[:3], director.up_vector))
         flight_control.handle_standby(director, data, est_alt, est_vz)
 
         # 11. State machine
-        flight_control.process_state_transitions(director, est_alt, est_vz, data, dt)
+        flight_control.process_state_transitions(
+            director, est_alt, est_vz, data, dt
+        )
 
         # 12. Engine data refresh
         active = [e for e in director.engines if e.active]
         flight_control.refresh_engine_data(director, active)
 
         # 13. Available acceleration
-        a_avail = helpers.compute_a_avail(active, data["mass"], data["gravity_ned"])
+        a_avail = helpers.compute_a_avail(
+            active, data["mass"], data["gravity_ned"]
+        )
 
         # 14. Target state
-        target = flight_control.compute_target_state(director, state_vector, a_avail)
+        target = flight_control.compute_target_state(
+            director, state_vector, a_avail
+        )
 
         # 15. Terminal states
         if director.state == "LANDED":
@@ -246,7 +284,9 @@ def run_mission_loop(director: Any) -> bool:
             break
 
         # 16. Angular motion metric
-        director.total_angular_motion += float(np.linalg.norm(data["omega_body"])) * dt
+        director.total_angular_motion += (
+            float(np.linalg.norm(data["omega_body"])) * dt
+        )
 
         # 17. Guidance wrench
         wrench = director.guidance.compute_wrench(
@@ -262,17 +302,45 @@ def run_mission_loop(director: Any) -> bool:
         if director.state in flight_control.UNGUIDED_STATES:
             wrench = np.zeros(6)
 
+        wrench[3:6] = 0.0  # Zero torque — full vertical thrust
+
         # 18. Control allocation
         if active and director.state not in _ALLOCATION_INHIBITED:
-            flight_control.allocate_control(director, active, data["mass"], wrench, data)
+            com = np.zeros(3)
+            for attr in ['center_of_mass', 'CoM', 'com', 'COM']:
+                try:
+                    com = np.array(getattr(director.vessel, attr))
+                    break
+                except (AttributeError, TypeError):
+                    pass
+            if np.linalg.norm(com) < 0.001:
+                try:
+                    com = np.array(director.vessel.parts.center_of_mass())
+                except (AttributeError, TypeError):
+                    pass
+            flight_control.allocate_control(
+                director, active, data["mass"], wrench, data, com
+            )
 
         # 19. Telemetry frame
-        frame = ui.make_telemetry_frame(director, start_time, data, state_vector, skip_predict)
+        frame = ui.make_telemetry_frame(
+            director, start_time, data, state_vector, skip_predict,
+            est_alt=est_alt, a_avail=a_avail, wrench_force=wrench[:3],
+        )
         director.writer.log_tick(frame)
 
         # 20. HUD
-        ui.update_hud(director, data, state_vector, est_alt, est_vz,
-                      data["mass"], a_avail, active, skip_predict)
+        ui.update_hud(
+            director,
+            data,
+            state_vector,
+            est_alt,
+            est_vz,
+            data["mass"],
+            a_avail,
+            active,
+            skip_predict,
+        )
 
         # 21. Sleep
         _log_sleep(director, dt, start_time)
