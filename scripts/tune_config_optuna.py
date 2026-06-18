@@ -23,8 +23,8 @@ optuna.logging.set_verbosity(optuna.logging.INFO)
 # ------------------------------------------------------------
 CONFIG_KEY_TO_FILE: dict[str, str] = {
     # aegis.conf
-    "ALT_HYPERSONIC": "aegis.conf",
-    "ALT_POWERED_DESCENT": "aegis.conf",
+    # "ALT_HYPERSONIC": "aegis.conf",
+    # "ALT_POWERED_DESCENT": "aegis.conf",
     "ALT_HOVER": "aegis.conf",
     "ALT_TERMINAL": "aegis.conf",
     "GUIDANCE_KP_POS_LATERAL": "aegis.conf",
@@ -48,6 +48,13 @@ CONFIG_KEY_TO_FILE: dict[str, str] = {
     "TARGET_BLEND_TICKS": "glideslope.conf",
     "PAD_OFFSET_EARLY_THRESHOLD": "glideslope.conf",
     "PAD_OFFSET_EARLY_ALPHA": "glideslope.conf",
+    "GLIDESLOPE_TARGET_RATIO": "glideslope.conf",
+    "HOVER_APPROACH_K": "glideslope.conf",
+    "HOVER_APPROACH_MAX": "glideslope.conf",
+    "TERMINAL_APPROACH_K": "glideslope.conf",
+    "TERMINAL_APPROACH_MAX": "glideslope.conf",
+    # aegis.conf
+    # "REACTION_WHEEL_TORQUE_LIMIT": "aegis.conf",
     # sensors.conf
     "MAHONY_KP": "sensors.conf",
     "MAHONY_KI": "sensors.conf",
@@ -101,9 +108,7 @@ def run_simulation(trial: optuna.Trial) -> float:
     )
 
     # Target blending & early translation
-    config.TARGET_BLEND_TICKS = trial.suggest_int(
-        "TARGET_BLEND_TICKS", 10, 100
-    )
+    config.TARGET_BLEND_TICKS = trial.suggest_int("TARGET_BLEND_TICKS", 10, 100)
     config.PAD_OFFSET_EARLY_THRESHOLD = trial.suggest_float(
         "PAD_OFFSET_EARLY_THRESHOLD", 100.0, 1000.0
     )
@@ -111,11 +116,28 @@ def run_simulation(trial: optuna.Trial) -> float:
         "PAD_OFFSET_EARLY_ALPHA", 0.005, 0.1, log=True
     )
 
+    # GLIDESLOPE_TARGET_RATIO for FRAME-003 braking control
+    config.GLIDESLOPE_TARGET_RATIO = trial.suggest_float(
+        "GLIDESLOPE_TARGET_RATIO", 0.8, 1.0, log=True
+    )
+
+    # Velocity-based horizontal guidance gains
+    config.HOVER_APPROACH_K = trial.suggest_float(
+        "HOVER_APPROACH_K", 0.05, 0.2, log=True
+    )
+    config.HOVER_APPROACH_MAX = trial.suggest_float(
+        "HOVER_APPROACH_MAX", 5.0, 20.0
+    )
+    config.TERMINAL_APPROACH_K = trial.suggest_float(
+        "TERMINAL_APPROACH_K", 0.08, 0.2, log=True
+    )
+    config.TERMINAL_APPROACH_MAX = trial.suggest_float(
+        "TERMINAL_APPROACH_MAX", 2.0, 8.0
+    )
+
     # Mahony filter gains
     config.MAHONY_KP = trial.suggest_float("MAHONY_KP", 0.5, 10.0)
-    config.MAHONY_KI = trial.suggest_float(
-        "MAHONY_KI", 0.001, 0.1, log=True
-    )
+    config.MAHONY_KI = trial.suggest_float("MAHONY_KI", 0.001, 0.1, log=True)
 
     config.GUIDANCE_KP_POS_LATERAL = trial.suggest_float(
         "GUIDANCE_KP_POS_LATERAL", 0.1, 5.0
@@ -152,16 +174,25 @@ def run_simulation(trial: optuna.Trial) -> float:
         "GUIDANCE_KD_VEL_VERTICAL", 2.0, 100.0, log=True
     )
 
+    # Reaction wheel authority limit (aegis.conf)
+    config.REACTION_WHEEL_TORQUE_LIMIT = trial.suggest_float(
+        "REACTION_WHEEL_TORQUE_LIMIT", 0.05, 0.2, log=True
+    )
+
     # 2. Connect to kRPC and load save
-    address = os.environ.get("KRPC_ADDRESS", config.KRPC_DEFAULT_ADDRESS)
+    address = "172.22.80.1"
+    print(f"Connecting to kRPC at {address}...")
     try:
-        conn = krpc.connect(name=config.KRPC_CLIENT_NAME, address=address)
+        conn = krpc.connect(name="OPTUNA", address=address)
+        print("Connected to kRPC.")
     except Exception as e:
         print(f"Failed to connect to kRPC: {e}")
         return 1e6  # Extreme penalty if connection fails
 
+    print("Loading savefile aegis_tune_start...")
     try:
         conn.space_center.load("aegis_tune_start")
+        print("Save loaded successfully.")
     except Exception as e:
         print(f"Failed to load 'aegis_tune_start': {e}")
         conn.close()
@@ -181,6 +212,7 @@ def run_simulation(trial: optuna.Trial) -> float:
     vessel.control.toggle_action_group(config.ACTIVATION_ACTION_GROUP)
 
     start_time = time.time()
+
     max_duration = 300.0  # 5 minutes max per test
 
     # 4. Run loop
@@ -218,7 +250,6 @@ def run_simulation(trial: optuna.Trial) -> float:
     )
     current_pos = np.array(vessel.position(vessel.orbit.body.reference_frame))
     distance_to_pad = float(np.linalg.norm(current_pos - pad_pos))
-
     conn.close()
 
     trial.set_user_attr("landing_distance", round(distance_to_pad, 2))
@@ -373,10 +404,8 @@ if __name__ == "__main__":
         print(f"\n  Full params written to {params_path}")
 
         # Auto-apply best params to the appropriate .conf files
-        _apply_best_params_to_config(best_trial.params)
+        # _apply_best_params_to_config(best_trial.params)
 
-        print(f"\n{'='*60}")
-        print(
-            f"  Best params applied to src/config/ and logs/best_params.json"
-        )
-        print(f"{'='*60}\n")
+        # print(f"\n{'='*60}")
+        # print(f"  Best params applied to src/config/ and logs/best_params.json")
+        # print(f"{'='*60}\n")
