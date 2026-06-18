@@ -330,6 +330,13 @@ def _do_activation(director: Any, est_alt: float, est_vz: float) -> None:
     logger.info("AEGIS Activated. Smart Routing initialized.")
     director.writer.log_event({"type": "ACTIVATION"})
 
+    # Throttle limit at zero FIRST — prevents any burn when engines
+    # are activated with throttle=1.0 below.
+    for e in director.engines:
+        engine_obj = director._safe_engine_access(e.part)
+        if engine_obj:
+            engine_obj.thrust_limit = 0.0
+
     for e in director.engines:
         _activate_single_engine(director, e)
         e.active = True
@@ -341,12 +348,6 @@ def _do_activation(director: Any, est_alt: float, est_vz: float) -> None:
     director._warmup_bg_accum = np.zeros(3)
     director._warmup_ba_accum = np.zeros(3)
     director._warmup_sample_count = 0
-
-    # Throttle down all engines — guidance is inhibited during warmup.
-    for e in director.engines:
-        engine_obj = director._safe_engine_access(e.part)
-        if engine_obj:
-            engine_obj.thrust_limit = 0.0
 
     if config.USE_SAS:
         director.vessel.control.sas = True
@@ -366,9 +367,16 @@ def _init_mahony_from_truth(director: Any) -> None:
     Called on the first tick of SENSOR_WARMUP so the filter starts at the
     actual vessel attitude instead of the identity quaternion, eliminating
     the ~1s convergence delay.
+
+    Also disables the accelerometer-based correction during the warmup
+    phases (SENSOR_WARMUP + ESTIMATOR_WARMUP) because the vessel is in free
+    fall — specific force ≈ 0, so the correction is driven entirely by
+    velocity-differentiation noise, causing rapid random-walk drift.
+    Correction is re-enabled when the state transitions to POWERED_DESCENT.
     """
     truth_q = director.sensors.get_truth_attitude()
     director.sensors.attitude_estimator.quaternion = truth_q
+    director.sensors.attitude_estimator.disable_correction()
     logger.info("Mahony initialised from kRPC truth attitude q=%s", truth_q)
 
 
@@ -413,7 +421,15 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
         bg_mean: np.ndarray = bg_accum / count
         ba_mean: np.ndarray = ba_accum / count
 
-        director.estimator.bg = bg_mean
+        # FRAME-004: Do NOT use the warmup gyro bias estimate.
+        # The SAS retrograde hold actively rotates the vessel during warmup,
+        # so the gyro measures actual rotation, not bias.  Using this as
+        # bias would subtract the vessel's own rotation from future gyro
+        # readings, causing the Mahony to fail to track attitude changes
+        # → rapid drift → 180° attitude flip.
+        # The EKF estimates gyro bias in its 12-state vector (states 7-9)
+        # via the measurement update — it converges naturally.
+        director.estimator.bg = np.zeros(3)
         director.estimator.ba = ba_mean
         director.estimator.P[6:9, 6:9] = (
             np.eye(3) * config.SENSOR_WARMUP_GYRO_BIAS_SIGMA**2
@@ -460,7 +476,7 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
 
 
 def _activate_single_engine(director: Any, e: Any) -> None:
-    """Activate a single kRPC engine: set throttle, enable independent control, toggle trim."""
+    """Activate a single kRPC engine: enable independent throttle."""
     engine_obj = director._safe_engine_access(e.part)
     if not engine_obj:
         return
@@ -487,11 +503,16 @@ def process_state_transitions(
     if director.state == "ESTIMATOR_WARMUP":
         director._warmup_ticks = getattr(director, "_warmup_ticks", 0) + 1
         if director._warmup_ticks >= config.ESTIMATOR_WARMUP_TICKS:
+            director.sensors.attitude_estimator.enable_correction()
             _transition_to(director, "POWERED_DESCENT")
         return
 
     if director.state == "ASCENT_COAST" and est_vz < 0:
-        _transition_to(director, "HYPERSONIC_COAST" if est_alt > config.ALT_HYPERSONIC else "POWERED_DESCENT")
+        if est_alt > config.ALT_HYPERSONIC:
+            _transition_to(director, "HYPERSONIC_COAST")
+        else:
+            director.sensors.attitude_estimator.enable_correction()
+            _transition_to(director, "POWERED_DESCENT")
         return
 
     if director.state == "DEORBIT_BURN" and est_alt < config.ALT_HYPERSONIC:
@@ -499,6 +520,7 @@ def process_state_transitions(
         return
 
     if director.state == "HYPERSONIC_COAST" and est_alt < config.ALT_POWERED_DESCENT:
+        director.sensors.attitude_estimator.enable_correction()
         _transition_to(director, "POWERED_DESCENT")
         return
 

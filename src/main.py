@@ -294,6 +294,15 @@ class MissionDirector:
             max_descent_rate,
             math.sqrt(2.0 * a_avail * alt_above_floor),
         )
+        # FRAME-002: The glideslope target speed must never exceed the current
+        # descent rate.  With the correct retrograde attitude (nose ≈ NED -Z),
+        # a NED upward acceleration (negative Z) is required for braking.
+        # If target_speed > current_speed, the PD velocity error commands
+        # downward acceleration → a_cmd_body Y negative → reverse thrust
+        # → all throttles clamped to zero (see allocator.py reverse-thrust
+        # logic at line 150).
+        current_speed = -float(np.dot(state_vector[3:], self.up_vector))
+        desired_speed = min(desired_speed, max(current_speed * 0.9, 0.1))
         target[3:] = -self.up_vector * desired_speed
         return target
 

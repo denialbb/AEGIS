@@ -25,7 +25,7 @@ TARGET_HZ = 10.0
 # (inertia-scaled PD + gyroscopic feedforward per ADR-028).  SAS and our
 # controller fight for the same engine gimbals, so disabling SAS gives us
 # full authority — at the cost of requiring well-tuned attitude gains.
-USE_SAS = False
+USE_SAS = True
 
 # Enable SAS in prograde mode during ascent for a stable test start.
 # Operates independently of USE_SAS — this is always active unless set False.

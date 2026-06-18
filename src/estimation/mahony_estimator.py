@@ -45,8 +45,19 @@ class MahonyAttitudeEstimator:
         self.integral_error: np.ndarray = np.zeros(3)
 
         self._external_bg: np.ndarray = np.zeros(3)
+        self._correction_enabled: bool = True
 
         logger.info(f"Initialized MahonyAttitudeEstimator kp={self.kp} ki={self.ki}")
+
+    # ────────────────────────────────────────────────────────────────
+    #  CORRECTION TOGGLE
+    # ────────────────────────────────────────────────────────────────
+
+    def enable_correction(self) -> None:
+        self._correction_enabled = True
+
+    def disable_correction(self) -> None:
+        self._correction_enabled = False
 
     # ────────────────────────────────────────────────────────────────
     #  BIAS FEEDBACK FROM EKF
@@ -105,7 +116,7 @@ class MahonyAttitudeEstimator:
         #   Measured gravity direction in body frame (inverted specific force)
         f_norm: float = float(np.linalg.norm(f_body))
         error: np.ndarray = np.zeros(3)
-        if f_norm > 1e-3:
+        if self._correction_enabled and f_norm > 0.5:
             f_unit_body: np.ndarray = -f_body / f_norm
             error = np.cross(g_expected_body, f_unit_body)
 
@@ -136,6 +147,7 @@ class MahonyAttitudeEstimator:
         logger.debug(
             f"Mahony: ω=[{omega_body[0]:.3f},{omega_body[1]:.3f},{omega_body[2]:.3f}] "
             f"err=[{error[0]:.3f},{error[1]:.3f},{error[2]:.3f}] "
+            f"|f|={f_norm:.3f} "
             f"q=[{self.quaternion[0]:.3f},{self.quaternion[1]:.3f},"
             f"{self.quaternion[2]:.3f},{self.quaternion[3]:.3f}]"
         )
@@ -154,6 +166,7 @@ class MahonyAttitudeEstimator:
         self.quaternion = np.array([0.0, 0.0, 0.0, 1.0])
         self.integral_error = np.zeros(3)
         self._external_bg = np.zeros(3)
+        self._correction_enabled = True
 
 
 def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:

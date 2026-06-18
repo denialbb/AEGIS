@@ -78,17 +78,36 @@ class SensorModels:
         """
         Read the kRPC rotation and convert to [x,y,z,w] (scipy convention).
 
-        kRPC ``flight.rotation`` returns a Euler-angle triplet, NOT a
-        quaternion.  We reconstruct a quaternion via
-        ``R.from_euler('YXZ', (y, x, z))`` which matches the KSP
-        heading-pitch-roll convention.  If the stream returns a
-        4-element sequence we fall back to a direct cast.
+        ………………………… CONVENTION TRAP …………………………
+        kRPC ``flight.rotation`` can return EITHER 3 Euler angles (heading,
+        pitch, roll) OR a 4-element quaternion depending on the kRPC version.
+
+        * When returning 3 Euler angles, kRPC provides the rotation from
+          NED→body (i.e. the Euler angles that describe how the NED axes
+          are rotated to align with the vessel body).
+        * When returning a 4-element quaternion, kRPC provides the rotation
+          from body→NED (i.e. the orientation of the body axes *in* NED).
+
+        ``R.from_euler("YXZ", (heading, pitch, roll))`` reconstructs the
+        NED→body rotation (matching the KSP heading-pitch-roll convention).
+        This is the INVERSE of what the Mahony filter, EKF and guidance
+        controller expect (they all require body→NED).  Hence the ``.inv()``.
+
+        If the stream returns a 4-element sequence we pass it through
+        directly — kRPC already returns it as body→NED.
+        …………………………………………………………………………
+
+        Returns
+        -------
+        np.ndarray
+            Quaternion ``[x, y, z, w]`` in scipy convention, representing
+            the body→NED rotation (consistent with the rest of the pipeline).
         """
         raw = self.attitude_stream()
         try:
             euler = tuple(float(v) for v in raw)
             if len(euler) == 3:
-                rot = R.from_euler("YXZ", euler, degrees=True)
+                rot = R.from_euler("YXZ", euler, degrees=True).inv()
                 return rot.as_quat()
         except (TypeError, ValueError):
             pass
@@ -187,6 +206,18 @@ class SensorModels:
         logger.debug(
             f"Gravity NED: [{gravity_ned[0]:.3f}, {gravity_ned[1]:.3f}, {gravity_ned[2]:.3f}]"
         )
+        # ── Anti-flip guard (safety net for FRAME-004) ──────────────
+        # Use |dot| to handle sign-ambiguity: q and -q are the same
+        # rotation but have dot = -1.  A true 120°+ error gives
+        # |dot| < 0.5.  (dot = cos(θ/2))
+        dot_q = float(np.dot(krpc_att, mahony_attitude))
+        if abs(dot_q) < 0.5:
+            logger.warning(
+                f"ATT-FLIP: dot={dot_q:.4f} — resetting Mahony to kRPC truth"
+            )
+            self.attitude_estimator.quaternion = krpc_att.copy()
+            self.attitude_estimator.integral_error = np.zeros(3)
+            mahony_attitude = krpc_att.copy()
 
         return (
             noisy_alt,
