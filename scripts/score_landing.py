@@ -61,7 +61,8 @@ def score_file(csv_path: str) -> None:
     total_thr = 0.0
     for r in rows:
         for e in range(num_eng):
-            v = float(r.get(f"throttle_{e}", 0))
+            raw_val = r.get(f"throttle_{e}", 0)
+            v = float(raw_val) if raw_val else 0.0
             if v > 0.01:
                 total_thr += v
 

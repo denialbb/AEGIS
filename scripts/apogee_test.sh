@@ -22,10 +22,10 @@ except Exception as e:
     print("Ensure KSP is running with kRPC server enabled.")
     sys.exit(1)
 
-# Load the savefile "AEGIS-1"
+# Load the savefile "AEGIS MK2"
 try:
-    print("Loading savefile AEGIS-1...")
-    conn.space_center.load("AEGIS-1")
+    print("Loading savefile AEGIS MK2...")
+    conn.space_center.load("AEGIS MK2")
     time.sleep(2.0)  # Let physics settle after load
     print("Save loaded successfully.")
 except Exception as e:

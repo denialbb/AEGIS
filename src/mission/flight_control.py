@@ -137,17 +137,18 @@ def check_imu_health(director: Any) -> None:
 #  Fuel-state check
 # ---------------------------------------------------------------------------
 
-def check_fuel_state(director: Any) -> None:
+def check_fuel_state(director: Any, alt: float = 0.0) -> None:
     """Deactivate engines that have run out of fuel."""
     for e in director.engines:
         engine_obj = director._safe_engine_access(e.part)
         if e.active and engine_obj and not engine_obj.has_fuel:
-            director.writer.log_event({
-                "type": "FUEL_EXHAUSTION",
-                "engine_index": e.index,
-            })
-            logger.error("Engine %d ran out of fuel!", e.index)
             e.active = False
+            if alt > 15.0:
+                director.writer.log_event({
+                    "type": "FUEL_EXHAUSTION",
+                    "engine_index": e.index,
+                })
+                logger.error("Engine %d ran out of fuel!", e.index)
 
 # ---------------------------------------------------------------------------
 #  Fault Detection & Isolation
@@ -294,6 +295,12 @@ def _sas_standard(director: Any, est_vz: float, ves_orientation: str) -> str:
     if not config.USE_SAS:
         return ves_orientation
 
+    if director.state in ("HOVER_TARGETING", "TERMINAL_DESCENT", "TERMINAL_LANDING"):
+        if ves_orientation != "off":
+            director.vessel.control.sas = False
+            return "off"
+        return "off"
+
     threshold = 40
     if est_vz > threshold and ves_orientation != "prograde":
         director.vessel.control.sas_mode = director.conn.space_center.SASMode.prograde
@@ -403,10 +410,13 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
 
     # Accel bias: at rest, f_body = -R(q)⁻¹ · g_ned.
     #   bias = f_measured - f_expected
-    #        = f_measured + R(q)⁻¹ · g_ned
-    rot_bw = R.from_quat(data["attitude"])
-    g_body = rot_bw.inv().apply(data["gravity_ned"])
-    ba_accum += data["sf_body"] + g_body
+    if data.get("situation") in ("landed", "pre_launch", "splashed"):
+        rot_bw = R.from_quat(data["attitude"])
+        g_body = rot_bw.inv().apply(data["gravity_ned"])
+        ba_accum += data["sf_body"] + g_body
+    else:
+        # In free fall, expected specific force is roughly 0
+        ba_accum += data["sf_body"]
 
     count += 1
     director._warmup_bg_accum = bg_accum
@@ -565,17 +575,40 @@ def _check_landed(director: Any, est_alt: float, est_vz: float, data: dict, dt: 
     the timer-based check using estimated altitude/velocity.
     """
     if data["situation"] in ("landed", "splashed", "pre_launch"):
-        logger.info("Vessel on ground (kRPC situation=%s).", data["situation"])
-        _transition_to(director, "LANDED")
+        if est_vz < -20.0:
+            logger.error(
+                "KRP reports '%s' but est_vz=%.0f — treating as crash.",
+                data["situation"],
+                est_vz,
+            )
+            director.writer.log_event(
+                {
+                    "type": "CATASTROPHIC_FAILURE",
+                    "situation": data["situation"],
+                    "descent_rate": est_vz,
+                }
+            )
+            director.state = "HARD_ABORT"
+            return
+        # Allow timer to continue
+        pass
+        
+    director._landed_timer += dt
+    
+    if director._landed_timer < 3.0:
         return
+        
+    pitch = director.vessel.flight().pitch
+    roll = director.vessel.flight().roll
+    if abs(pitch) > 45.0 or abs(roll) > 45.0:
+        logger.error(f"Vessel tipped over on landing! pitch={pitch:.1f}, roll={roll:.1f}")
+        _transition_to(director, "HARD_ABORT")
+        return
+
     vel_ok = abs(est_vz) < config.LANDED_VEL_THRESHOLD
     alt_ok = abs(data["noisy_alt"]) < config.LANDED_ALT_THRESHOLD
-    if vel_ok and alt_ok:
-        director._landed_timer += dt
-    else:
-        director._landed_timer = max(0.0, director._landed_timer - dt)
-    if director._landed_timer >= 5.0:
-        logger.info("Touchdown confirmed (timer=%.3fs). Landing.", director._landed_timer)
+    if data["situation"] in ("landed", "splashed", "pre_launch") or (vel_ok and alt_ok):
+        logger.info("Touchdown confirmed. Landing.")
         _transition_to(director, "LANDED")
 
 # ---------------------------------------------------------------------------
@@ -638,44 +671,62 @@ def compute_target_state(
         return result
 
     if director.state == "HOVER_TARGETING":
-        # Lazy-init the blend start position on first tick after entry.
-        if director._phase_entry_horizontal is None:
-            director._phase_entry_horizontal = state_vector[:2].copy()
-            director._phase_entry_ticks = director._dbg_tick_count
-
-        # Blend from entry position to pad [0, 0] over TARGET_BLEND_TICKS.
-        entry = director._phase_entry_horizontal
-        elapsed = director._dbg_tick_count - director._phase_entry_ticks
-        blend = min(elapsed / config.TARGET_BLEND_TICKS, 1.0)
-        horiz = (1.0 - blend) * entry + blend * np.zeros(2)
+        # Velocity-based horizontal guidance: target_vh = APPROACH_K * to_pad, capped at APPROACH_MAX.
+        # This eliminates position-blend lag and directly commands velocity toward the pad.
+        to_pad = -state_vector[:2]  # vector from current pos to pad [0, 0]
+        target_vh = config.HOVER_APPROACH_K * to_pad
+        vh_mag = float(np.linalg.norm(target_vh))
+        if vh_mag > config.HOVER_APPROACH_MAX:
+            target_vh = (target_vh / vh_mag) * config.HOVER_APPROACH_MAX
 
         director.guidance.set_phase_gains(
             kp_pos_lateral=config.HOVER_KP_POS_LATERAL,
             kd_vel_lateral=config.HOVER_KD_VEL_LATERAL,
         )
-        return director._compute_glideslope_target(
+        # Build target state: horizontal position = current (we're commanding velocity, not position)
+        # horizontal velocity = target_vh, vertical from glideslope
+        target = np.zeros(6)
+        target[:2] = state_vector[:2]  # position target = current (velocity-based)
+        target[2] = state_vector[2] * director.up_vector[2]
+        target[3:5] = target_vh
+        # Vertical target from glideslope
+        vs_target = director._compute_glideslope_target(
             state_vector,
             floor_alt=config.ALT_TERMINAL,
             max_descent_rate=config.GLIDESLOPE_RATE_HOVER,
             a_avail=a_avail,
-            horizontal_target=horiz,
+            horizontal_target=None,  # vertical only
         )
+        target[5] = vs_target[5]
+        return target
 
     if director.state == "TERMINAL_DESCENT":
         if director._landed_timer >= 5.0:
             return np.zeros(6)
-        # Target the pad directly — should already be near [0, 0] by this point.
+        # Velocity-based horizontal guidance with tighter gains
+        to_pad = -state_vector[:2]
+        target_vh = config.TERMINAL_APPROACH_K * to_pad
+        vh_mag = float(np.linalg.norm(target_vh))
+        if vh_mag > config.TERMINAL_APPROACH_MAX:
+            target_vh = (target_vh / vh_mag) * config.TERMINAL_APPROACH_MAX
+
         director.guidance.set_phase_gains(
             kp_pos_lateral=config.TERMINAL_KP_POS_LATERAL,
             kd_vel_lateral=config.TERMINAL_KD_VEL_LATERAL,
         )
-        return director._compute_glideslope_target(
+        target = np.zeros(6)
+        target[:2] = state_vector[:2]
+        target[2] = state_vector[2] * director.up_vector[2]
+        target[3:5] = target_vh
+        vs_target = director._compute_glideslope_target(
             state_vector,
             floor_alt=0.0,
             max_descent_rate=config.GLIDESLOPE_RATE_TERMINAL,
             a_avail=a_avail,
-            horizontal_target=np.zeros(2),
+            horizontal_target=None,
         )
+        target[5] = vs_target[5]
+        return target
 
     return np.zeros(6)
 

@@ -47,7 +47,11 @@ class SensorModels:
         self.last_ut: float | None = None
 
         self.gyro_sensor = GyroSensor(conn, vessel, ned_frame, up_vector)
-        self.accel_sensor = AccelerometerSensor(conn, vessel, ned_frame, up_vector)
+        self.accel_sensor = AccelerometerSensor(
+            conn, vessel, ned_frame, up_vector,
+            shared_ut_stream=self.ut_stream,
+            shared_vel_stream=self.velocity_stream,
+        )
 
         self.attitude_estimator = MahonyAttitudeEstimator(
             kp=config.MAHONY_KP if hasattr(config, 'MAHONY_KP') else 2.0,
@@ -180,9 +184,28 @@ class SensorModels:
         # NOTE: gyroscope “raw” data includes noise but does not include bias correction.
 
 
-        # ── Mahony filter update (attitude for EKF + guidance) ───────
+        # ── Mahony filter update (currently bypassed — see TODO) ────
+        # TODO(MAHONY-DIVERGENCE): The Mahony attitude filter diverges during
+        # the high-thrust retrograde burn because the gyro bias from the
+        # warmup phase is zeroed (FRAME-004: SAS rotation makes warmup
+        # bias estimate unusable), and the EKF gyro bias converges too
+        # slowly.  The Mahony integral term then accumulates the uncorrected
+        # bias, causing the quaternion to drift 180° within ~3-5 seconds,
+        # triggering ATT-FLIP resets.  Each reset gives a correct attitude
+        # momentarily, but the filter immediately starts drifting again.
+        #
+        # The drift means compute_wrench() gets a wildly wrong body-frame
+        # rotation, producing near-zero axial force → zero braking.
+        #
+        # TEMPORARY FIX: Use kRPC truth attitude directly.  The Mahony
+        # is still updated for monitoring but its output is ignored.
+        #
+        # PROPER FIX: Either (a) pre-calibrate gyro bias during coast
+        # when SAS is not rotating the vessel, or (b) use the truth
+        # attitude stream directly as the "attitude estimate" since KSP
+        # provides it at 20+ Hz with no latency concerns.
         dt_mahony: float = 1.0 / config.TARGET_HZ
-        mahony_attitude: np.ndarray = self.attitude_estimator.update(
+        self.attitude_estimator.update(
             omega_body, sf_body_noisy, gravity_ned, dt_mahony
         )
 
@@ -200,29 +223,14 @@ class SensorModels:
         logger.debug(
             f"Gyro: [{omega_body[0]:.3f}, {omega_body[1]:.3f}, {omega_body[2]:.3f}] "
             f"SF body: [{sf_body_noisy[0]:.3f}, {sf_body_noisy[1]:.3f}, {sf_body_noisy[2]:.3f}] "
-            f"Attitude: [{mahony_attitude[0]:.3f}, {mahony_attitude[1]:.3f}, "
-            f"{mahony_attitude[2]:.3f}, {mahony_attitude[3]:.3f}]"
+            f"Attitude (truth): [{krpc_att[0]:.3f}, {krpc_att[1]:.3f}, "
+            f"{krpc_att[2]:.3f}, {krpc_att[3]:.3f}]"
         )
-        logger.debug(
-            f"Gravity NED: [{gravity_ned[0]:.3f}, {gravity_ned[1]:.3f}, {gravity_ned[2]:.3f}]"
-        )
-        # ── Anti-flip guard (safety net for FRAME-004) ──────────────
-        # Use |dot| to handle sign-ambiguity: q and -q are the same
-        # rotation but have dot = -1.  A true 120°+ error gives
-        # |dot| < 0.5.  (dot = cos(θ/2))
-        dot_q = float(np.dot(krpc_att, mahony_attitude))
-        if abs(dot_q) < 0.5:
-            logger.warning(
-                f"ATT-FLIP: dot={dot_q:.4f} — resetting Mahony to kRPC truth"
-            )
-            self.attitude_estimator.quaternion = krpc_att.copy()
-            self.attitude_estimator.integral_error = np.zeros(3)
-            mahony_attitude = krpc_att.copy()
 
         return (
             noisy_alt,
             sf_body_noisy,
-            mahony_attitude,
+            krpc_att,
             float(mass),
             aero_body,
             situation,

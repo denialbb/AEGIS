@@ -19,6 +19,7 @@ from src.common.engine import Engine
 from src.estimation.ekf import ErrorStateEKF
 from src.fdi.fdi import FaultDetectionIsolation
 from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
+from src.guidance.attitude import AttitudeController
 from src.guidance.controller import GuidanceController
 from src.telemetry.frame import TelemetryFrame
 from src.telemetry.writer import TelemetryWriter
@@ -107,6 +108,7 @@ class MissionDirector:
             )
         )
 
+        krpc_engine.thrust_limit = 1.0
         e = Engine(
             index=index,
             position=pos,
@@ -117,8 +119,12 @@ class MissionDirector:
             gimbal_x_axis=gx_v / np.linalg.norm(gx_v),
             gimbal_y_axis=gy_v / np.linalg.norm(gy_v),
         )
+        e.krpc_engine = krpc_engine
+        for module in part.modules:
+            if module.name == "ModuleGimbalTrim" and "Gimbal X" in module.fields:
+                e.gimbal_module = module
+                break
         logger.info("E%d %s max_gimbal=%s", e.index, e.position, e.max_gimbal_deg)
-        krpc_engine.thrust_limit = 1.0
         return e
 
     def _resolve_thrust_direction(self, part: Any, krpc_engine: Any) -> np.ndarray:
@@ -213,6 +219,7 @@ class MissionDirector:
             inertia_tensor=self.inertia_tensor,
             accel_clamp_factor=config.ACCEL_CLAMP_FACTOR,
         )
+        self.attitude = AttitudeController()
 
     # ------------------------------------------------------------------
     # Telemetry writer
@@ -275,6 +282,7 @@ class MissionDirector:
         max_descent_rate: float,
         a_avail: float,
         horizontal_target: np.ndarray | None = None,
+        min_descent_rate: float = 0.0,
     ) -> np.ndarray:
         """
         Generate a target state for vertical descent using a sqrt profile.
@@ -290,6 +298,10 @@ class MissionDirector:
             a_avail: net upward acceleration from TWR [m/s²]
             horizontal_target: optional (2,) target for (north, east).
                                If None, defaults to the landing pad [0, 0].
+            min_descent_rate: minimum target descent speed [m/s].
+                              Applied within the FRAME-003 cap.  Ensures
+                              the vehicle descends even when at near-zero
+                              vertical velocity.
 
         Returns:
             target_state: (6,) [x, y, z, vx, vy, vz]
@@ -303,9 +315,10 @@ class MissionDirector:
             target[:3] = est_alt * self.up_vector
 
         alt_above_floor = max(est_alt - floor_alt, 0.0)
+        safe_a_avail = a_avail * 0.7  # 30% margin for PD lag
         desired_speed = min(
             max_descent_rate,
-            math.sqrt(2.0 * a_avail * alt_above_floor),
+            math.sqrt(2.0 * safe_a_avail * alt_above_floor),
         )
         # FRAME-002: The glideslope target speed must never exceed the current
         # descent rate.  With the correct retrograde attitude (nose ≈ NED -Z),
@@ -318,7 +331,8 @@ class MissionDirector:
         # FRAME-003: target ratio 0.5 gives ~13 m/s equilibrium vs 0.9 giving ~65 m/s.
         # A lower ratio means the velocity error (target - current) is larger,
         # producing stronger braking from the PD controller.
-        desired_speed = min(desired_speed, max(current_speed * 0.5, 0.1))
+        # min_descent_rate ensures the vehicle descends even when hovering slowly.
+        desired_speed = min(desired_speed, max(current_speed * config.GLIDESLOPE_TARGET_RATIO, min_descent_rate))
         target[3:] = -self.up_vector * desired_speed
         return target
 

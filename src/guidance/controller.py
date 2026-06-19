@@ -74,6 +74,10 @@ class GuidanceController:
         else:
             self.max_torque = np.array(config.GUIDANCE_MAX_TORQUE, dtype=float)
 
+        self._filtered_horiz: np.ndarray = np.zeros(3)
+        self.horiz_accel_clamp = getattr(config, "HORIZ_ACCEL_CLAMP", 3.0)
+        self.horiz_accel_alpha = getattr(config, "HORIZ_ACCEL_ALPHA", 0.3)
+
         self.inertia_tensor: np.ndarray | None = None
         if inertia_tensor is not None:
             self.inertia_tensor = np.array(inertia_tensor, dtype=float)
@@ -121,6 +125,7 @@ class GuidanceController:
         if self.adrc is not None:
             self.adrc.reset()
         self._filtered_torque = np.zeros(3)
+        self._filtered_horiz = np.zeros(3)
 
     def compute_wrench(self,
                        current_state: np.ndarray,
@@ -187,16 +192,28 @@ class GuidanceController:
         
         logger.debug(f"[GUIDANCE] a_cmd_ned={a_cmd_ned} max_a_avail={max_a_avail}")
 
-        # Clamp a_cmd_ned magnitude to prevent the guidance from commanding
-        # accelerations far beyond the vehicle's physical capability. This keeps
-        # the attitude target from flipping wildly and lets the
-        # allocator's existing saturation handling do its job without the
-        # attitude-thrashing side effect.
+        # Decompose a_cmd_ned into vertical (braking) and horizontal (steering).
+        # Clamp only the vertical component to the acceleration limit so that
+        # horizontal position/velocity errors do not dilute braking thrust.
+        vert = np.dot(a_cmd_ned, up_vector) * up_vector
+        horiz = a_cmd_ned - vert
         if max_a_avail is not None and max_a_avail > 0.0:
-            a_norm = np.linalg.norm(a_cmd_ned)
-            limit = self.accel_clamp_factor * max_a_avail
-            if a_norm > limit:
-                a_cmd_ned = (a_cmd_ned / a_norm) * limit
+            v_norm = float(np.linalg.norm(vert))
+            # max_a_avail is NET upward acceleration. The engines must also counter gravity.
+            # So the absolute max engine acceleration is max_a_avail + gravity.
+            gross_a_avail = max_a_avail + float(np.linalg.norm(self.gravity_ned))
+            limit = self.accel_clamp_factor * gross_a_avail
+            if v_norm > limit:
+                vert = (vert / v_norm) * limit
+
+        # Clamp horizontal acceleration to prevent aggressive pitching (flips)
+        h_norm = float(np.linalg.norm(horiz))
+        max_lateral_accel = 15.0
+        if h_norm > max_lateral_accel:
+            horiz = (horiz / h_norm) * max_lateral_accel
+
+        a_cmd_ned = horiz + vert
+        self.last_a_cmd_ned = a_cmd_ned
 
         # ---------------------------------------------------------
         # 2. FRAME ROTATION (NED -> Body)

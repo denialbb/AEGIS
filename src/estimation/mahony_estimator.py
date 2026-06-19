@@ -116,7 +116,18 @@ class MahonyAttitudeEstimator:
         #   Measured gravity direction in body frame (inverted specific force)
         f_norm: float = float(np.linalg.norm(f_body))
         error: np.ndarray = np.zeros(3)
-        if self._correction_enabled and f_norm > 0.5:
+        # Auto-disable correction when specific force is dominated by engine
+        # thrust rather than gravity.  f_body = a_body - g_body; during powered
+        # flight |a_body| >> |g| so f_body points along the thrust axis, not
+        # gravity.  The Mahoney correction would pull the attitude estimate
+        # toward the thrust direction → rapid drift → 180° flip.
+        # Threshold: |f| within 30% of |g| is assumed "near free-fall".
+        correction_valid: bool = (
+            self._correction_enabled
+            and f_norm > 0.5
+            and abs(f_norm - g_mag) < 0.3 * g_mag
+        )
+        if correction_valid:
             f_unit_body: np.ndarray = -f_body / f_norm
             error = np.cross(g_expected_body, f_unit_body)
 

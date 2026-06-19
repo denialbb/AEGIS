@@ -38,6 +38,7 @@ def make_telemetry_frame(
         a_avail=a_avail,
         force_body=wrench_force,
         axial_forces=axial,
+        position=state_vector[:2],
     )
 
 

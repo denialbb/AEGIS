@@ -65,12 +65,6 @@ CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "config")
 
 def run_simulation(trial: optuna.Trial) -> float:
     # 1. Sample hyperparameters
-    config.ALT_HYPERSONIC = trial.suggest_float(
-        "ALT_HYPERSONIC", 5000.0, 30000.0
-    )
-    config.ALT_POWERED_DESCENT = trial.suggest_float(
-        "ALT_POWERED_DESCENT", 1000.0, 5000.0
-    )
     config.ALT_HOVER = trial.suggest_float("ALT_HOVER", 100.0, 1000.0)
     config.ALT_TERMINAL = trial.suggest_float("ALT_TERMINAL", 10.0, 200.0)
 
@@ -89,7 +83,7 @@ def run_simulation(trial: optuna.Trial) -> float:
 
     # Phase-specific horizontal translation gains
     config.PD_KP_POS_LATERAL = trial.suggest_float(
-        "PD_KP_POS_LATERAL", 0.05, 2.0
+        "PD_KP_POS_LATERAL", 0.05, 4.0
     )
     config.PD_KD_VEL_LATERAL = trial.suggest_float(
         "PD_KD_VEL_LATERAL", 0.1, 5.0, log=True
@@ -110,7 +104,7 @@ def run_simulation(trial: optuna.Trial) -> float:
     # Target blending & early translation
     config.TARGET_BLEND_TICKS = trial.suggest_int("TARGET_BLEND_TICKS", 10, 100)
     config.PAD_OFFSET_EARLY_THRESHOLD = trial.suggest_float(
-        "PAD_OFFSET_EARLY_THRESHOLD", 100.0, 1000.0
+        "PAD_OFFSET_EARLY_THRESHOLD", 80.0, 1000.0
     )
     config.PAD_OFFSET_EARLY_ALPHA = trial.suggest_float(
         "PAD_OFFSET_EARLY_ALPHA", 0.005, 0.1, log=True
@@ -189,12 +183,12 @@ def run_simulation(trial: optuna.Trial) -> float:
         print(f"Failed to connect to kRPC: {e}")
         return 1e6  # Extreme penalty if connection fails
 
-    print("Loading savefile aegis_tune_start...")
+    print("Loading savefile AEGIS MK2...")
     try:
-        conn.space_center.load("aegis_tune_start")
+        conn.space_center.load("AEGIS MK2")
         print("Save loaded successfully.")
     except Exception as e:
-        print(f"Failed to load 'aegis_tune_start': {e}")
+        print(f"Failed to load 'AEGIS MK2': {e}")
         conn.close()
         return 1e6
 
@@ -378,7 +372,7 @@ if __name__ == "__main__":
     )
 
     try:
-        study.optimize(run_simulation, n_trials=None)
+        study.optimize(run_simulation, n_trials=20)
     except KeyboardInterrupt:
         print("\nOptimization interrupted by user.")
 
@@ -404,8 +398,8 @@ if __name__ == "__main__":
         print(f"\n  Full params written to {params_path}")
 
         # Auto-apply best params to the appropriate .conf files
-        # _apply_best_params_to_config(best_trial.params)
+        _apply_best_params_to_config(best_trial.params)
 
-        # print(f"\n{'='*60}")
-        # print(f"  Best params applied to src/config/ and logs/best_params.json")
-        # print(f"{'='*60}\n")
+        print(f"\n{'='*60}")
+        print(f"  Best params applied to src/config/ and logs/best_params.json")
+        print(f"{'='*60}\n")

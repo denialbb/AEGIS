@@ -19,6 +19,7 @@ class TelemetryFrame:
         a_avail: Available vertical acceleration (m/s²).
         force_body: Guidance force command body frame (3,).
         axial_forces: Per-engine axial forces (N,).
+        position: EKF position (2,) for (north, east) distance-from-pad scoring.
     """
     timestamp: float
     altitude: float
@@ -32,6 +33,7 @@ class TelemetryFrame:
     a_avail: float = 0.0
     force_body: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
     axial_forces: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(1))
+    position: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(2))
 
     def flatten(self) -> Dict[str, Any]:
         """
@@ -87,6 +89,11 @@ class TelemetryFrame:
         for i in range(self.axial_forces.size):
             flat_data[f"axial_{i}"] = float(self.axial_forces[i])
 
+        # Flatten position (2,) — north, east for distance from pad
+        for i, axis in enumerate(['n', 'e']):
+            if i < self.position.size:
+                flat_data[f"pos_{axis}"] = float(self.position[i])
+
         return flat_data
     
     @classmethod
@@ -109,4 +116,5 @@ class TelemetryFrame:
             headers.append(f"fb_{['x','y','z'][i]}")
         for i in range(num_engines):
             headers.append(f"axial_{i}")
+        headers.extend(["pos_n", "pos_e"])
         return headers

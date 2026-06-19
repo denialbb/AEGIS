@@ -51,3 +51,5 @@ class Engine:
             gy /= np.linalg.norm(gy) + 1e-12
             self.gimbal_x_axis = gx
             self.gimbal_y_axis = gy
+        self.gimbal_module: Any = None
+        self.krpc_engine: Any = None

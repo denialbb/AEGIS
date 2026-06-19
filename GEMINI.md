@@ -35,6 +35,7 @@ If you need architectural context, read `docs/architecture_design.md`.
 
 # Python Environment & Tooling
 - **Execution Environment:** The project runs in a Linux environment inside the Arch WSL distribution (`wsl -d Arch`).
+- **Terminal Commands:** You are running on the Windows system outside of Arch. You MUST prepend `wsl -d Arch` to any bash commands or shell scripts you want to execute in the terminal (e.g., `wsl -d Arch ./scripts/run_and_score.sh`).
 - **Package Manager:** Dependency management is handled using `uv` (via WSL Arch).
 - **Virtual Environment:** Python execution, type-checking (`mypy`), and tests should be run using `.venv` inside WSL:
   - Run python: `wsl -d Arch .venv/bin/python`

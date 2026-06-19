@@ -302,7 +302,14 @@ def run_mission_loop(director: Any) -> bool:
         if director.state in flight_control.UNGUIDED_STATES:
             wrench = np.zeros(6)
 
-        wrench[3:6] = 0.0  # Zero torque — full vertical thrust
+        # Torque is zeroed for the equal-force allocator: it only consumes
+        # wrench[:3] (force).  Gimbals steer each engine toward the commanded
+        # body-frame force direction (already encodes attitude correction from
+        # a_cmd_ned → a_cmd_body).  Large attitude corrections are handled by
+        # the AttitudeController via SAS joystick commands, which cooperates
+        # with gimbal steering: gimbals provide fast local correction within
+        # their authority, while the attitude controller slews the whole vessel.
+        wrench[3:6] = 0.0
 
         # 18. Control allocation
         if active and director.state not in _ALLOCATION_INHIBITED:

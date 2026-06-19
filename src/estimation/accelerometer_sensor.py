@@ -13,7 +13,8 @@ class AccelerometerSensor:
     Provides cleaned specific force measurements (proper acceleration).
     """
     
-    def __init__(self, conn: Any, vessel: Any, ned_frame: Any, up_vector: np.ndarray):
+    def __init__(self, conn: Any, vessel: Any, ned_frame: Any, up_vector: np.ndarray,
+                 shared_ut_stream: Any = None, shared_vel_stream: Any = None):
         """
         Initializes the accelerometer sensor.
         
@@ -22,25 +23,31 @@ class AccelerometerSensor:
             vessel: active vessel object
             ned_frame: the custom NED landing pad reference frame
             up_vector: (3,) normalized vector pointing away from the center of the celestial body
+            shared_ut_stream: Optional pre-existing UT stream to avoid duplicate kRPC overhead.
+            shared_vel_stream: Optional pre-existing velocity stream to avoid duplicate kRPC overhead.
         """
         self.conn = conn
         self.vessel = vessel
         self.ned_frame = ned_frame
         self.up_vector = up_vector
         
-        # Initialize kRPC streams needed to compute acceleration
-        flight_ned = self.vessel.flight(self.ned_frame)
-        
-        # KSP doesn't provide a direct acceleration stream, so we stream velocity and UT to differentiate
-        self.velocity_stream = self.conn.add_stream(getattr, flight_ned, 'velocity')
-        self.ut_stream = self.conn.add_stream(getattr, self.conn.space_center, 'ut')
+        if shared_ut_stream is not None and shared_vel_stream is not None:
+            self.ut_stream = shared_ut_stream
+            self.velocity_stream = shared_vel_stream
+        else:
+            flight_ned = self.vessel.flight(self.ned_frame)
+            self.velocity_stream = self.conn.add_stream(getattr, flight_ned, 'velocity')
+            self.ut_stream = self.conn.add_stream(getattr, self.conn.space_center, 'ut')
         self.last_vel: np.ndarray | None = None
         self.last_ut: float | None = None
         
         # Noise parameters from config
         self.sigma_accel = config.SIGMA_ACCEL if hasattr(config, 'SIGMA_ACCEL') else 0.1  # m/s^2
 
-        # Isolated RNG for determinism
+        self.orbit_body = vessel.orbit.body
+        self.position_stream = self.conn.add_stream(
+            vessel.position, self.orbit_body.reference_frame
+        )
         self.rng = np.random.default_rng(config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 42)
 
         logger.info(f"Initialized AccelerometerSensor with sigma_accel={self.sigma_accel}")
@@ -76,8 +83,8 @@ class AccelerometerSensor:
         self.last_ut = ut
         
         # Compute gravity in NED from ECEF position.
-        body = self.vessel.orbit.body
-        pos_ecef = np.array(self.vessel.position(body.reference_frame))
+        body = self.orbit_body
+        pos_ecef = np.array(self.position_stream())
         gravity_ned = compute_gravity_ned(body, pos_ecef)
         
         # Proper acceleration (specific force) = coordinate acceleration - gravity

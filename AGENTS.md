@@ -6,6 +6,7 @@
 - Python: `.venv/bin/python src/main.py`
 - mypy: `.venv/bin/mypy .`
 - pytest: `.venv/bin/pytest tests/` — always specify a test file or directory; never run from the root folder.
+- Data analysis: `.venv/bin/python -c "$(cat script.py)"` or `.venv/bin/python script.py` using pandas, numpy
 - Do not use system Python or run from Windows directly.
 - The virtual environment is managed by `uv`, the modern Python package manager, ensuring fast, reliable dependency resolution in the Arch Linux WSL2 environment.
 
@@ -69,14 +70,19 @@ Code goes to `.agents/shared/queue/PENDING_REVIEW.md` following the template. Re
 - Open issues: `.agents/shared/context/OPEN_ISSUES.md`
 - Architecture doc: `docs/architecture_design.md`
 
-## Current Task: (none — all prior tasks complete)
+## Current Task: Velocity-based horizontal guidance for pad targeting
 
-### Completed Work
-- ✅ **True NED reference frame**: `ecef_to_ned()` in `src/common/geometry.py`, 68 parametrized tests, 10-check live KSP validation
-- ✅ **Sensor warmup phase**: `SENSOR_WARMUP` (30 ticks) + `ESTIMATOR_WARMUP` (100 ticks) states, Mahony truth-attitude init, gyro/accel bias accumulation
-- ✅ **Mission Director refactoring**: monolithic `main.py` → `src/mission/` submodules (loop.py, flight_control.py, helpers.py, ui.py, states.py)
-- ✅ **Gyroscope integration**: `GyroSensor` with noise/bias modeling, ω rotation from NED→body fixed (FRAME-001)
-- ✅ **Dynamic gravity modeling**: `body.gravitational_parameter / r²` in NED along +Z, verified [0,0,+g] at all latitudes
-- ✅ **12-state Error-State EKF**: position(3), velocity(3), gyro_bias(3), accel_bias(3), adaptive Q, alt+vel update
+### In Progress
+- Replace position-blend with velocity-based guidance in `HOVER_TARGETING` and `TERMINAL_DESCENT` to eliminate pad overshoot limit cycles (best pre-fix run: dist=12.0m, vh=24.8m/s at touchdown).
+
+### Completed
+- ✅ **Velocity-based guidance**: `HOVER_TARGETING` and `TERMINAL_DESCENT` now set `result[3:5] = APPROACH_K * to_pad`, capped at `APPROACH_MAX`. kp nullified by `horizontal_target=state_vector[:2]`.
+- ✅ **Config params**: Added `HOVER_APPROACH_K=0.08`, `HOVER_APPROACH_MAX=12.0`, `TERMINAL_APPROACH_K=0.12`, `TERMINAL_APPROACH_MAX=5.0`. Increased `HOVER_KD_VEL_LATERAL=2.0`. Lowered `ALT_POWERED_DESCENT=1600`, `ALT_HOVER=50`.
+- ✅ **Reaction wheel authority by phase**: `_set_rw_authority()` modulates RW torque limit (0.05–0.20) per phase.
+- ✅ **Catastrophic impact detection**: KSP "landed" with descent rate >20 m/s → HARD_ABORT.
+- ✅ **SAS simplified**: Locked to stability assist + per-phase RW authority.
+- ✅ **min_descent_rate**: Added to `_compute_glideslope_target` to ensure descent even at near-zero speed.
+- ✅ **mypy stubs**: Added missing type stubs for new config params.
+- ✅ **Unit tests**: 149 passed, 13 skipped (recording-dependent), 0 failures.
 - ✅ **Pre-existing test failures fixed**: 149 passed, 13 skipped (recording-dependent), 0 failures
 
