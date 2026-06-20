@@ -283,25 +283,12 @@ class GuidanceController:
                 target_up_ned = up_vector
 
         target_up_body = rot.inv().apply(target_up_ned)
-
-            # Cross product between current nose [0, 1, 0] and target up (NED) vector
-        # gives the rotation axis and magnitude (sin(theta)) to align them.
         err_axis = np.cross(np.array([0.0, 1.0, 0.0]), target_up_body)
 
         # ── Roll correction ────────────────────────────────────────────
-        # err_axis = cross(Y_body, target_up) has zero Y-component, so roll
-        # is unobservable from the pitch/yaw error alone.  Add an explicit
-        # roll-error that keeps the belly (body Z) pointing toward NED down.
-        z_down_body: np.ndarray = rot.inv().apply(np.array([0.0, 0.0, 1.0]))
-        # Desired belly direction = world-down projected onto the plane
-        # perpendicular to the thrust axis (target_up_body).
-        z_desired: np.ndarray = z_down_body - np.dot(z_down_body, target_up_body) * target_up_body
-        z_norm: float = float(np.linalg.norm(z_desired))
-        if z_norm > 1e-6:
-            z_desired = z_desired / z_norm
-            current_z: np.ndarray = np.array([0.0, 0.0, 1.0])
-            roll_err: float = float(np.dot(np.cross(current_z, z_desired), target_up_body))
-            err_axis[1] += roll_err * config.ROLL_CORRECTION_KP
+        # Keep roll rate near zero to prevent spinning, without forcing a specific degenerate roll angle
+        omega_body = angular_velocity if angular_velocity is not None else np.zeros(3)
+        err_axis[1] = -omega_body[1] * config.ROLL_KD
 
         if self.adrc is not None:
             # ---- ADRC attitude control (Phase 2, ADR-027) ----

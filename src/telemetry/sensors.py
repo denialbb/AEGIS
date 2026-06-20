@@ -35,8 +35,9 @@ class SensorModels:
         self.up_vector = up_vector
 
         flight_ned = self.vessel.flight(self.ned_frame)
+        flight_body = self.vessel.flight(self.vessel.orbit.body.reference_frame)
 
-        self.altitude_stream = self.conn.add_stream(getattr, flight_ned, 'mean_altitude')
+        self.altitude_stream = self.conn.add_stream(getattr, flight_body, 'mean_altitude')
         try:
             self.pad_mean_altitude = float(self.vessel.orbit.body.surface_height(config.TARGET_LAT, config.TARGET_LON))
         except (TypeError, ValueError, AttributeError):

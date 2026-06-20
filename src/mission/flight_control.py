@@ -584,9 +584,13 @@ def process_state_transitions(
         _transition_to(director, "HOVER_TARGETING")
         return
 
-    if director.state == "HOVER_TARGETING" and est_alt < config.ALT_TERMINAL:
-        _transition_to(director, "TERMINAL_DESCENT")
-        return
+    if director.state == "HOVER_TARGETING":
+        pos_horiz = director.estimator.pos[:2]
+        pad_horiz = config.LANDING_PAD_POSITION[:2]
+        dist = float(np.linalg.norm(pos_horiz - pad_horiz))
+        if est_alt < config.ALT_TERMINAL and dist < 2.0:
+            _transition_to(director, "TERMINAL_DESCENT")
+            return
 
     if director.state == "TERMINAL_DESCENT":
         _check_landed(director, est_alt, est_vz, data, dt)
@@ -677,6 +681,11 @@ def _check_landed(director: Any, est_alt: float, est_vz: float, data: dict, dt: 
         # Allow timer to continue
         pass
 
+    if data["situation"] in ("landed", "splashed", "pre_launch"):
+        logger.info("Physical touchdown detected. Landing immediately.")
+        _transition_to(director, "LANDED")
+        return
+
     director._landed_timer += dt
 
     if director._landed_timer < 3.0:
@@ -684,14 +693,13 @@ def _check_landed(director: Any, est_alt: float, est_vz: float, data: dict, dt: 
 
     # Use streams instead of calling vessel.flight() repeatedly
     pitch = director._pitch_stream()
-    roll = director._roll_stream()
-    if abs(pitch) > 45.0 or abs(roll) > 45.0:
-        logger.error(f"Vessel tipped over on landing! pitch={pitch:.1f}, roll={roll:.1f}")
+    if abs(pitch) > 45.0:
+        logger.error(f"Vessel tipped over! pitch={pitch:.1f}")
         _transition_to(director, "HARD_ABORT")
         return
 
     vel_ok = abs(est_vz) < config.LANDED_VEL_THRESHOLD
-    alt_ok = abs(data["noisy_alt"] - config.TOUCHDOWN_ALTITUDE) < config.LANDED_ALT_THRESHOLD
+    alt_ok = abs(est_alt - config.TOUCHDOWN_ALTITUDE) < config.LANDED_ALT_THRESHOLD
     if data["situation"] in ("landed", "splashed", "pre_launch") or (vel_ok and alt_ok):
         logger.info("Touchdown confirmed. Landing.")
         _transition_to(director, "LANDED")
@@ -961,11 +969,13 @@ def _apply_allocation(
             gimballed_dir = forces_out[i] / (throttle * engine.max_thrust)
             expected_force += gimballed_dir * engine.max_thrust * engine.expected_throttle
 
-        # Rate-limit gimbal to prevent rapid deflections
-        gimbal_rate_limit = np.deg2rad(20.0)
+        # Smooth gimbal deflections with EMA and tighter rate limit
+        gimbal_alpha = 0.6  # EMA smoothing factor
+        gimbal_rate_limit = np.deg2rad(2.0)  # Max 20 deg/sec
         if not is_first_allocation and hasattr(director, '_prev_gimbals') and i < len(director._prev_gimbals):
             prev_g = director._prev_gimbals[i]
-            gimbal_xy = np.clip(gimbals[i, :], prev_g - gimbal_rate_limit, prev_g + gimbal_rate_limit)
+            gimbal_smoothed = gimbal_alpha * prev_g + (1.0 - gimbal_alpha) * gimbals[i, :]
+            gimbal_xy = np.clip(gimbal_smoothed, prev_g - gimbal_rate_limit, prev_g + gimbal_rate_limit)
         else:
             gimbal_xy = gimbals[i, :]
 
