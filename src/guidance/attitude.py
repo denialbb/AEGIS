@@ -48,11 +48,11 @@ class AttitudeController:
 
         # torque_body[0] is X-axis torque (pitch). Positive = pitch down (KSP positive)
         # torque_body[2] is Z-axis torque (yaw). Positive = nose left. KSP positive yaw = nose right.
-        # torque_body[1] is Y-axis torque (roll). Positive = roll right (KSP positive)
+        # torque_body[1] is Y-axis torque (roll). Positive = roll left. KSP positive roll = roll right.
 
         raw_pitch = float(torque_body[0] / torque_scale)
         raw_yaw = float(-torque_body[2] / torque_scale)
-        raw_roll = float(torque_body[1] / torque_scale)
+        raw_roll = float(-torque_body[1] / torque_scale)
 
         # Limit reaction-wheel trim to prevent fighting SAS.
         # SAS stability_assist provides the primary attitude hold;

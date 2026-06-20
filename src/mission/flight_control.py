@@ -6,6 +6,7 @@ estimator integration, throttle control, and abort handling.
 
 import logging
 from typing import Any
+import time
 
 import math
 import numpy as np
@@ -690,7 +691,7 @@ def _check_landed(director: Any, est_alt: float, est_vz: float, data: dict, dt: 
         return
 
     vel_ok = abs(est_vz) < config.LANDED_VEL_THRESHOLD
-    alt_ok = abs(data["noisy_alt"]) < config.LANDED_ALT_THRESHOLD
+    alt_ok = abs(data["noisy_alt"] - config.TOUCHDOWN_ALTITUDE) < config.LANDED_ALT_THRESHOLD
     if data["situation"] in ("landed", "splashed", "pre_launch") or (vel_ok and alt_ok):
         logger.info("Touchdown confirmed. Landing.")
         _transition_to(director, "LANDED")
@@ -820,7 +821,7 @@ def compute_target_state(
         target[3:5] = target_vh
         vs_target = director._compute_glideslope_target(
             state_vector,
-            floor_alt=0.0,
+            floor_alt=config.TOUCHDOWN_ALTITUDE,
             max_descent_rate=config.GLIDESLOPE_RATE_TERMINAL,
             a_avail=a_avail,
             horizontal_target=None,
@@ -836,8 +837,27 @@ def compute_target_state(
 # ---------------------------------------------------------------------------
 
 def handle_landed_shutdown(director: Any, active_engines: list) -> None:
-    """Disable engines and thrust on landing."""
-    logger.info("Vessel is landed. Shutting down engines and concluding mission.")
+    """Disable engines and thrust on landing, ramping down smoothly over 1.5 seconds."""
+    logger.info("Vessel is landed. Ramping down engines and concluding mission.")
+    
+    # 1. Capture the initial thrust limits
+    initial_limits = {}
+    for engine in active_engines:
+        engine_obj = director._safe_engine_access(engine.part)
+        if engine_obj:
+            initial_limits[engine.index] = engine_obj.thrust_limit
+
+    # 2. Smoothly ramp down the thrust limits over 1.5 seconds (15 steps at 10Hz)
+    steps = 15
+    for step in range(steps + 1):
+        ratio = 1.0 - (step / steps)
+        for engine in active_engines:
+            engine_obj = director._safe_engine_access(engine.part)
+            if engine_obj and engine.index in initial_limits:
+                engine_obj.thrust_limit = initial_limits[engine.index] * ratio
+        time.sleep(0.1)
+
+    # 3. Final complete shutdown
     for engine in active_engines:
         engine_obj = director._safe_engine_access(engine.part)
         if engine_obj:

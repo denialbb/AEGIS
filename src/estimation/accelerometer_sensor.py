@@ -88,7 +88,11 @@ class AccelerometerSensor:
         gravity_ned = compute_gravity_ned(body, pos_ecef)
         
         # Proper acceleration (specific force) = coordinate acceleration - gravity
-        # This is what an accelerometer actually measures
+        # This is what an accelerometer actually measures.
+        # NOTE: kRPC also exposes `vessel.flight().g_force` which directly returns the
+        # G-force vector (proper acceleration / specific force) in g's. This could be used
+        # as a direct accelerometer reading in future revisions, rotated to the target
+        # frame and scaled by 9.81 m/s².
         perfect_specific_force_ned = perfect_accel_ned - gravity_ned
         
         if config.NOISELESS_MODE:

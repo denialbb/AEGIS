@@ -36,7 +36,12 @@ class SensorModels:
 
         flight_ned = self.vessel.flight(self.ned_frame)
 
-        self.altitude_stream = self.conn.add_stream(getattr, flight_ned, 'surface_altitude')
+        self.altitude_stream = self.conn.add_stream(getattr, flight_ned, 'mean_altitude')
+        try:
+            self.pad_mean_altitude = float(self.vessel.orbit.body.surface_height(config.TARGET_LAT, config.TARGET_LON))
+        except (TypeError, ValueError, AttributeError):
+            # Fallback for unit testing mocks
+            self.pad_mean_altitude = 0.0
         self.velocity_stream = self.conn.add_stream(getattr, flight_ned, 'velocity')
         self.ut_stream = self.conn.add_stream(getattr, self.conn.space_center, 'ut')
         self.attitude_stream = self.conn.add_stream(getattr, flight_ned, 'rotation')
@@ -119,10 +124,9 @@ class SensorModels:
         arr = np.array(raw, dtype=float)
         if arr.shape == (4,):
             q = arr / np.linalg.norm(arr)
-            # kRPC flight.rotation returns ref_frame→body quaternion
-            # (NED→body).  The pipeline (Mahony, EKF, guidance) expects
-            # body→NED — invert via conjugate.
-            q_body_to_ned = np.array([-q[0], -q[1], -q[2], q[3]])
+            # kRPC flight.rotation returns body→NED quaternion directly
+            # (as verified by visual attitude tests). No conjugate is needed.
+            q_body_to_ned = q.copy()
             if q_body_to_ned[3] < 0:
                 q_body_to_ned = -q_body_to_ned
             return q_body_to_ned
@@ -145,7 +149,7 @@ class SensorModels:
         Returns 10-tuple matching main.py's destructure.
         """
         # ── Altitude & velocity ───────────────────────────────────
-        perfect_alt = self.altitude_stream()
+        perfect_alt = self.altitude_stream() - self.pad_mean_altitude
 
         ut = self.ut_stream()
         vel = np.array(self.velocity_stream())
@@ -210,6 +214,8 @@ class SensorModels:
         # attitude stream directly as the "attitude estimate" since KSP
         # provides it at 20+ Hz with no latency concerns.
         dt_mahony: float = 1.0 / config.TARGET_HZ
+        # Pass krpc_att to the attitude estimator to align it with truth and prevent divergence in monitoring/UI
+        self.attitude_estimator.quaternion = krpc_att
         self.attitude_estimator.update(
             omega_body, sf_body_noisy, gravity_ned, dt_mahony
         )

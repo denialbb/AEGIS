@@ -46,15 +46,15 @@ class TestAttitudeMapping:
         torque_body = np.array([10.0, -20.0, 30.0])
         ctrl.update(d, torque_body, "HOVER_TARGETING", "stability")
         
-        # torque_scale=10, max_trim=0.5:
-        # pitch = clip(10.0/10, ±0.5) = 0.5
-        # yaw   = clip(-30.0/10, ±0.5) = -0.5
-        # roll  = clip(-20.0/10, ±0.5) = -0.5
+        # torque_scale=200.0, max_trim=0.15:
+        # pitch = clip(10.0/200, ±0.15) = 0.05
+        # yaw   = clip(-30.0/200, ±0.15) = -0.15
+        # roll  = clip(-(-20.0)/200, ±0.15) = 0.10
         # smoothing alpha=0.6 → first tick is 0.6 * cmd
 
-        expected_pitch = 0.6 * 0.5
-        expected_yaw = 0.6 * -0.5
-        expected_roll = 0.6 * -0.5
+        expected_pitch = 0.6 * 0.05
+        expected_yaw = 0.6 * -0.15
+        expected_roll = 0.6 * 0.10
 
         assert np.isclose(d.vessel.control.pitch, expected_pitch)
         assert np.isclose(d.vessel.control.yaw, expected_yaw)
