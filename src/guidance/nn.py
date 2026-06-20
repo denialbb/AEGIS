@@ -14,9 +14,9 @@ def _relu(x: np.ndarray) -> np.ndarray:
     return np.maximum(0.0, x)
 
 
-def _glorot_uniform(fan_in: int, fan_out: int) -> np.ndarray:
+def _glorot_uniform(fan_in: int, fan_out: int, rng: np.random.RandomState) -> np.ndarray:
     limit = np.sqrt(6.0 / (fan_in + fan_out))
-    return np.random.uniform(-limit, limit, (fan_in, fan_out))
+    return rng.uniform(-limit, limit, (fan_in, fan_out))
 
 
 class NNFeedforward:
@@ -62,15 +62,12 @@ class NNFeedforward:
             self.b3 = np.array(b3, dtype=float)
         else:
             rng = np.random.RandomState(42)
-            _old_state = np.random.get_state()
-            np.random.set_state(rng.get_state())
-            self.W1 = _glorot_uniform(_N_INPUT, _N_HIDDEN)
+            self.W1 = _glorot_uniform(_N_INPUT, _N_HIDDEN, rng)
             self.b1 = np.zeros(_N_HIDDEN)
-            self.W2 = _glorot_uniform(_N_HIDDEN, _N_HIDDEN)
+            self.W2 = _glorot_uniform(_N_HIDDEN, _N_HIDDEN, rng)
             self.b2 = np.zeros(_N_HIDDEN)
-            self.W3 = _glorot_uniform(_N_HIDDEN, _N_OUTPUT)
+            self.W3 = _glorot_uniform(_N_HIDDEN, _N_OUTPUT, rng)
             self.b3 = np.zeros(_N_OUTPUT)
-            np.random.set_state(_old_state)
 
         self.clamp = float(clamp)
         self.is_trained: bool = False
@@ -84,6 +81,8 @@ class NNFeedforward:
         h1 = _relu(state @ self.W1 + self.b1)
         h2 = _relu(h1 @ self.W2 + self.b2)
         out = h2 @ self.W3 + self.b3
+        # Handle NaN and inf values before clipping
+        out = np.nan_to_num(out, nan=0.0, posinf=self.clamp, neginf=-self.clamp)
         return np.clip(out, -self.clamp, self.clamp)
 
     def _pack(self) -> np.ndarray:
@@ -144,6 +143,13 @@ class NNFeedforward:
             raise ValueError(
                 f"y must have shape (N, {_N_OUTPUT}), got {y.shape}"
             )
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(
+                f"X and y must have the same number of samples, "
+                f"got X.shape={X.shape}, y.shape={y.shape}"
+            )
+        
+        logger.info(f"Starting NN training with {X.shape[0]} samples")
 
         x0 = self._pack()
         # Use 'trf' method for small datasets (lm requires more residuals than variables)
@@ -153,6 +159,7 @@ class NNFeedforward:
         )
         self._unpack(result.x)
         self.is_trained = True
+        logger.info(f"NN training completed. Success: {result.success}, Cost: {result.cost}")
         return {
             'success': result.success,
             'cost': result.cost,
@@ -219,13 +226,14 @@ def generate_training_data(
     y_list: list[np.ndarray] = []
     profiles: list[dict[str, float]] = []
 
-    for _ in range(n_trajectories):
+    for traj_idx in range(n_trajectories):
         err = np.zeros(3, dtype=float)
         omega = np.zeros(3, dtype=float)
         adrc.reset()
 
         dist_mag = rng.uniform(10.0, 100.0, 3)
-        dist_axis = rng.choice([0, 1, 2])
+        # Deterministically cycle through axes to ensure all axes are covered
+        dist_axis = traj_idx % 3  # Cycle through 0, 1, 2 for each trajectory
         dist_start = rng.randint(n_steps // 4, n_steps // 2)
 
         def disturbance(i: int) -> np.ndarray:

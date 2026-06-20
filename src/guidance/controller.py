@@ -1,7 +1,10 @@
 import numpy as np
+import logging
 from scipy.spatial.transform import Rotation as R  # type: ignore
 from src.guidance.adrc import ADRCController, CTMCalculator
 from src.guidance.nn import NNFeedforward
+
+logger = logging.getLogger(__name__)
 
 class GuidanceController:
     """
@@ -74,17 +77,27 @@ class GuidanceController:
         self.ctm_calculator: CTMCalculator | None = ctm_calculator
         if ctm_calculator is not None and inertia_tensor is None:
             raise ValueError("CTMCalculator requires inertia_tensor to be set")
+        if ctm_calculator is not None and adrc is None:
+            raise ValueError("CTMCalculator requires ADRC to be active (adrc must be set)")
 
         self.nn_model: NNFeedforward | None = nn_model
         if nn_model is not None and adrc is None:
             raise ValueError("NNFeedforward requires ADRC to be active (adrc must be set)")
         if nn_model is not None and inertia_tensor is None:
             raise ValueError("NNFeedforward requires inertia_tensor to be set")
+        if nn_model is not None and ctm_calculator is None:
+            raise ValueError("NNFeedforward requires CTMCalculator to be active")
+        # Warn if CTM is active but WSEF gains are configured (they will be unused)
+        if ctm_calculator is not None and (np.any(self.kp_att != 0.0) or np.any(self.kd_att != 0.0)):
+            logger.warning("CTMCalculator is active - WSEF kp_att/kd_att gains will be unused")
 
     def reset(self) -> None:
         """Resets the internal state of the controller and ADRC if active."""
         if self.adrc is not None:
             self.adrc.reset()
+        # Reset NN fallback tracking
+        self._nn_consecutive_issues = 0
+        self._nn_disabled = False
 
     def compute_wrench(self,
                        current_state: np.ndarray,
@@ -189,13 +202,23 @@ class GuidanceController:
                     err_axis, angular_velocity,
                 )
 
-            if self.nn_model is not None and self.nn_model.is_trained:
+            if self.nn_model is not None and self.nn_model.is_trained and not self._nn_disabled:
                 if angular_velocity is None:
                     raise ValueError("angular_velocity is required with NN feedforward")
                 z3_current = np.array([eso.z3 for eso in self.adrc.eso])
                 nn_state = np.concatenate([err_axis, angular_velocity, z3_current])
                 nn_correction = self.nn_model.predict(nn_state)
-                feedforward_torque += self.inertia_tensor @ nn_correction
+                
+                # Check for NN issues (NaN or clamping)
+                if np.any(np.isnan(nn_correction)) or np.any(np.abs(nn_correction) >= self.nn_model.clamp - 1e-6):
+                    self._nn_consecutive_issues += 1
+                    if self._nn_consecutive_issues >= self._nn_issue_threshold:
+                        self._nn_disabled = True
+                        logger.warning("NN feedforward disabled due to repeated NaN/clamping issues")
+                else:
+                    # Reset counter on good output
+                    self._nn_consecutive_issues = 0
+                    feedforward_torque += self.inertia_tensor @ nn_correction
 
             if self.ctm_calculator is not None or (
                 self.nn_model is not None and self.nn_model.is_trained
