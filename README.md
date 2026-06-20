@@ -39,23 +39,15 @@ Dual-file logging (ADR-013): per-tick CSV (`telemetry.csv`) for dense state snap
 ## 2. Real-World Inspiration
 
 <p float="left">
-  <img src="https://bobbyhadz.com/images/blog/python-print-tab/thumbnail.webp" width="33%" />
-  <img src="https://bobbyhadz.com/images/blog/what-aws-cdk-bootstrap-do/thumbnail.webp" width="33%" />
-  <img src="https://bobbyhadz.com/images/blog/aws-cdk-subnet-tags/thumbnail.webp" width="33%" />
+  <img src="docs/images/crew_dragon.jpg" width="33%" />
+  <img src="docs/images/crew_dragon_engines.jpg" width="33%" />
+  <img src="docs/images/blue_moon.png" width="33%" />
 </p>
 
-*Images displayed side‑by‑side using HTML tags in GitHub Markdown.*
+- *SpaceX Crew Dragon.*
+- *Blue Origin Blue Moon MK2 Lunar Lander concept.*
 
 To effectively test the control allocation algorithms, AEGIS expects a redundant, multi-engine vehicle layout. This design mimics real-world spacecraft that rely on differential throttling and gimbaling to maintain control after engine failures.
-
-![SpaceX Crew Dragon](docs/images/crew_dragon.jpg)
-*SpaceX Crew Dragon.*
-
-![SpaceX Crew Dragon Engines](docs/images/crew_dragon_engines.jpg)
-*Close-up of the SpaceX Crew Dragon's SuperDraco engine layout.*
-
-![Blue Moon Lander](docs/images/blue_moon.png)
-*Blue Origin Blue Moon MK2 Lunar Lander concept.*
 
 ## 3. Setup and Execution
 
