@@ -149,7 +149,7 @@ class ErrorStateEKF:
         # bg and ba drift as random walks — no deterministic change
 
         # ── 5. State-transition Jacobian F (12×12) ─────────────────
-        F: np.ndarray = self._build_F(rot_bw, dt)
+        F: np.ndarray = self._build_F(rot_bw, dt, f_corr_body=f_corr_body)
 
         # ── 6. Process-noise covariance Q (12×12) ──────────────────
         Q: np.ndarray = self._build_Q(dt, a_ned)
@@ -266,30 +266,45 @@ class ErrorStateEKF:
     def _pack_state_vector(self) -> np.ndarray:
         return np.concatenate([self.pos, self.vel])
 
-    def _build_F(self, rot_bw: R, dt: float) -> np.ndarray:
+    def _build_F(
+        self, rot_bw: R, dt: float, f_corr_body: np.ndarray | None = None,
+    ) -> np.ndarray:
         """
         12×12 error-state Jacobian.
 
-        ┌────────┬────────┬──────┬──────┐
-        │  I₃    │  I₃·dt │  0   │  0   │  δpos
-        │  0     │  I₃    │  0   │ −I₃·dt│  δvel   (accel bias → vel error)
-        │  0     │  0     │  I₃  │  0   │  δbg
-        │  0     │  0     │  0   │  I₃  │  δba
-        └────────┴────────┴──────┴──────┘
+        ┌────────┬────────┬──────────────────┬────────┐
+        │  I₃    │  I₃·dt │        0         │   0    │  δpos
+        │  0     │  I₃    │  −R·[f]×·dt²     │ −R·dt  │  δvel
+        │  0     │  0     │        I₃        │   0    │  δbg
+        │  0     │  0     │        0         │   I₃   │  δba
+        └────────┴────────┴──────────────────┴────────┘
 
-        Note: gyro bias error does NOT appear in δvel because the EKF
-        does not estimate attitude — the Mahony filter consumes bias-
-        corrected gyro and propagates attitude independently.
+        Gyro bias → velocity coupling:
+          δbg → integrated attitude error −δbg·dt → misrotated specific force
+          → wrong a_ned → δvel = −R·[f_corr]×·δbg·dt²
         """
         F: np.ndarray = np.eye(12)
 
         F[0:3, 3:6] = np.eye(3) * dt
 
+        R_mat: np.ndarray = rot_bw.as_matrix()
+
         # Accel bias is in body frame; when it's wrong, the rotated
         # specific force in NED frame is wrong by approximately
         # −R·δba, which propagates to velocity as −R·δba·dt.
-        R_mat: np.ndarray = rot_bw.as_matrix()
         F[3:6, 9:12] = -R_mat * dt
+
+        # Gyro bias → velocity: attitude error from bg accumulates as
+        # δθ = −δbg·dt, which rotates f_corr_body by δθ×f_corr_body.
+        # The NED-frame velocity error is R·(δθ×f_corr)·dt.
+        if f_corr_body is not None:
+            fx, fy, fz = f_corr_body
+            f_skew: np.ndarray = np.array([
+                [0.0, -fz,  fy],
+                [fz,  0.0, -fx],
+                [-fy,  fx,  0.0],
+            ])
+            F[3:6, 6:9] = -R_mat @ f_skew * (dt ** 2)
 
         return F
 

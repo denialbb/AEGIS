@@ -433,15 +433,13 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
         bg_mean: np.ndarray = bg_accum / count
         ba_mean: np.ndarray = ba_accum / count
 
-        # FRAME-004: Do NOT use the warmup gyro bias estimate.
-        # The SAS retrograde hold actively rotates the vessel during warmup,
-        # so the gyro measures actual rotation, not bias.  Using this as
-        # bias would subtract the vessel's own rotation from future gyro
-        # readings, causing the Mahony to fail to track attitude changes
-        # → rapid drift → 180° attitude flip.
-        # The EKF estimates gyro bias in its 12-state vector (states 7-9)
-        # via the measurement update — it converges naturally.
-        director.estimator.bg = np.zeros(3)
+        # Use the warmup gyro bias estimate as initial condition.
+        # The SAS prograde hold rotates the vessel during warmup, so the
+        # mean includes some actual rotation mixed with bias — but even a
+        # partially-correct bias is better than zero.  The EKF's new F-matrix
+        # coupling (δbg → δvel via R·[f]×·dt²) lets the measurement update
+        # refine the estimate during flight.
+        director.estimator.bg = bg_mean
         
         # FRAME-005: Do NOT use the warmup accel bias estimate if flying.
         # When hypersonic, the vessel is decelerating due to aerodynamic drag,
