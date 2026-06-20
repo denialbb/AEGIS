@@ -35,10 +35,16 @@ If you need architectural context, read `docs/architecture_design.md`.
 
 # Python Environment & Tooling
 - **Execution Environment:** The project runs in a Linux environment inside the Arch WSL distribution (`wsl -d Arch`).
+- **Terminal Commands:** You are running on the Windows system outside of Arch. You MUST prepend `wsl -d Arch` to any bash commands or shell scripts you want to execute in the terminal (e.g., `wsl -d Arch ./scripts/run_and_score.sh`).
 - **Package Manager:** Dependency management is handled using `uv` (via WSL Arch).
 - **Virtual Environment:** Python execution, type-checking (`mypy`), and tests should be run using `.venv` inside WSL:
   - Run python: `wsl -d Arch .venv/bin/python`
-  - Run mypy: `wsl -d Arch .venv/bin/mypy`
+  - Run mypy: `wsl -d Arch .venv/bin/mypy [files/dirs]` (to save time, run only on modified files or specific directories like `src/` rather than checking the entire codebase every time)
   - Run pytest: `wsl -d Arch .venv/bin/pytest`
   - **Run AEGIS**: Use the `./run.sh` script to run the main program (it handles dynamic KRPC host IP resolution).
+  - **KRPC Server IP**: The correct KRPC server IP is hardcoded as `172.22.80.1` in `src/config/kRPC.conf` (previously dynamically resolved).
+- **Testing Against Live KSP**: Always run `scripts/run_and_score.sh` (along with `scripts/trajectory_analysis.py` and `scripts/attitude_analysis.py`) when testing against live KSP. Also test frequently this way, using debug prints in the code to test assumptions and spot bugs early.
+
+# Communication Style
+- **No Exclamation Marks:** Do not use exclamation marks ('!') in your responses. Keep the tone professional and calm.
 

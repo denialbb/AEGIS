@@ -1,9 +1,12 @@
 import sys
 import time
+import logging
 import numpy as np
 from typing import Dict, Any, Optional, List
 
 from rich.console import Console, Group
+
+logger = logging.getLogger(__name__)
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -12,6 +15,7 @@ from rich.progress_bar import ProgressBar
 from rich import box
 
 import src.config as config
+from src.common.logger import suppress_stdout_logging
 
 
 class HudDisplay:
@@ -50,7 +54,15 @@ class HudDisplay:
         }
 
     def start(self) -> None:
-        if not config.HUD_ENABLED or not self._is_tty:
+        """Initialize and display the HUD if enabled and in a TTY."""
+        if not config.HUD_ENABLED:
+            logger.warning("HUD disabled by config (HUD_ENABLED=False)")
+            return
+        if not self._is_tty:
+            logger.warning(
+                "HUD disabled: stdout is not a TTY. "
+                "Run in a real terminal to see the HUD."
+            )
             return
         self._live = Live(
             console=self._console,
@@ -58,13 +70,16 @@ class HudDisplay:
             vertical_overflow="visible",
         )
         self._live.__enter__()
+        suppress_stdout_logging()
 
     def stop(self) -> None:
+        """Terminate the live HUD display and restore stdout logging."""
         if self._live is not None:
             self._live.__exit__(None, None, None)
             self._live = None
 
     def update(self, data: Dict[str, Any]) -> None:
+        """Update HUD data and refresh display if interval elapsed."""
         self._data.update(data)
         if self._live is None:
             return

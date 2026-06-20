@@ -38,6 +38,14 @@ Dual-file logging (ADR-013): per-tick CSV (`telemetry.csv`) for dense state snap
 
 ## 2. Real-World Inspiration
 
+<p float="left">
+  <img src="https://bobbyhadz.com/images/blog/python-print-tab/thumbnail.webp" width="33%" />
+  <img src="https://bobbyhadz.com/images/blog/what-aws-cdk-bootstrap-do/thumbnail.webp" width="33%" />
+  <img src="https://bobbyhadz.com/images/blog/aws-cdk-subnet-tags/thumbnail.webp" width="33%" />
+</p>
+
+*Images displayed side‑by‑side using HTML tags in GitHub Markdown.*
+
 To effectively test the control allocation algorithms, AEGIS expects a redundant, multi-engine vehicle layout. This design mimics real-world spacecraft that rely on differential throttling and gimbaling to maintain control after engine failures.
 
 ![SpaceX Crew Dragon](docs/images/crew_dragon.jpg)

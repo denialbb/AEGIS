@@ -8,7 +8,7 @@ def test_controller_initialization_with_inertia():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
         inertia_tensor=np.eye(3)
     )
     assert controller.inertia_tensor is not None
@@ -21,7 +21,7 @@ def test_controller_without_inertia():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([10.0, 10.0, 10.0]),
         kd_att=np.array([20.0, 20.0, 20.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
     )
     assert controller.inertia_tensor is None
 
@@ -32,7 +32,7 @@ def test_controller_inertia_torque_computation():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
         inertia_tensor=np.diag([1000.0, 500.0, 800.0])
     )
 
@@ -70,8 +70,9 @@ def test_controller_gyroscopic_term():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
-        inertia_tensor=np.diag([1000.0, 500.0, 800.0])
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
+        inertia_tensor=np.diag([1000.0, 500.0, 800.0]),
+        max_torque=np.array([3200.0, 3200.0, 3200.0])
     )
 
     # Match target to current so pos_err and vel_err are zero -> a_cmd = -gravity
@@ -102,9 +103,11 @@ def test_controller_gyroscopic_term():
     # target_up_world = normalize([0,0,9.81]) = [0,0,1] = up_vector
     # In body frame with nose-up attitude: target_up_body = [0,1,0]
     # err_axis = cross([0,1,0], [0,1,0]) = [0,0,0]
-    # torque = -J*Kd*omega + omega x (J*omega)
+    # However, err_axis[1] is now overridden to -omega[1] * config.ROLL_KD
     J = np.diag([1000.0, 500.0, 800.0])
-    tau_pd = -(J @ np.diag([6.0, 6.0, 6.0])) @ angular_velocity
+    import src.config as config
+    err_axis = np.array([0.0, -angular_velocity[1] * config.ROLL_KD, 0.0])
+    tau_pd = J @ (np.diag([9.0, 9.0, 9.0]) @ err_axis - np.diag([6.0, 6.0, 6.0]) @ angular_velocity)
     h = J @ angular_velocity
     tau_gyro = np.cross(angular_velocity, h)
     expected_torque = tau_pd + tau_gyro
@@ -117,7 +120,7 @@ def test_controller_requires_angular_velocity_with_inertia():
         kd_vel_lateral=10.0, kd_vel_vertical=40.0,
         kp_att=np.array([9.0, 9.0, 9.0]),
         kd_att=np.array([6.0, 6.0, 6.0]),
-        gravity=np.array([0.0, 0.0, -9.81]),
+        gravity_ned=np.array([0.0, 0.0, -9.81]),
         inertia_tensor=np.eye(3)
     )
 
@@ -147,6 +150,6 @@ def test_invalid_inertia_tensor_shape():
             kd_vel_lateral=10.0, kd_vel_vertical=40.0,
             kp_att=np.array([9.0, 9.0, 9.0]),
             kd_att=np.array([6.0, 6.0, 6.0]),
-            gravity=np.array([0.0, 0.0, -9.81]),
+            gravity_ned=np.array([0.0, 0.0, -9.81]),
             inertia_tensor=np.eye(4)
         )

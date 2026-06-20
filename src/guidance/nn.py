@@ -73,6 +73,18 @@ class NNFeedforward:
         self.is_trained: bool = False
 
     def predict(self, state: np.ndarray) -> np.ndarray:
+        """Compute network output for a single state vector.
+
+        Parameters
+        ----------
+        state: np.ndarray
+            Input vector of shape (9,) containing error, angular rate, and ESO state.
+
+        Returns
+        -------
+        np.ndarray
+            Clamped network output of shape (3,).
+        """
         if state.shape != (_N_INPUT,):
             raise ValueError(
                 f"NN state must have shape ({_N_INPUT},), "
@@ -129,10 +141,28 @@ class NNFeedforward:
         return (pred - y).ravel()
 
     def train(self,
-              X: np.ndarray,
-              y: np.ndarray,
-              max_nfev: int = 2000,
-              verbose: Literal[0, 1, 2] = 0) -> dict[str, Any]:
+                X: np.ndarray,
+                y: np.ndarray,
+                max_nfev: int = 2000,
+                verbose: Literal[0, 1, 2] = 0) -> dict[str, Any]:
+        """Train the neural network on a dataset.
+
+        Parameters
+        ----------
+        X: np.ndarray
+            Input matrix of shape (N, 9).
+        y: np.ndarray
+            Target matrix of shape (N, 3).
+        max_nfev: int, optional
+            Maximum number of function evaluations for optimizer.
+        verbose: Literal[0, 1, 2], optional
+            Verbosity level for ``scipy.optimize.least_squares``.
+
+        Returns
+        -------
+        dict
+            Mapping containing ``success``, ``cost``, ``nfev``, and ``njev``.
+        """
         from scipy.optimize import least_squares
 
         if X.ndim != 2 or X.shape[1] != _N_INPUT:

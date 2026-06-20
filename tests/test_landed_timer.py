@@ -35,20 +35,29 @@ class TestLandedTimer:
         flight = Mock()
         vessel.flight = Mock(return_value=flight)
         flight.velocity = [0.0, 0.0, 0.0]
+        flight.surface_altitude = 100.0
         vessel.inertia_tensor = [
             1000.0, 0.0, 0.0,
             0.0, 1000.0, 0.0,
             0.0, 0.0, 1000.0,
         ]
         part = Mock()
+        part.name = "liquidEngineMini.v2"
         part.engine = Mock()
         part.engine.max_thrust = 1000.0
+        part.engine.gimbal_range = 10.0
+        thruster_mock = Mock()
+        thruster_mock.initial_thrust_direction = Mock(return_value=(0.0, 0.0, -1.0))
+        thruster_mock.thrust_direction = Mock(return_value=(0.0, 0.0, -1.0))
+        part.engine.thrusters = [thruster_mock]
         part.position = Mock(return_value=[0.0, 0.0, 0.0])
+        part.reference_frame = Mock()
         part.modules = []
         vessel.parts.with_tag = Mock(return_value=[part])
         vessel.parts.engines = [part.engine]
         space_center.ReferenceFrame = Mock()
         space_center.ReferenceFrame.create_relative = Mock(return_value=Mock())
+        space_center.transform_direction = Mock(return_value=[0.0, 0.0, -1.0])
         return conn, vessel, space_center, body, flight, part
 
     @pytest.fixture

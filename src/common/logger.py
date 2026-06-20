@@ -3,6 +3,23 @@ import sys
 import os
 import src.config as config
 
+
+def suppress_stdout_logging() -> None:
+    """Remove all stdout/stderr StreamHandlers from the root logger.
+
+    Called after the HUD takes over the terminal so that subsequent
+    log messages don't corrupt the Rich display.  Logging still flows
+    to any file handlers that are configured.
+    """
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, logging.StreamHandler) and handler.stream in (
+            sys.stdout,
+            sys.stderr,
+        ):
+            root.removeHandler(handler)
+
+
 def setup_logging() -> None:
     """
     Configures the root logger with the standard AEGIS formatting.

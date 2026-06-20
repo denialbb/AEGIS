@@ -8,8 +8,8 @@ Architecture
 • **This EKF** owns position, velocity, gyroscope bias, and
   accelerometer bias estimation.
 • The EKF consumes the Mahony-estimated attitude to rotate body-frame
-  specific force into the world frame, then adds gravity.  It remains
-  frame-safe: f_corrected is rotated to world before gravity addition.
+  specific force into the NED frame, then adds gravity.  It remains
+  frame-safe: f_corrected is rotated to NED before gravity addition.
 • The EKF's bias estimates are fed back to the Mahony filter each tick
   so that the Mahony filter uses bias-corrected gyro rates.
 
@@ -31,14 +31,14 @@ Revised to 12 states with accel bias included per user request.
 Frame convention
 ────────────────
 • Accelerometer reads specific force (proper acceleration) in body frame.
-• Gravity is in the world frame.
-• kinematic_accel_world = R(q_mahony) · f_body_corrected + gravity_world
-  All operations on the same (world) side before integration.
+• Gravity is in the NED frame.
+• kinematic_accel_ned = R(q_mahony) · f_body_corrected + gravity_ned
+  All operations on the same (NED) side before integration.
 
 Measurement model
 ─────────────────
 • Altitude:  z_alt = upᵀ · pos          (scalar)
-• Velocity:  z_vel = vel                  (3-vector, world frame)
+• Velocity:  z_vel = vel                  (3-vector, NED frame)
 """
 import numpy as np
 import logging
@@ -57,7 +57,7 @@ class ErrorStateEKF:
 
     Public interface
     ────────────────
-    predict(f_body, omega_body, attitude, gravity_world, dt)
+    predict(f_body, omega_body, attitude, gravity_ned, dt)
     update(noisy_alt, noisy_vel) → state_vector (6,)
     get_state()   → (6,) [x,y,z,vx,vy,vz]
     get_gyro_bias()  → (3,)
@@ -95,6 +95,7 @@ class ErrorStateEKF:
 
         self._last_innovation: np.ndarray = np.zeros(4)
         self._last_innovation_norm: float = 0.0
+        self._last_nis: float = 0.0
 
         logger.info("Initialized ErrorStateEKF (12-state: pos+vel+bg+ba)")
 
@@ -107,7 +108,7 @@ class ErrorStateEKF:
         f_body: np.ndarray,
         omega_body: np.ndarray,
         attitude: np.ndarray,
-        gravity_world: np.ndarray,
+        gravity_ned: np.ndarray,
         dt: float,
     ) -> None:
         """
@@ -120,9 +121,9 @@ class ErrorStateEKF:
         omega_body : ndarray (3,)
             Raw angular-rate measurement in **body frame** [rad/s].
         attitude : ndarray (4,)
-            Mahony-estimated quaternion [x,y,z,w] (body→world).
-        gravity_world : ndarray (3,)
-            Gravitational acceleration in the **world frame** [m/s²].
+            Mahony-estimated quaternion [x,y,z,w] (body→NED).
+        gravity_ned : ndarray (3,)
+            Gravitational acceleration in the **NED frame** [m/s²].
         dt : float
             Time step [s].  Must be > 0.
         """
@@ -133,25 +134,25 @@ class ErrorStateEKF:
         omega_corr: np.ndarray = omega_body - self.bg
         f_corr_body: np.ndarray = f_body - self.ba
 
-        # ── 2. Rotate corrected specific force to world frame ──────
-        #    FRAME SAFETY: f_corr is body-frame → rotate to world
-        #    BEFORE adding gravity (which is world-frame).
+        # ── 2. Rotate corrected specific force to NED frame ────────
+        #    FRAME SAFETY: f_corr is body-frame → rotate to NED
+        #    BEFORE adding gravity (which is NED-frame).
         rot_bw: R = R.from_quat(attitude)
-        f_corr_world: np.ndarray = rot_bw.apply(f_corr_body)
+        f_corr_ned: np.ndarray = rot_bw.apply(f_corr_body)
 
-        # ── 3. Kinematic acceleration in world frame ───────────────
-        a_world: np.ndarray = f_corr_world + gravity_world
+        # ── 3. Kinematic acceleration in NED frame ─────────────────
+        a_ned: np.ndarray = f_corr_ned + gravity_ned
 
         # ── 4. Propagate nominal state ─────────────────────────────
-        self.pos = self.pos + self.vel * dt + 0.5 * a_world * dt**2
-        self.vel = self.vel + a_world * dt
+        self.pos = self.pos + self.vel * dt + 0.5 * a_ned * dt**2
+        self.vel = self.vel + a_ned * dt
         # bg and ba drift as random walks — no deterministic change
 
         # ── 5. State-transition Jacobian F (12×12) ─────────────────
-        F: np.ndarray = self._build_F(rot_bw, dt)
+        F: np.ndarray = self._build_F(rot_bw, dt, f_corr_body=f_corr_body)
 
         # ── 6. Process-noise covariance Q (12×12) ──────────────────
-        Q: np.ndarray = self._build_Q(dt, a_world)
+        Q: np.ndarray = self._build_Q(dt, a_ned)
 
         # ── 7. Propagate error-state covariance ────────────────────
         self.P = F @ self.P @ F.T + Q
@@ -207,10 +208,15 @@ class ErrorStateEKF:
 
         S: np.ndarray = H @ self.P @ H.T + R_mat
         try:
-            K: np.ndarray = self.P @ H.T @ np.linalg.inv(S)
+            K: np.ndarray = np.linalg.solve(S, H @ self.P.T).T
         except np.linalg.LinAlgError:
             logger.warning("EKF update: singular innovation covariance, skipping")
+            self._last_nis = 0.0
             return self._pack_state_vector()
+
+        # Normalised Innovation Squared — use Cholesky-style solve for stability
+        nis_arg: np.ndarray = np.linalg.solve(S, innov)
+        self._last_nis = float(innov @ nis_arg)
 
         dx: np.ndarray = K @ innov
 
@@ -249,6 +255,10 @@ class ErrorStateEKF:
         """Return the last measurement innovation (4,)."""
         return self._last_innovation.copy()
 
+    def get_last_nis(self) -> float:
+        """Return the most recent Normalised Innovation Squared."""
+        return self._last_nis
+
     # ════════════════════════════════════════════════════════════════
     #  INTERNAL
     # ════════════════════════════════════════════════════════════════
@@ -256,34 +266,49 @@ class ErrorStateEKF:
     def _pack_state_vector(self) -> np.ndarray:
         return np.concatenate([self.pos, self.vel])
 
-    def _build_F(self, rot_bw: R, dt: float) -> np.ndarray:
+    def _build_F(
+        self, rot_bw: R, dt: float, f_corr_body: np.ndarray | None = None,
+    ) -> np.ndarray:
         """
         12×12 error-state Jacobian.
 
-        ┌────────┬────────┬──────┬──────┐
-        │  I₃    │  I₃·dt │  0   │  0   │  δpos
-        │  0     │  I₃    │  0   │ −I₃·dt│  δvel   (accel bias → vel error)
-        │  0     │  0     │  I₃  │  0   │  δbg
-        │  0     │  0     │  0   │  I₃  │  δba
-        └────────┴────────┴──────┴──────┘
+        ┌────────┬────────┬──────────────────┬────────┐
+        │  I₃    │  I₃·dt │        0         │   0    │  δpos
+        │  0     │  I₃    │  −R·[f]×·dt²     │ −R·dt  │  δvel
+        │  0     │  0     │        I₃        │   0    │  δbg
+        │  0     │  0     │        0         │   I₃   │  δba
+        └────────┴────────┴──────────────────┴────────┘
 
-        Note: gyro bias error does NOT appear in δvel because the EKF
-        does not estimate attitude — the Mahony filter consumes bias-
-        corrected gyro and propagates attitude independently.
+        Gyro bias → velocity coupling:
+          δbg → integrated attitude error −δbg·dt → misrotated specific force
+          → wrong a_ned → δvel = −R·[f_corr]×·δbg·dt²
         """
         F: np.ndarray = np.eye(12)
 
         F[0:3, 3:6] = np.eye(3) * dt
 
-        # Accel bias is in body frame; when it's wrong, the rotated
-        # specific force in world frame is wrong by approximately
-        # −R·δba, which propagates to velocity as −R·δba·dt.
         R_mat: np.ndarray = rot_bw.as_matrix()
+
+        # Accel bias is in body frame; when it's wrong, the rotated
+        # specific force in NED frame is wrong by approximately
+        # −R·δba, which propagates to velocity as −R·δba·dt.
         F[3:6, 9:12] = -R_mat * dt
+
+        # Gyro bias → velocity: attitude error from bg accumulates as
+        # δθ = −δbg·dt, which rotates f_corr_body by δθ×f_corr_body.
+        # The NED-frame velocity error is R·(δθ×f_corr)·dt.
+        if f_corr_body is not None:
+            fx, fy, fz = f_corr_body
+            f_skew: np.ndarray = np.array([
+                [0.0, -fz,  fy],
+                [fz,  0.0, -fx],
+                [-fy,  fx,  0.0],
+            ])
+            F[3:6, 6:9] = -R_mat @ f_skew * (dt ** 2)
 
         return F
 
-    def _build_Q(self, dt: float, a_world: np.ndarray) -> np.ndarray:
+    def _build_Q(self, dt: float, a_ned: np.ndarray) -> np.ndarray:
         """
         12×12 process-noise covariance.
 
@@ -294,7 +319,7 @@ class ErrorStateEKF:
         """
         Q: np.ndarray = np.zeros((12, 12))
 
-        accel_norm: float = float(np.linalg.norm(a_world))
+        accel_norm: float = float(np.linalg.norm(a_ned))
         vel_scale: float = 1.0 + self.thrust_coef * accel_norm**2
         Q[3:6, 3:6] = np.eye(3) * (self.sigma_accel**2 * dt * vel_scale)
 

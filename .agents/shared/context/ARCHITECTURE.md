@@ -22,51 +22,122 @@ class Engine:
 
 ---
 
+### Reference Frame Utilities (`src/common/reference_frame.py`)
+
+Reusable kRPC-integration functions for building and querying the NED navigation frame. The pure-math rotation logic lives in `src/common/geometry.py::ecef_to_ned()`; this module wraps it for kRPC interaction.
+
+```python
+def build_ned_frame(conn, body, target_lat, target_lon) -> tuple[Any, np.ndarray]:
+    """
+    Build a kRPC ReferenceFrame aligned to North-East-Down at the target pad.
+    Returns (ned_frame, up_vector=[0,0,-1]).
+    Used by MissionDirector._init_reference_frame() and flight_recorder._init_sensors().
+    """
+
+def get_pad_ecef(body, target_lat, target_lon) -> np.ndarray:
+    """Surface position of the landing site in ECEF (body-centred) coordinates."""
+
+def compute_gravity_ned(body, pos_ecef) -> np.ndarray:
+    """Gravitational acceleration [0, 0, +g] in NED from ECEF position."""
+
+def get_vessel_position_ned(vessel, ned_frame) -> np.ndarray:
+    """(3,) position in NED frame."""
+
+def get_vessel_velocity_ned(vessel, ned_frame) -> np.ndarray:
+    """(3,) velocity in NED frame. Downward positive."""
+
+def get_vessel_altitude_ned(vessel, ned_frame) -> float:
+    """Surface altitude in metres."""
+
+def get_vessel_state_ned(vessel, ned_frame) -> tuple[np.ndarray, np.ndarray, float]:
+    """Convenience — (pos, vel, alt) in one call."""
+```
+
+---
+
 ## 2. State Estimator (`src/estimation/estimator.py`)
 
-Fuses noisy telemetry into a clean state vector.
+Fuses noisy telemetry into a clean state vector using an Error-State Extended Kalman Filter (ADR-030).
 
-### State Vector
-$$\mathbf{x} = \begin{bmatrix} x & y & z & v_x & v_y & v_z \end{bmatrix}^T$$
-- Position $[x, y, z]$ (relative to landing target or reference frame)
-- Velocity $[v_x, v_y, v_z]$
+### State Vector (EKF — 12 states)
+$$\mathbf{x} = \begin{bmatrix} x & y & z & v_x & v_y & v_z & b_{gx} & b_{gy} & b_{gz} & b_{ax} & b_{ay} & b_{az} \end{bmatrix}^T$$
+- Position $[x, y, z]$ (in NED frame, origin at landing pad)
+- Velocity $[v_x, v_y, v_z]$ (in NED frame)
+- Gyroscope bias $[b_{gx}, b_{gy}, b_{gz}]$ (rad/s)
+- Accelerometer bias $[b_{ax}, b_{ay}, b_{az}]$ (m/s²)
 
 Note: Mass is treated as an external clean telemetry parameter, not estimated in the filter state.
 
-### Interface
+### Attitude Estimation (separate Mahony filter)
+Attitude is estimated by a Mahony complementary filter (`src/estimation/mahony_estimator.py`) that fuses gyroscope and accelerometer data. The Mahony filter is initialized from kRPC truth attitude during the `SENSOR_WARMUP` phase. It produces a quaternion $q_{body \to NED}$ used to rotate body-frame specific force into the NED frame.
+
+### Sensor Interface (`src/telemetry/sensors.py`)
 ```python
-class StateEstimator:
-    def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise: np.ndarray, up_vector: np.ndarray = np.array([0.0, 0.0, 1.0])):
+class SensorModels:
+    def __init__(self, conn, vessel, ned_frame, up_vector):
+        ...
+
+    def poll(self) -> tuple:
         """
-        Initializes the Discrete-Time Kalman Filter.
-        initial_state: shape (6,)
-        initial_covariance: shape (6, 6)
-        process_noise: shape (6, 6)
-        measurement_noise: shape (1, 1) (altitude measurement variance)
-        up_vector: vector pointing directly up from the planet surface
+        Returns 10-tuple:
+        0. noisy_alt      : float          — radar altitude with Gaussian noise [m]
+        1. sf_body        : ndarray (3,)   — body-frame specific force (noisy) [m/s²]
+        2. attitude       : ndarray (4,)   — Mahony quaternion [x,y,z,w] (scalar-last)
+        3. mass           : float          — vessel mass [kg] (clean telemetry)
+        4. aero_body      : ndarray (3,)   — body-frame aerodynamic force [N]
+        5. situation      : str            — vessel situation (e.g. "flying", "landed")
+        6. omega_body     : ndarray (3,)   — body-frame angular rates [rad/s]
+        7. noisy_vel      : ndarray (3,)   — NED velocity with Gaussian noise [m/s]
+        8. gravity_ned    : ndarray (3,)   — gravity in NED frame [m/s²]
+        9. raw_gyro       : ndarray (3,)   — raw gyro readings (noisy, no bias correction) [rad/s]
+        """
+        ...
+
+    def get_truth_attitude(self) -> np.ndarray:
+        """
+        Returns the raw kRPC attitude quaternion (body→NED) for filter initialization.
+        Used during SENSOR_WARMUP tick 0.
+        """
+        ...
+```
+
+### Error-State EKF Interface (`src/estimation/ekf.py`)
+```python
+class ErrorStateEKF:
+    def __init__(self, ...):
+        """12-state error-state EKF. State: pos(3), vel(3), gyro_bias(3), accel_bias(3)."""
+        pass
+
+    def predict(self, gyro_body: np.ndarray, sf_body: np.ndarray, 
+                attitude: np.ndarray, dt: float, gravity_ned: np.ndarray):
+        """
+        Predict step using gyroscope (for attitude propagation) and accelerometer
+        (for position/velocity). Both are corrected for estimated biases.
+        gravity_ned is used to reconstruct kinematic acceleration from specific force.
         """
         pass
 
-    def predict(self, noisy_accel_body: np.ndarray, attitude: np.ndarray, dt: float):
+    def update(self, noisy_alt: float, noisy_vel: np.ndarray, 
+               vel_cov: np.ndarray | None = None):
         """
-        Predicts the next state using the measured acceleration as the control input (Option A).
-        noisy_accel_body: Accelerometer reading in vessel body frame.
-        attitude: Vessel attitude (e.g., quaternion) required to rotate acceleration to world frame.
-        """
-        pass
-
-    def update(self, noisy_alt: float):
-        """
-        Fuses noisy altimeter data to correct the Z-axis state.
+        Fuses noisy altimeter and velocimeter data to correct the state.
+        vel_cov is optional; defaults to config.SIGMA_VEL diagonal.
         """
         pass
 
     def get_state(self) -> np.ndarray:
-        """
-        Returns the current estimated state vector of shape (6,).
-        """
+        """Returns the current estimated state vector, shape (12,)."""
+        pass
+
+    def get_innovation(self) -> np.ndarray:
+        """Returns the most recent innovation vector [alt_inn, vel_inn_x, vel_inn_y, vel_inn_z]."""
         pass
 ```
+
+### Sensor Sub-Modules
+- `src/estimation/gyro_sensor.py` — `GyroSensor`: streams `vessel.angular_velocity(ned_frame)`, applies Gaussian noise with configurable $\sigma_{gyro}$ and bias instability.
+- `src/estimation/accelerometer_sensor.py` — `AccelerometerSensor`: streams `flight(ned_frame).velocity`, differentiates to compute coordinate acceleration, subtracts gravity computed from `body.gravitational_parameter / r²` to produce specific force, applies Gaussian noise.
+- `src/estimation/mahony_estimator.py` — `MahonyAttitudeEstimator`: quaternion-based complementary filter fusing gyroscope (high-rate integration) and accelerometer (gravity reference correction). Tunable $K_p$ and $K_i$ gains.
 
 ---
 
@@ -144,11 +215,31 @@ State machine that manages nominal mission phases and handles contingencies.
 - `ASCENT_COAST`
 - `DEORBIT_BURN`
 - `HYPERSONIC_COAST`
+- `SENSOR_WARMUP`
+- `ESTIMATOR_WARMUP`
 - `POWERED_DESCENT`
 - `HOVER_TARGETING`
 - `TERMINAL_DESCENT`
 - `LANDED`
 - `HARD_ABORT`
+
+### Module Structure
+The Mission Director has been refactored into specialized submodules:
+- `src/main.py` — `MissionDirector` class: initialization, reference frame, engines, sensors, estimator, guidance, telemetry, HUD.
+- `src/mission/loop.py` — Main control loop orchestrator: timing, sensor polling, pause detection, telemetry logging.
+- `src/mission/flight_control.py` — Flight-critical functions: SAS, FDI, state machine transitions, allocation, engine management, throttle, estimator predict/update, abort handling.
+- `src/mission/helpers.py` — Pure helper functions: `unpack_sensor_poll()`, `compute_a_avail()`, `build_fuel_state()`.
+- `src/mission/ui.py` — Telemetry-frame assembly and HUD display.
+- `src/mission/states.py` — `MissionState` enum definition.
+
+The `MissionDirector` owns all state and delegates per-tick work to imported functions from these submodules. No state is held in the submodules — they are stateless callables.
+
+### Sensor Warmup Phase
+Upon activation (if airborne and descending) the Director enters `SENSOR_WARMUP`:
+1. **Tick 0:** Mahony filter initialized from kRPC truth attitude via `SensorModels.get_truth_attitude()`. Gyro/accel sample buffers start accumulating.
+2. **Ticks 1–29 (3 s):** Sensor data streams, biases accumulate via `np.mean()`. No guidance or allocation runs.
+3. **Tick 30:** EKF background biases (`bg`, `ba`) set to accumulated means. EKF covariance `P[6:9]` (gyro bias) reduced by `SENSOR_WARMUP_GYRO_BIAS_SIGMA`, `P[9:12]` (accel bias) by `SENSOR_WARMUP_ACCEL_BIAS_SIGMA`.
+4. Transition to `ESTIMATOR_WARMUP` (100 ticks) or directly to coast/descent if altitude/velocity thresholds met.
 
 ### Contingencies
 - **Single Engine Failure:** FDI flags, active engines reduced. Allocator remaps wrench.

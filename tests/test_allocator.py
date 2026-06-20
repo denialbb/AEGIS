@@ -19,10 +19,11 @@ def test_allocator_nominal():
     # W = [Fx, Fy, Fz, Tx, Ty, Tz]
     wrench = np.array([0.0, 0.0, 200.0, 0.0, 0.0, 0.0])
     
-    throttles, gimbals = allocator.allocate(wrench, engines)
+    throttles, gimbals, forces = allocator.allocate(wrench, engines)
     
     assert throttles.shape == (4,)
     assert gimbals.shape == (4, 2)
+    assert forces.shape == (4, 3)
     
     # Each engine should output 50 N, so throttle = 0.5
     np.testing.assert_allclose(throttles, [0.5, 0.5, 0.5, 0.5], atol=1e-5)
@@ -50,7 +51,7 @@ def test_allocator_torque():
     # But wait, pinv might distribute it to Fx/Fy as well?
     # Let's just test that the resulting u produces the desired wrench.
     wrench = np.array([0.0, 0.0, 0.0, 0.0, 50.0, 0.0])
-    throttles, gimbals = allocator.allocate(wrench, engines)
+    throttles, gimbals, _ = allocator.allocate(wrench, engines)
     
     # We don't check throttles exactly because Fz might be negative (which still increases f_mag)
     # Let's verify if the B * u = wrench.
@@ -59,26 +60,27 @@ def test_allocator_torque():
     assert throttles.shape == (4,)
 
 def test_allocator_rank_deficient():
-    # Single engine at origin -> rank deficient (can't produce torques)
+    """Equal-force allocator never raises — torque is ignored, force is distributed equally."""
     engines = [
         Engine(0, np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0)
     ]
     allocator = ControlAllocator(engines)
     wrench = np.array([0.0, 0.0, 100.0, 10.0, 0.0, 0.0])
-    
-    with pytest.raises(AllocationDegenerateError) as excinfo:
-        allocator.allocate(wrench, engines)
+    throttles, gimbals, forces = allocator.allocate(wrench, engines)
 
-    assert "rank < 6" in str(excinfo.value)
+    # Single engine gets full force, torque is ignored
+    assert throttles[0] == 1.0
+    np.testing.assert_allclose(forces[0], [0.0, 0.0, 100.0], atol=1e-6)
 
 def test_allocator_empty():
     allocator = ControlAllocator([])
-    throttles, gimbals = allocator.allocate(np.zeros(6), [])
+    throttles, gimbals, forces = allocator.allocate(np.zeros(6), [])
     assert len(throttles) == 0
     assert gimbals.shape == (0, 2)
+    assert forces.shape == (0, 3)
 
-def test_allocator_throttle_saturation(caplog):
-    # Ensure rank is 6 by spreading engines
+def test_allocator_throttle_saturation():
+    """Zero-torque fast path distributes force equally, saturating Z-capable engines."""
     engines = [
         Engine(0, np.array([ 1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
         Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
@@ -88,18 +90,18 @@ def test_allocator_throttle_saturation(caplog):
         Engine(5, np.array([ 0.0,  0.0,-1.0]), np.array([0.0, 1.0, 0.0]), 10.0)
     ]
     allocator = ControlAllocator(engines)
-    
-    # Request massive Z force (1200 N total, 200 N per engine Z-wise), they only have 10 N
+
+    # Request massive Z force (1200 N total), zero torque → fast path
     wrench = np.array([0.0, 0.0, 1200.0, 0.0, 0.0, 0.0])
-    
-    with caplog.at_level(logging.WARNING):
-        throttles, gimbals = allocator.allocate(wrench, engines)
-        
-    # Throttles should be saturated at 1.0 (some engines might not contribute if B makes them 0, 
-    # but the first 4 pointing Z will be heavily saturated).
+    throttles, gimbals, _ = allocator.allocate(wrench, engines)
+
+    # Z-capable engines (0-3) saturate at 1.0; lateral-only engines (4-5) stay at 0
     assert throttles[0] == 1.0
     assert throttles[1] == 1.0
-    assert "thrust saturated" in caplog.text
+    assert throttles[2] == 1.0
+    assert throttles[3] == 1.0
+    assert throttles[4] == 0.0
+    assert throttles[5] == 0.0
 
 def test_allocator_gimbal_angles():
     # Test that gimbal computation doesn't crash or produce NaNs for a reasonable case.
@@ -117,7 +119,7 @@ def test_allocator_gimbal_angles():
     # Small Z force wrench = [0, 0, 12, 0, 0, 0] (12N total, 2N per engine)
     # This requires minimal gimbaling and should work fine
     wrench = np.array([0.0, 0.0, 12.0, 0.0, 0.0, 0.0])
-    throttles, gimbals = allocator.allocate(wrench, engines)
+    throttles, gimbals, _ = allocator.allocate(wrench, engines)
     
     # Each engine should produce ~2N of Z force
     expected_force_per_engine = 2.0
@@ -158,7 +160,7 @@ def test_allocator_negative_thrust():
     # To satisfy this, the allocator might try to fire engines 0-3 with negative dot product,
     # or fire engines 4/5 by gimbaling. Actually, engines 0-3 are physically incapable of pushing -Z.
     wrench = np.array([0.0, 0.0, -1200.0, 0.0, 0.0, 0.0])
-    throttles, gimbals = allocator.allocate(wrench, engines)
+    throttles, gimbals, _ = allocator.allocate(wrench, engines)
     
     # Engines 0-3 should be clipped to 0.0 because dot_prod < 0
     assert throttles[0] == 0.0
@@ -168,70 +170,35 @@ def test_allocator_negative_thrust():
 
 
 def test_allocator_iterative_saturation():
-    """Test that the allocator correctly redistributes force when some engines saturate."""
-    # Create 4 engines pointing in +Z direction at different positions
-    # This setup allows us to produce pure Z force without torque
+    """Equal-force allocator distributes force equally, saturating when per-engine exceeds max."""
     engines = [
-        Engine(0, np.array([ 1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # max thrust 10 N
-        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # max thrust 10 N
-        Engine(2, np.array([ 0.0,  1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # max thrust 10 N
-        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # max thrust 10 N
+        Engine(0, np.array([ 1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
+        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
+        Engine(2, np.array([ 0.0,  1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
+        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
     ]
     allocator = ControlAllocator(engines)
-    
-    # Request 25 N of Z force (should require 6.25 N from each engine, well under limits)
-    wrench = np.array([0.0, 0.0, 25.0, 0.0, 0.0, 0.0])
-    throttles, _ = allocator.allocate(wrench, engines)
-    
-    # Each engine should produce 6.25 N, so throttle = 0.625
-    expected_throttle = 0.625
-    np.testing.assert_allclose(throttles, [expected_throttle] * 4, atol=1e-5)
-    
-    # Now request 50 N of Z force (should require 12.5 N from each engine, which exceeds max thrust of 10 N)
-    # With the iterative allocator, we should saturate all engines at 10 N each, giving 40 N total
-    wrench = np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
-    throttles, _ = allocator.allocate(wrench, engines)
-    
-    # All engines should be saturated at 1.0 (10 N each)
-    expected_throttle = 1.0
-    np.testing.assert_allclose(throttles, [expected_throttle] * 4, atol=1e-5)
-    
-    # Verify that the total force produced is 40 N (4 engines * 10 N each)
-    # We can't easily compute the exact force from throttles without knowing the allocation,
-    # but we know it should be 40 N since all engines are at max thrust
-    
-    # Test another case: asymmetric engine placement to check torque handling
+
+    # 25 N Z force → 6.25 N each → 0.625 throttle
+    throttles, _, _ = allocator.allocate(np.array([0.0, 0.0, 25.0, 0.0, 0.0, 0.0]), engines)
+    np.testing.assert_allclose(throttles, [0.625] * 4, atol=1e-5)
+
+    # 50 N → 12.5 N each → saturates at 10 N → 1.0 throttle
+    throttles, _, _ = allocator.allocate(np.array([0.0, 0.0, 50.0, 0.0, 0.0, 0.0]), engines)
+    np.testing.assert_allclose(throttles, [1.0] * 4, atol=1e-5)
+
+    # Asymmetric positions — still equal throttles (torque NOT balanced)
     engines_asym = [
-        Engine(0, np.array([ 2.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # 2x leverage
-        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # 1x leverage
-        Engine(2, np.array([ 0.0,  2.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # 2x leverage
-        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),  # 1x leverage
+        Engine(0, np.array([ 2.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
+        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
+        Engine(2, np.array([ 0.0,  2.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
+        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0),
     ]
-    allocator_asym = ControlAllocator(engines_asym)
-    
-    # Request pure Z force of 30 N
-    # Let Fz0 = force from engine 0 (pos [2,0,0])
-    # Let Fz1 = force from engine 1 (pos [-1,0,0])
-    # Let Fz2 = force from engine 2 (pos [0,2,0])
-    # Let Fz3 = force from engine 3 (pos [0,-1,0])
-    #
-    # Torque balance:
-    # Tx: -2*Fz2 + 1*Fz3 = 0  → Fz3 = 2*Fz2
-    # Ty: -2*Fz0 + 1*Fz1 = 0  → Fz1 = 2*Fz0
-    # Force: Fz0 + Fz1 + Fz2 + Fz3 = 30
-    #
-    # Substituting: Fz0 + 2*Fz0 + Fz2 + 2*Fz2 = 30
-    #             3*Fz0 + 3*Fz2 = 30
-    #             Fz0 + Fz2 = 10
-    #
-    # To minimize effort (sum of squares of throttles), we set Fz0 = Fz2 = 5
-    # Then: Fz1 = 2*5 = 10, Fz3 = 2*5 = 10
-    wrench = np.array([0.0, 0.0, 30.0, 0.0, 0.0, 0.0])
-    throttles, _ = allocator_asym.allocate(wrench, engines_asym)
-    
-    # Expected throttles: [0.5, 1.0, 0.5, 1.0]
-    expected_throttles = np.array([0.5, 1.0, 0.5, 1.0])
-    np.testing.assert_allclose(throttles, expected_throttles, atol=1e-5)
+    throttles, _, _ = ControlAllocator(engines_asym).allocate(
+        np.array([0.0, 0.0, 30.0, 0.0, 0.0, 0.0]), engines_asym
+    )
+    # Equal-force: each gets 7.5 N → 0.75 throttle
+    np.testing.assert_allclose(throttles, [0.75] * 4, atol=1e-5)
 
 
 def test_is_rank_sufficient():
@@ -302,7 +269,7 @@ def test_allocator_numerical_stability():
     
     # Test extremely small force values (testing numerical precision)
     tiny_wrench = np.array([1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12])
-    throttles_tiny, gimbals_tiny = allocator_well.allocate(tiny_wrench, engines_well_conditioned)
+    throttles_tiny, gimbals_tiny, _ = allocator_well.allocate(tiny_wrench, engines_well_conditioned)
     
     # Should produce very small throttles (close to zero)
     assert np.all(throttles_tiny >= 0.0) and np.all(throttles_tiny <= 1.0)
@@ -310,7 +277,7 @@ def test_allocator_numerical_stability():
     
     # Test very large force values (should saturate)
     large_wrench = np.array([1e6, 1e6, 1e6, 1e6, 1e6, 1e6])  # Very large request
-    throttles_large, gimbals_large = allocator_well.allocate(large_wrench, engines_well_conditioned)
+    throttles_large, gimbals_large, _ = allocator_well.allocate(large_wrench, engines_well_conditioned)
     
     # Should be saturated (at least some engines at max throttle)
     assert np.all(throttles_large >= 0.0) and np.all(throttles_large <= 1.0)
@@ -338,7 +305,7 @@ def test_allocator_numerical_stability():
     # Should still be able to solve for reasonable forces
     wrench = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])  # Small Z force
     try:
-        throttles, gimbals = allocator_near.allocate(wrench, engines_near_singular)
+        throttles, gimbals, _ = allocator_near.allocate(wrench, engines_near_singular)
         # If successful, verify reasonable outputs
         assert throttles.shape == (6,)
         assert gimbals.shape == (6, 2)
@@ -357,7 +324,120 @@ def test_allocator_numerical_stability():
     # Test 3: Force values that might cause numerical issues in intermediate calculations
     # Test with values that could cause loss of precision in matrix operations
     medium_wrench = np.array([1000.0, 1000.0, 1000.0, 100.0, 100.0, 100.0])
-    throttles_medium, gimbals_medium = allocator_well.allocate(medium_wrench, engines_well_conditioned)
+    throttles_medium, gimbals_medium, _ = allocator_well.allocate(medium_wrench, engines_well_conditioned)
     
     assert np.all(throttles_medium >= 0.0) and np.all(throttles_medium <= 1.0)
     assert np.all(np.isfinite(gimbals_medium))
+
+
+def test_allocator_gimbal_torque_production():
+    """Equal-force allocator matches force but not torque — gimbals only steer direction."""
+    engines = [
+        Engine(0, np.array([ 1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=15.0),
+        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=15.0),
+        Engine(2, np.array([ 0.0,  1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=15.0),
+        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=15.0),
+    ]
+    allocator = ControlAllocator(engines)
+
+    # Combined force + torque — equal-force ignores torque demand
+    throttles, gimbals, forces = allocator.allocate(
+        np.array([0.0, 0.0, 200.0, 0.0, 50.0, 0.0]), engines
+    )
+
+    assert throttles.shape == (4,)
+    assert gimbals.shape == (4, 2)
+
+    total_force = np.zeros(3)
+    for i, e in enumerate(engines):
+        total_force += forces[i]
+
+    # Total Z force is matched; torque from equal-force is whatever it is (not necessarily 50 Nm)
+    np.testing.assert_allclose(total_force[2], 200.0, atol=1e-1)
+    # All throttles equal (50 N each / 100 N max = 0.5)
+    np.testing.assert_allclose(throttles, [0.5] * 4, atol=1e-5)
+
+
+def test_allocator_gimbal_saturation_fallback():
+    """Test that when gimbals saturate, the allocator still produces valid controls."""
+    engines = [
+        Engine(0, np.array([ 1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=5.0),
+        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=5.0),
+        Engine(2, np.array([ 0.0,  1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=5.0),
+        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=5.0),
+    ]
+    allocator = ControlAllocator(engines)
+
+    # Large torque demand: 200 Nm Ty
+    # Max single-engine gimbal torque at 100%: 100*tan(5)=8.75N lateral
+    # at position (1,0,0): cross((1,0,0),(0,8.75,0)) = (0,0,-8.75) => Tz not Ty
+    # Actually Ty comes from differential Z thrust between engines 0 and 1.
+    # Max Ty from differential: 100Nm (eng0=0, eng1=100N -> Ty=100)
+    # Requesting 200 Nm exceeds what 2 engines can provide even at max throttle.
+    wrench = np.array([0.0, 0.0, 100.0, 0.0, 200.0, 0.0])
+    throttles, gimbals, forces = allocator.allocate(wrench, engines)
+
+    # Should still produce valid controls (not crash/raise)
+    assert throttles.shape == (4,)
+    assert np.all(throttles >= 0.0)
+    assert np.all(throttles <= 1.0)
+    assert np.all(np.isfinite(gimbals))
+
+    # Gimbal angles should be within limits
+    max_gimbal_rad = np.deg2rad(5.0)
+    assert np.all(np.abs(gimbals) <= max_gimbal_rad + 1e-6)
+
+    # Verify at least partial wrench satisfaction
+    total_force = np.zeros(3)
+    total_torque = np.zeros(3)
+    for i, e in enumerate(engines):
+        total_force += forces[i]
+        total_torque += np.cross(e.position, forces[i])
+
+    # Z force should be met
+    assert total_force[2] > 0.0
+
+
+def test_allocator_asymmetric_gimbal():
+    """Equal-force allocator gives equal throttles regardless of asymmetry."""
+    engines = [
+        Engine(0, np.array([ 2.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0, max_gimbal_deg=10.0),
+        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0, max_gimbal_deg=10.0),
+        Engine(2, np.array([ 0.0,  2.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0, max_gimbal_deg=10.0),
+        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 10.0, max_gimbal_deg=10.0),
+    ]
+    allocator = ControlAllocator(engines)
+
+    # Pure Z force — equal throttles, torque not balanced
+    throttles, gimbals, forces = allocator.allocate(
+        np.array([0.0, 0.0, 30.0, 0.0, 0.0, 0.0]), engines
+    )
+    assert throttles.shape == (4,)
+    np.testing.assert_allclose(throttles, [0.75] * 4, atol=1e-5)
+
+    # Force is correctly summed
+    total_force = np.zeros(3)
+    for i, e in enumerate(engines):
+        total_force += forces[i]
+    np.testing.assert_allclose(total_force[2], 30.0, atol=1e-1)
+
+    # With torque demand, gimbals still within limits, throttle still equal
+    engines_big = [
+        Engine(0, np.array([ 2.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=10.0),
+        Engine(1, np.array([-1.0,  0.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=10.0),
+        Engine(2, np.array([ 0.0,  2.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=10.0),
+        Engine(3, np.array([ 0.0, -1.0, 0.0]), np.array([0.0, 0.0, 1.0]), 100.0, max_gimbal_deg=10.0),
+    ]
+    throttles2, gimbals2, forces2 = ControlAllocator(engines_big).allocate(
+        np.array([0.0, 0.0, 30.0, 0.0, 5.0, 0.0]), engines_big
+    )
+
+    max_gimbal_rad = np.deg2rad(10.0)
+    assert np.all(np.abs(gimbals2) <= max_gimbal_rad + 1e-6)
+    assert np.all(np.isfinite(gimbals2))
+    np.testing.assert_allclose(throttles2, [0.075] * 4, atol=1e-5)
+
+    total_force2 = np.zeros(3)
+    for i, e in enumerate(engines_big):
+        total_force2 += forces2[i]
+    np.testing.assert_allclose(total_force2[2], 30.0, atol=1e-6)

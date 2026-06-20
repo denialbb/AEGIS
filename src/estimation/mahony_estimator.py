@@ -11,7 +11,7 @@ Usage
 ─────
     mahony = MahonyAttitudeEstimator(kp=2.0, ki=0.1)
     mahony.set_gyro_bias(bg_from_ekf)      # optional, each tick
-    q = mahony.update(omega_body, f_body, gravity_world_mag, dt)
+    q = mahony.update(omega_body, f_body, gravity_ned, dt)
 """
 import numpy as np
 import logging
@@ -45,8 +45,21 @@ class MahonyAttitudeEstimator:
         self.integral_error: np.ndarray = np.zeros(3)
 
         self._external_bg: np.ndarray = np.zeros(3)
+        self._correction_enabled: bool = True
 
         logger.info(f"Initialized MahonyAttitudeEstimator kp={self.kp} ki={self.ki}")
+
+    # ────────────────────────────────────────────────────────────────
+    #  CORRECTION TOGGLE
+    # ────────────────────────────────────────────────────────────────
+
+    def enable_correction(self) -> None:
+        """Enable gravity-based correction in the filter."""
+        self._correction_enabled = True
+
+    def disable_correction(self) -> None:
+        """Disable gravity-based correction in the filter."""
+        self._correction_enabled = False
 
     # ────────────────────────────────────────────────────────────────
     #  BIAS FEEDBACK FROM EKF
@@ -64,7 +77,7 @@ class MahonyAttitudeEstimator:
         self,
         omega_body: np.ndarray,
         f_body: np.ndarray,
-        gravity_world: np.ndarray,
+        gravity_ned: np.ndarray,
         dt: float,
     ) -> np.ndarray:
         """
@@ -76,15 +89,15 @@ class MahonyAttitudeEstimator:
             Raw gyroscope reading in body frame [rad/s].
         f_body : ndarray (3,)
             Raw specific-force reading in body frame [m/s²].
-        gravity_world : ndarray (3,)
-            Gravity vector in world frame [m/s²].
+        gravity_ned : ndarray (3,)
+            Gravity vector in NED frame [m/s²].
         dt : float
             Time step [s].
 
         Returns
         -------
         quaternion : ndarray (4,)
-            Updated attitude [x, y, z, w] (body→world).
+            Updated attitude [x, y, z, w] (body→NED).
         """
         # ── 1. Subtract EKF-estimated gyro bias ─────────────────────
         omega_corr: np.ndarray = omega_body - self._external_bg
@@ -93,24 +106,48 @@ class MahonyAttitudeEstimator:
         #   The accelerometer measures specific force f = a − g.
         #   When stationary, f = −g  →  normalised f should align
         #   with the expected gravity direction in body frame.
-        g_mag: float = float(np.linalg.norm(gravity_world))
-        g_world_unit: np.ndarray = gravity_world / g_mag if g_mag > 1e-6 else self.up_vector
+        g_mag: float = float(np.linalg.norm(gravity_ned))
+        # In NED, gravity points along +z (Down).  Fallback to (0,0,1) if
+        # the magnitude is negligible (should never happen near Kerbin).
+        g_ned_unit: np.ndarray = gravity_ned / g_mag if g_mag > 1e-6 else np.array([0.0, 0.0, 1.0])
 
         #   Expected gravity in body frame given current quaternion.
-        #   gravity_world is world-frame → rotate to body via q⁻¹.
-        g_expected_body: np.ndarray = R.from_quat(self.quaternion).inv().apply(g_world_unit)
+        #   gravity_ned is NED-frame → rotate to body via q⁻¹.
+        g_expected_body: np.ndarray = R.from_quat(self.quaternion).inv().apply(g_ned_unit)
 
         #   Measured gravity direction in body frame (inverted specific force)
         f_norm: float = float(np.linalg.norm(f_body))
         error: np.ndarray = np.zeros(3)
-        if f_norm > 1e-3:
-            f_unit_body: np.ndarray = -f_body / f_norm
+        # Correction gate: only trust the accelerometer gravity reference
+        # when |f| is close to |g| (i.e. gravity dominates the specific
+        # force).  This excludes:
+        #   - free fall            (|f| ≈ 0)
+        #   - coast with drag     (|f| ≈ 4-5, drag ≠ gravity)
+        #   - heavy retro burn    (|f| >> |g|, thrust dominates)
+        # but accepts hover, light braking, and cruise where the
+        # accelerometer reading still tells us which way is down.
+        # The dot-product consistency check prevents incorrect correction
+        # when the attitude error is large enough to flip the sign.
+        correction_valid: bool = False
+        near_gravity: bool = abs(f_norm - g_mag) < 0.5 * g_mag
+        if self._correction_enabled and f_norm > 1.0 and near_gravity:
+            f_unit_body = -f_body / f_norm
+            consistency = float(np.dot(g_expected_body, f_unit_body))
+            correction_valid = consistency > 0.5
+        if correction_valid:
             error = np.cross(g_expected_body, f_unit_body)
 
         # ── 3. PI correction on gyro ────────────────────────────────
         if self.ki > 0.0:
             self.integral_error += error * dt
-            omega_corr = omega_corr + self.kp * error + self.ki * self.integral_error
+            # Anti-windup: clamp integral to ±30°/s equivalent
+            max_int = float(np.deg2rad(30.0))
+            self.integral_error = np.clip(self.integral_error, -max_int, max_int)
+            # Gate integral: only apply when correction is valid —
+            # a frozen integral term injected during powered descent
+            # would act as an untrusted rate bias equal to the bg bug.
+            integral_correction = self.ki * self.integral_error if correction_valid else 0.0
+            omega_corr = omega_corr + self.kp * error + integral_correction
         else:
             omega_corr = omega_corr + self.kp * error
 
@@ -134,6 +171,7 @@ class MahonyAttitudeEstimator:
         logger.debug(
             f"Mahony: ω=[{omega_body[0]:.3f},{omega_body[1]:.3f},{omega_body[2]:.3f}] "
             f"err=[{error[0]:.3f},{error[1]:.3f},{error[2]:.3f}] "
+            f"|f|={f_norm:.3f} "
             f"q=[{self.quaternion[0]:.3f},{self.quaternion[1]:.3f},"
             f"{self.quaternion[2]:.3f},{self.quaternion[3]:.3f}]"
         )
@@ -152,6 +190,7 @@ class MahonyAttitudeEstimator:
         self.quaternion = np.array([0.0, 0.0, 0.0, 1.0])
         self.integral_error = np.zeros(3)
         self._external_bg = np.zeros(3)
+        self._correction_enabled = True
 
 
 def _quat_mul(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:

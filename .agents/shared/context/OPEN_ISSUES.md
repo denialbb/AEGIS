@@ -107,21 +107,23 @@ The hardcoded placeholder (9999.0) was replaced with `config.FDI_THRESHOLD = 3.0
 
 ---
 
-### ISS-003 — Kalman filter Q and R matrices are uninitialised placeholders
+### ISS-003 — Kalman filter Q and R matrix tuning not empirically validated
 
 - **Severity:** 🔴 CRITICAL
-- **Status:** OPEN
+- **Status:** IN PROGRESS
 - **Date opened:** 2026-06-13
 - **Module(s):** State Estimator
-- **Related ADR:** ADR-007
+- **Related ADR:** ADR-007 (superseded by ADR-030)
 - **Related Review:** None
 
 **Description**
-The process noise covariance (Q) and measurement noise covariance (R) matrices are required inputs to the Kalman filter and directly determine its behaviour. These values must match the actual noise characteristics of the injected Gaussian noise and the vessel's true dynamics. Incorrectly tuned Q/R causes the filter to either trust noisy measurements too much (R too high) or ignore them and drift (R too low). Currently these are set to identity matrices as a scaffold.
+The process noise covariance (Q) and measurement noise covariance (R) matrices are critical inputs to the 12-state Error-State EKF (ADR-030). These values must match the actual noise characteristics of the injected Gaussian noise and the vessel's true dynamics. Incorrectly tuned Q/R causes the filter to either trust noisy measurements too much or ignore them and drift.
+
+Current state: Q and R are no longer identity matrices — they are constructed from configured sigma values (SIGMA_ALT, SIGMA_VEL, PROCESS_NOISE_THRUST_COEF, etc.) that have been partially tuned via Optuna. However, the tuning has not been validated against actual flight recordings to confirm filter RMS errors are acceptable.
 
 **Acceptance Criteria**
 
-- R tuned to match the variance of the injected noise wrapper for each sensor (altimeter, accelerometer).
+- R tuned to match the variance of the injected noise wrapper for each sensor (altimeter, accelerometer, velocimeter).
 - Q tuned empirically — filter output should track true state without lag during a nominal descent.
 - Filter performance documented: RMS error of estimated altitude vs true altitude across 3 test runs.
 
@@ -445,6 +447,43 @@ Deferred to future Phase 5 (FDI adaptation). Phase 5 is not yet implemented.
 
 **Resolution**
 Docstring fixed to scalar-last `[x, y, z, w]`. Quaternion unit test implemented and passing. The mismatch was a docstring error; code was always correct.
+
+---
+
+### ISS-017 — Thruster API crashes after `space_center.load()` (null WorldTransform)
+- **Severity:** 🔴 CRITICAL
+- **Status:** RESOLVED
+- **Date opened:** 2026-06-17
+- **Module(s):** Mission Director, Engine Configuration
+- **Related ADR:** None
+- **Related Review:** None
+
+**Description**
+After `conn.space_center.load("aegis_tune_start")`, all `Thruster` API methods that access `UnityEngine.Transform.get_worldPosition/worldRotation` crash with a null reference exception. This includes `initial_thrust_direction(ref_frame)`, `thrust_direction(ref_frame)`, `thrust_position(ref_frame)`, and `thrust_reference_frame` (when used with `transform_direction/position`). The transform never recovers — even 10s after load. This is a Unity-side issue where the gimbal stash/gameobject isn't re-initialised after scene reload.
+
+Affected methods crash with:
+- `UnityEngine.Transform.get_worldPosition` (null transform) for `initial_thrust_direction`
+- `Object reference not set` for `thrust_direction` / `thrust_position`
+
+**Acceptance Criteria**
+- Engine discovery succeeds and produces correct `thrust_direction` even when the Thruster API is unavailable.
+- `transform_direction(PART_THRUST_AXIS[part.name], part.reference_frame, vessel.reference_frame)` used as final fallback produces correct thrust direction in vessel frame.
+- Fix verified by unit test running against KSP after `space_center.load()`.
+
+**Resolution**
+Added a two-level fallback in `main.py` engine discovery:
+1. Try `thruster.initial_thrust_direction(vessel.reference_frame)` (original)
+2. Catch → try `thruster.thrust_direction(vessel.reference_frame)` (original fallback)
+3. Catch → use `transform_direction(axis, part.reference_frame, vessel.reference_frame)` with axis from `config.PART_THRUST_AXIS` dict
+
+`config.PART_THRUST_AXIS` maps known part names to their thrust axis in part-local frame:
+- `liquidEngineMini.v2` (48-7S "Spark"): `(0, 1, 0)` — thrust along part +Y
+- `liquidEngine2.v2` (LV-T45 "Swivel"): `(0, 0, -1)`
+- `liquidEngine3.v2` (LV-909 "Terrier"): `(0, 0, -1)`
+- `liquidEngine` (LV-T30 "Reliant"): `(0, 0, -1)`
+- `liquidEngineS2` (LV-T45 variant): `(0, 0, -1)`
+
+Unknown parts fall back to `config.DEFAULT_THRUST_AXIS = (0, 0, -1)` (KSP stack-engine convention). Verified correct with Spark engines after `space_center.load("aegis_tune_start")`.
 
 ---
 

@@ -866,3 +866,147 @@ Implement a 12-state Error-State EKF that estimates position (3), velocity (3), 
 
 **Review Notes**
 None yet.
+
+---
+
+### ADR-031 — True NED Navigation Frame (North-East-Down)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-17
+- **Author:** Agent
+- **Module(s):** Cross-cutting
+
+**Context**
+The previous custom pad-relative reference frame (`create_relative(body.reference_frame, position=pad_pos)`) shifted the origin to the landing pad but kept ECEF axes. This meant position X/Y were in planet-fixed coordinates (not local north/east), and gravity had non-zero horizontal components when the polar axis didn't align with local vertical. Guidance decomposed errors into vertical/lateral using a projected `up_vector`, which worked but was mathematically opaque and hard to debug.
+
+**Options Considered**
+1. **Keep ECEF-axes frame with up_vector projection** — Working but non-intuitive. Gravity vector had horizontal components at non-equatorial latitudes, requiring explicit up-vector projection for vertical/lateral decomposition. Errors were frame-dependent.
+2. **ENU (East-North-Up)** — Common in robotics. +Z up means descending has negative Z, which is less natural for altitude control than positive-down.
+3. **NED (North-East-Down)** — Aviation convention. +Z = Down so altitude above ground = negative Z, descending velocity = positive Z. Gravity = [0, 0, +g]. Matches aerospace standard navigation systems.
+
+**Decision**
+Option 3: NED frame. Construct the rotation matrix from ECEF to NED using `ecef_to_ned()` in `src/common/geometry.py`, then create a kRPC `ReferenceFrame.create_relative` with the NED rotation quaternion. `up_vector = [0, 0, -1]`.
+
+**Consequences**
+- ✅ Gravity is always [0, 0, +g] in NED — purely along Down axis. Verified across 4 parametrized pad positions.
+- ✅ Descending velocity = +Z, altitude above pad = negative Z — intuitive for aerospace developers.
+- ✅ Guidance lateral/vertical decomposition uses NED axes directly (X=North, Y=East = lateral, Z=Down = vertical).
+- ✅ Frame construction is mathematically rigorous: rotation from ECEF to local-level frame using planet rotation axis.
+- ⚠️ Pole degeneracy: NED construction fails at poles (gimbal lock). Fallback uses East=[0,1,0] for polar cases.
+- ⚠️ All code that previously used `ref_frame` (ECEF-axes) was renamed to `ned_frame` and reviewed for correctness.
+
+**Review Notes**
+68 parametrized unit tests across 4 pad positions (KSC, equator, mid-south, near-pole). 10-check live KSP validation script (scripts/validate_ned_invariants.py). All invariants verified: orthonormal matrix, det=+1, unit quaternion, gravity N/E < 1e-4, down magnitude matches local g.
+
+---
+
+### ADR-032 — Sensor Warmup Phase with Truth-Attitude Initialization
+- **Status:** ACCEPTED
+- **Date:** 2026-06-17
+- **Author:** Agent
+- **Module(s):** Mission Director, State Estimator
+
+**Context**
+When the Mahony complementary filter starts from the identity quaternion [0,0,0,1], it requires ~1 second (10 ticks at 10 Hz) to converge to the correct attitude via accelerometer gravity-reference correction. During this convergence period, the EKF predicts with incorrect specific-force rotation, causing corrupted position/velocity estimates. Additionally, the EKF's initial gyroscope and accelerometer bias uncertainties were large, requiring many ticks to settle.
+
+**Options Considered**
+1. **Identity-start (status quo)** — Simple but wastes ~1 s of convergence time. Incorrect initial attitude corrupts EKF state.
+2. **Initialize Mahony from kRPC truth attitude on tick 0** — Requires exposing the raw kRPC attitude quaternion without noise injection. Eliminates convergence delay entirely.
+3. **Separate SENSOR_WARMUP state** — A dedicated 30-tick phase that initializes the filter, accumulates bias samples, and tightens EKF covariances before the main loop begins. Provides clean separation between calibration and flight.
+4. **Skip warmup entirely** — Let the EKF's large initial covariances handle convergence. Slower and risks divergence during high-dynamic phases.
+
+**Decision**
+Option 2 + 3: A dedicated `SENSOR_WARMUP` state (30 ticks / 3 s) that:
+- Initializes Mahony from kRPC truth attitude on tick 0 via `SensorModels.get_truth_attitude()`
+- Accumulates 30 gyro samples and 29 valid accel bias samples (sample 0 uses identity quaternion) for bias estimation
+- After 30 ticks, sets EKF `bg`/`ba` to accumulated means and reduces bias covariances in P
+- Transitions to `ESTIMATOR_WARMUP` (100 ticks) for EKF convergence before the active descent phase
+
+**Consequences**
+- ✅ Mahony large initial error (0.996 rad) eliminated — filter starts at correct attitude
+- ✅ Bias estimates converge before the vehicle enters active control phases
+- ✅ EKF enters `ESTIMATOR_WARMUP` with tighter bias covariances, reducing time to steady-state
+- ✅ SENSOR_WARMUP runs for all activation cases (not just low-altitude), providing consistent behavior
+- ⚠️ Adds 3 s delay before guidance activation (acceptable given typical 1000 m+ descent altitude)
+- ⚠️ Accel bias sample 0 is contaminated by identity quaternion; excluded from accumulation (29 valid samples instead of 30)
+
+**Review Notes**
+Config: `SENSOR_WARMUP_TICKS=30`, `ESTIMATOR_WARMUP_TICKS=100`, `SENSOR_WARMUP_GYRO_BIAS_SIGMA=0.003`, `SENSOR_WARMUP_ACCEL_BIAS_SIGMA=0.03`. SENSOR_WARMUP added to `_ALLOCATION_INHIBITED` and `UNGUIDED_STATES` sets.
+
+---
+
+### ADR-033 — Mission Director Refactoring into Submodules
+- **Status:** ACCEPTED
+- **Date:** 2026-06-18
+- **Author:** Agent
+- **Module(s):** Mission Director (cross-cutting)
+
+**Context**
+The original `src/main.py` had grown to over 1200 lines, containing the `MissionDirector` class alongside ~15 helper functions, state definitions, and loop logic mixed together. This made it difficult to:
+- Reason about the main control loop vs. flight-critical functions vs. UI code
+- Test individual functions in isolation
+- Navigate the file during reviews
+- Maintain separation of concerns (ADR-003)
+
+**Options Considered**
+1. **Keep monolithic main.py** — All code in one file. Simple to locate but hard to navigate and test.
+2. **Extract into sibling modules under src/mission/** — Pure decomposition: `loop.py` (control loop), `flight_control.py` (SAS, FDI, state transitions, allocation, engine management), `helpers.py` (pure utilities), `ui.py` (telemetry frame, HUD), `states.py` (enum). The `MissionDirector` class stays in `main.py` and delegates per-tick work to imported functions.
+3. **Extract MissionDirector into mission/director.py** — Would require moving all initialization logic too. Less clear where setup vs. loop separation lives.
+
+**Decision**
+Option 2: Extract into `src/mission/` submodules. `MissionDirector` class remains in `main.py` with initialization methods (`_init_reference_frame`, `_init_engines`, `_init_sensors`, etc.). The per-tick loop work is delegated to stateless function calls in the submodules. No state is held in submodules — the `MissionDirector` is the single source of truth.
+
+**Consequences**
+- ✅ main.py reduced from 1200+ to ~380 lines (initialization and class definition only)
+- ✅ Flight-critical logic (FDI, allocation, state transitions) isolated in `flight_control.py` (733 lines)
+- ✅ Loop timing, pause detection, and sensor polling cleanly separated in `loop.py` (282 lines)
+- ✅ Pure helper functions testable without mocking kRPC
+- ✅ Each submodule has a clear, documented responsibility
+- ⚠️ Functions in `flight_control.py` access `director` objects via duck-typing (`Any` type annotation) — not fully type-safe, but avoids circular dependency issues
+- ⚠️ Some cross-cutting state (e.g., `skip_predict`, `expected_throttles`) is set by `flight_control.py` and read by `ui.py` — a minor coupling that could be refactored into a shared data dict
+
+**Review Notes**
+Module structure:
+- `src/main.py` — MissionDirector class, __init__, run_loop entry
+- `src/mission/__init__.py` — empty
+- `src/mission/loop.py` — main loop, pause detection, timing
+- `src/mission/flight_control.py` — SAS, FDI, state machine, allocation, engine, throttle, abort
+- `src/mission/helpers.py` — unpack_sensor_poll, compute_a_avail, build_fuel_state
+- `src/mission/ui.py` — make_telemetry_frame, update_hud
+- `src/mission/states.py` — MissionState enum
+
+---
+
+### ADR-034 — Reference Frame Utilities Module (`src/common/reference_frame.py`)
+- **Status:** ACCEPTED
+- **Date:** 2026-06-18
+- **Author:** Agent
+- **Module(s):** Cross-cutting
+
+**Context**
+The NED reference frame construction code was duplicated verbatim in three places: `main.py::_init_reference_frame()`, `flight_recorder.py::_init_sensors()`, and `validate_ned_invariants.py`. Each duplicate was 15–20 lines of identical kRPC boilerplate (querying `body.surface_position`, calling `ecef_to_ned`, creating `ReferenceFrame.create_relative`). Additionally, the gravity computation (`mu / r²`) was inlined in `accelerometer_sensor.py::poll()` and `validate_ned_invariants.py`, and vessel state queries (`vessel.position(ned_frame)`, `vessel.flight(ned_frame).velocity`) were duplicated across `main.py`, `flight_recorder.py`, and various scripts.
+
+**Options Considered**
+1. **Keep duplication** — No refactoring cost. Each copy is self-contained but creates maintenance burden — any change to the frame construction must be replicated across all callers.
+2. **Inline helper per caller** — Each file adds a small private helper. Reduces duplication minimally but doesn't provide a single importable reference.
+3. **Single `src/common/reference_frame.py` module** — Exports `build_ned_frame()`, `compute_gravity_ned()`, `get_pad_ecef()`, and vessel-state query helpers. All callers import from one place.
+
+**Decision**
+Option 3: A dedicated `src/common/reference_frame.py` module that exports:
+- `build_ned_frame(conn, body, target_lat, target_lon) → (ned_frame, up_vector)` — single authoritative implementation of NED frame construction
+- `get_pad_ecef(body, target_lat, target_lon) → ndarray` — thin wrapper for `body.surface_position`
+- `compute_gravity_ned(body, pos_ecef) → ndarray` — `[0, 0, +g]` from `μ / r²`
+- `get_vessel_position_ned(vessel, ned_frame) → ndarray`
+- `get_vessel_velocity_ned(vessel, ned_frame) → ndarray`
+- `get_vessel_altitude_ned(vessel, ned_frame) → float`
+- `get_vessel_state_ned(vessel, ned_frame) → (pos, vel, alt)`
+
+**Consequences**
+- ✅ Canonical NED frame construction — one place to fix, all callers benefit
+- ✅ Gravity computation reused by `accelerometer_sensor.py` and `validate_ned_invariants.py`
+- ✅ Vessel state queries now have typed, documented signatures instead of inline `np.array(...)` casts
+- ✅ Pure-math rotation (`geometry.py::ecef_to_ned`) stays separate from kRPC integration (`reference_frame.py`)
+- ⚠️ Functions accept `Any` for kRPC objects (conn, body, vessel, ned_frame) — no type-safe kRPC stubs available
+- ⚠️ Debug scripts (`debug_ref_frames.py`, `debug_frame_experiment.py`) still construct frames ad-hoc; not refactored to avoid breaking experimental code
+
+**Review Notes**
+Callers updated: `main.py`, `flight_recorder.py`, `validate_ned_invariants.py`, `accelerometer_sensor.py`. The module is importable by any script without creating circular dependencies — it depends only on `geometry.py` (pure math).
