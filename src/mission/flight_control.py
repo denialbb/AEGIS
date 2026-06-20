@@ -401,6 +401,10 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
     # ── Tick 0: initialise Mahony from truth ────────────────────────
     if ticks == 0:
         _init_mahony_from_truth(director)
+        # Disable SAS during warmup so the gyro measures pure bias
+        # (free fall, no active rotation).  SAS is re-enabled by
+        # handle_sas() after the state transition from warmup.
+        director.vessel.control.sas = False
 
     # ── Accumulate samples for bias estimation ──────────────────────
     bg_accum: np.ndarray = director._warmup_bg_accum
@@ -433,12 +437,10 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
         bg_mean: np.ndarray = bg_accum / count
         ba_mean: np.ndarray = ba_accum / count
 
-        # Use the warmup gyro bias estimate as initial condition.
-        # The SAS prograde hold rotates the vessel during warmup, so the
-        # mean includes some actual rotation mixed with bias — but even a
-        # partially-correct bias is better than zero.  The EKF's new F-matrix
-        # coupling (δbg → δvel via R·[f]×·dt²) lets the measurement update
-        # refine the estimate during flight.
+        # SAS was turned off during warmup, so the gyro measured pure
+        # bias (the vessel is in free fall with minimal rotation).
+        # The EKF's F-matrix coupling (δbg → δvel via R·[f]×·dt²) will
+        # refine this estimate during flight if needed.
         director.estimator.bg = bg_mean
         
         # FRAME-005: Do NOT use the warmup accel bias estimate if flying.
