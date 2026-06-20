@@ -37,6 +37,19 @@ class AttitudeController:
         state: str,
         ves_orientation: str,
     ) -> None:
+        """Apply attitude control torques via joystick trims.
+
+        Parameters
+        ----------
+        director: Any
+            The mission director providing access to the vessel control.
+        torque_body: np.ndarray
+            Desired torque vector in the vessel body frame (Nm).
+        state: str
+            Current mission state, used to determine if control is active.
+        ves_orientation: str
+            Vessel orientation mode (e.g., "stability" or "off").
+        """
         if not self._is_active(state, ves_orientation):
             self._zero_controls(director)
             return

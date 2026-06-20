@@ -54,6 +54,7 @@ class HudDisplay:
         }
 
     def start(self) -> None:
+        """Initialize and display the HUD if enabled and in a TTY."""
         if not config.HUD_ENABLED:
             logger.warning("HUD disabled by config (HUD_ENABLED=False)")
             return
@@ -72,11 +73,13 @@ class HudDisplay:
         suppress_stdout_logging()
 
     def stop(self) -> None:
+        """Terminate the live HUD display and restore stdout logging."""
         if self._live is not None:
             self._live.__exit__(None, None, None)
             self._live = None
 
     def update(self, data: Dict[str, Any]) -> None:
+        """Update HUD data and refresh display if interval elapsed."""
         self._data.update(data)
         if self._live is None:
             return

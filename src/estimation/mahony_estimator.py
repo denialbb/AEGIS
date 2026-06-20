@@ -54,9 +54,11 @@ class MahonyAttitudeEstimator:
     # ────────────────────────────────────────────────────────────────
 
     def enable_correction(self) -> None:
+        """Enable gravity-based correction in the filter."""
         self._correction_enabled = True
 
     def disable_correction(self) -> None:
+        """Disable gravity-based correction in the filter."""
         self._correction_enabled = False
 
     # ────────────────────────────────────────────────────────────────

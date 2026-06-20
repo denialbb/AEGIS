@@ -94,7 +94,8 @@ def test_flight_recorder_basic(tmp_path, monkeypatch):
             )
 
     # The original constructor expects arguments; provide a factory that ignores them
-    def dummy_factory(*_, **__):
+    def dummy_factory(*_, **__) -> DummySensor:
+        """Factory returning a DummySensor instance for tests."""
         return DummySensor()
 
     monkeypatch.setattr(flight_recorder, "SensorModels", dummy_factory)
