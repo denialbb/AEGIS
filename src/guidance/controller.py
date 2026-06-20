@@ -75,9 +75,7 @@ class GuidanceController:
         else:
             self.max_torque = np.array(config.GUIDANCE_MAX_TORQUE, dtype=float)
 
-        self._filtered_horiz: np.ndarray = np.zeros(3)
-        self.horiz_accel_clamp = getattr(config, "HORIZ_ACCEL_CLAMP", 3.0)
-        self.horiz_accel_alpha = getattr(config, "HORIZ_ACCEL_ALPHA", 0.3)
+
 
         self.inertia_tensor: np.ndarray | None = None
         if inertia_tensor is not None:
@@ -126,7 +124,6 @@ class GuidanceController:
         if self.adrc is not None:
             self.adrc.reset()
         self._filtered_torque = np.zeros(3)
-        self._filtered_horiz = np.zeros(3)
 
     def compute_wrench(self,
                        current_state: np.ndarray,
@@ -216,8 +213,13 @@ class GuidanceController:
             if v_norm > limit:
                 vert = (vert / v_norm) * limit
 
+        # Physics-consistent lateral clamp: at max_pitch_deg tilt,
+        # lateral accel = |vertical accel| * tan(max_tilt).
+        # This ensures the force command is achievable at the allowed tilt.
+        max_tilt_rad = np.deg2rad(max_pitch_deg)
+        vert_mag = float(np.linalg.norm(vert))
+        max_lateral_accel = max(0.5, vert_mag * math.tan(max_tilt_rad))
         h_norm = float(np.linalg.norm(horiz))
-        max_lateral_accel = 15.0
         if h_norm > max_lateral_accel:
             horiz = (horiz / h_norm) * max_lateral_accel
 
@@ -267,7 +269,6 @@ class GuidanceController:
         # Clamp tilt to max_pitch_deg to avoid aggressive maneuvering
         dot_up = np.clip(np.dot(target_up_ned, up_vector), -1.0, 1.0)
         tilt_angle = np.arccos(dot_up)
-        max_tilt_rad = np.deg2rad(max_pitch_deg)
 
         if tilt_angle > max_tilt_rad:
             # Rotate target_up_ned towards up_vector so its angle is max_tilt_rad
