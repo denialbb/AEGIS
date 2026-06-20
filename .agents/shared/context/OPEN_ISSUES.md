@@ -375,7 +375,7 @@ Later upgraded to a suicide-burn sqrt profile: `v_target = -sqrt(2 * a_avail * a
 - **Date opened:** 2026-06-14
 - **Module(s):** Guidance (ADRC)
 - **Related ADR:** ADR-027
-- **Related Review:** None
+- **Related Review:** REVIEW_20260615_002100
 
 **Description**
 The `fal()` nonlinearity from the ESO equations has a `δ=0` edge case causing `ZeroDivisionError` for `δ**(1-α)` when `α<1`. Additionally, `b0` for attitude axes (≈1/I_axis) differs fundamentally from translation axes (≈1/mass). Per NN_ADRC_DESIGN_ADVISORY.md §4.
@@ -385,27 +385,27 @@ The `fal()` nonlinearity from the ESO equations has a `δ=0` edge case causing `
 - All six per-axis `b0` derivations documented with data source and clean-telemetry caveats. ⚠️ Deferred — b0 currently defaults to 1.0 per-axis.
 
 **Resolution**
-`fal()` δ>0 guard implemented (ValueError with clear message). Per-axis `b0` derivation remains deferred; current defaults to 1.0.
+`fal()` δ>0 guard implemented (ValueError with clear message). Added `b0 != 0` guard in `PerAxisESO.__init__` to prevent silent inf/nan propagation. Per-axis `b0` derivation remains deferred; current defaults to 1.0.
 
 ---
 
 ### ISS-013 — NN output bounding and ADRC fallback mode (NN-ADRC Risk)
 - **Severity:** 🟡 MAJOR
-- **Status:** IN PROGRESS
+- **Status:** RESOLVED
 - **Date opened:** 2026-06-14
 - **Module(s):** Guidance (ADRC)
 - **Related ADR:** ADR-027
-- **Related Review:** None
+- **Related Review:** REVIEW_20260615_002100
 
 **Description**
 An untrained-region NN producing NaN or out-of-range `Δr̈` is similar to a runtime TypeError during engine-out. ADR-002's safety philosophy requires clamping and fallback. Per NN_ADRC_DESIGN_ADVISORY.md §4.
 
 **Acceptance Criteria**
-- `Δr̈` clamped to a physically plausible range. ✅ Implemented in `nn.py` line 87 (`np.clip(out, -self.clamp, self.clamp)`).
-- Documented fallback (pure ADRC, NN contribution = 0) when clamp triggers repeatedly. ⚠️ Not yet implemented.
+- `Δr̈` clamped to a physically plausible range. ✅ Implemented in `nn.py` line 87 with `np.nan_to_num` pre-processing and `np.clip`.
+- Documented fallback (pure ADRC, NN contribution = 0) when clamp triggers repeatedly. ✅ Implemented in `controller.py` with consecutive issue tracking and NN disable mechanism.
 
 **Resolution**
-Clamping to `[-clamp, +clamp]` implemented. Fallback mechanism (switching to pure ADRC when clamp triggers repeatedly) not yet implemented.
+Enhanced NN output bounding to handle NaN/inf values using `np.nan_to_num` before clipping. Implemented fallback mechanism that tracks consecutive NaN/clamping events and disables NN after threshold, switching to pure ADRC-CTM mode.
 
 ---
 
