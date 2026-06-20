@@ -970,7 +970,7 @@ def _apply_allocation(
             expected_force += gimballed_dir * engine.max_thrust * engine.expected_throttle
 
         # Smooth gimbal deflections with EMA and tighter rate limit
-        gimbal_alpha = 0.6  # EMA smoothing factor
+        gimbal_alpha = 0.2  # EMA smoothing factor
         gimbal_rate_limit = np.deg2rad(2.0)  # Max 20 deg/sec
         if not is_first_allocation and hasattr(director, '_prev_gimbals') and i < len(director._prev_gimbals):
             prev_g = director._prev_gimbals[i]

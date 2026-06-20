@@ -103,9 +103,11 @@ def test_controller_gyroscopic_term():
     # target_up_world = normalize([0,0,9.81]) = [0,0,1] = up_vector
     # In body frame with nose-up attitude: target_up_body = [0,1,0]
     # err_axis = cross([0,1,0], [0,1,0]) = [0,0,0]
-    # torque = -J*Kd*omega + omega x (J*omega)
+    # However, err_axis[1] is now overridden to -omega[1] * config.ROLL_KD
     J = np.diag([1000.0, 500.0, 800.0])
-    tau_pd = -(J @ np.diag([6.0, 6.0, 6.0])) @ angular_velocity
+    import src.config as config
+    err_axis = np.array([0.0, -angular_velocity[1] * config.ROLL_KD, 0.0])
+    tau_pd = J @ (np.diag([9.0, 9.0, 9.0]) @ err_axis - np.diag([6.0, 6.0, 6.0]) @ angular_velocity)
     h = J @ angular_velocity
     tau_gyro = np.cross(angular_velocity, h)
     expected_torque = tau_pd + tau_gyro

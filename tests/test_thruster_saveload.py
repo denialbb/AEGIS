@@ -16,6 +16,7 @@ if __name__ == "__main__":
     parts = vessel.parts.with_tag('AegisEngine')
 
     for i, part in enumerate(parts):
+        assert part.engine is not None
         thruster = part.engine.thrusters[0]
         print(f'Engine {i}:')
         try:
@@ -24,7 +25,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f'  initial_thrust_direction(vessel.rf) ERROR: {type(e).__name__}: {str(e)[:80]}')
         try:
-            d = thruster.initial_thrust_direction()
+            d = thruster.initial_thrust_direction(vessel.reference_frame)  # type: ignore
             print(f'  initial_thrust_direction() = {d}')
         except Exception as e:
             print(f'  initial_thrust_direction() ERROR: {type(e).__name__}: {str(e)[:80]}')

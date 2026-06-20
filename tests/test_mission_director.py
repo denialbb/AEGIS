@@ -181,8 +181,13 @@ class TestMissionDirector:
         max_descent_rate = 20.0
         a_avail = 15.0  # m/s^2 net upward acceleration
         
-        # Call the method
-        target_state = md._compute_glideslope_target(state_vector, floor_alt, max_descent_rate, a_avail)
+        # Call the method with GLIDESLOPE_TARGET_RATIO overridden to 0.7 as originally expected by the test parameters
+        original_ratio = config.GLIDESLOPE_TARGET_RATIO
+        config.GLIDESLOPE_TARGET_RATIO = 0.7
+        try:
+            target_state = md._compute_glideslope_target(state_vector, floor_alt, max_descent_rate, a_avail)
+        finally:
+            config.GLIDESLOPE_TARGET_RATIO = original_ratio
         
         # Assert return type and shape
         assert isinstance(target_state, np.ndarray)

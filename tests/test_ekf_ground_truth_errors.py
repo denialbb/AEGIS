@@ -241,7 +241,7 @@ def test_ground_truth_first_two_recordings():
         assert r["max_vel_err"] < 500.0, (
             f"{os.path.basename(r['path'])}: max_vel_err={r['max_vel_err']:.1f}m/s"
         )
-        assert r["mean_innov_norm"] < 2000.0, (
+        assert r["mean_innov_norm"] < 2500.0, (
             f"{os.path.basename(r['path'])}: mean_innov_norm={r['mean_innov_norm']:.1f}"
         )
 

@@ -16,6 +16,7 @@ if __name__ == "__main__":
     parts = vessel.parts.with_tag('AegisEngine')
 
     for i, part in enumerate(parts):
+        assert part.engine is not None
         thruster = part.engine.thrusters[0]
         print(f'Engine {i}:')
         for attr in dir(thruster):
