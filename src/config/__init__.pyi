@@ -42,6 +42,7 @@ LOG_TO_FILE: bool
 LOG_FILE_PATH: str
 HUD_ENABLED: bool
 HUD_REFRESH_HZ: float
+ROLL_CORRECTION_KP: float
 
 # sensors.conf
 SIGMA_ALT: float

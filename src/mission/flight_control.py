@@ -478,6 +478,9 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
 
         # Transition to the appropriate next state (same altitude/vel
         # logic that was in _do_activation before SENSOR_WARMUP existed).
+        # Note: correction stays disabled after _init_mahony_from_truth.
+        # It will be enabled only when entering coast (non-powered) states
+        # via _transition_to.
         est_vz = float(np.dot(director.estimator.vel, director.up_vector))
         if est_vz > 0:
             _transition_to(director, "ASCENT_COAST")
@@ -524,7 +527,6 @@ def process_state_transitions(
     if director.state == "ESTIMATOR_WARMUP":
         director._warmup_ticks = getattr(director, "_warmup_ticks", 0) + 1
         if director._warmup_ticks >= config.ESTIMATOR_WARMUP_TICKS:
-            director.sensors.attitude_estimator.enable_correction()
             _transition_to(director, "POWERED_DESCENT")
         return
 
@@ -532,7 +534,6 @@ def process_state_transitions(
         if est_alt > config.ALT_HYPERSONIC:
             _transition_to(director, "HYPERSONIC_COAST")
         else:
-            director.sensors.attitude_estimator.enable_correction()
             _transition_to(director, "POWERED_DESCENT")
         return
 
@@ -541,7 +542,6 @@ def process_state_transitions(
         return
 
     if director.state == "HYPERSONIC_COAST" and est_alt < config.ALT_POWERED_DESCENT:
-        director.sensors.attitude_estimator.enable_correction()
         _transition_to(director, "POWERED_DESCENT")
         return
 
@@ -583,6 +583,15 @@ def _transition_to(director: Any, new_state: str) -> None:
         director._phase_entry_ticks = director._dbg_tick_count
         director._early_translation_checked = False
         director._landed_timer = 0.0
+
+    # Mahony accelerometer correction: disable during powered phases
+    # (engine thrust produces a 1g specific force that the filter
+    # would mistake for gravity), re-enable during coast/non-powered
+    # phases where f_body is dominated by gravity.
+    if new_state in ("POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT"):
+        director.sensors.attitude_estimator.disable_correction()
+    elif new_state in ("ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "LANDED"):
+        director.sensors.attitude_estimator.enable_correction()
 
     # Hardware Deployment & Lights
     if new_state == "POWERED_DESCENT":
