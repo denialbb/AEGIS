@@ -47,6 +47,7 @@ class AttitudeController:
         ves_orientation: str,
         current_attitude: np.ndarray,
         est_alt: float = 0.0,
+        angular_velocity: np.ndarray | None = None,
     ) -> None:
         if not self._is_active(state, ves_orientation):
             self._zero_controls(director)
@@ -62,17 +63,14 @@ class AttitudeController:
         target_nose_ned = self._clamp_pitch(
             target_nose_ned, director.up_vector, max_pitch
         )
-        self._apply_control(director, state, target_nose_ned, current_attitude)
+        self._apply_control(director, state, target_nose_ned, current_attitude, angular_velocity)
 
     def _is_active(self, state: str, ves_orientation: str) -> bool:
         if state not in (
-            "POWERED_DESCENT",
             "HOVER_TARGETING",
             "TERMINAL_DESCENT",
             "TERMINAL_LANDING",
         ):
-            return False
-        if state == "POWERED_DESCENT" and ves_orientation != "stability":
             return False
         if state in ("HOVER_TARGETING", "TERMINAL_DESCENT", "TERMINAL_LANDING"):
             return ves_orientation in ("stability", "off")
@@ -133,7 +131,8 @@ class AttitudeController:
             return up
 
         if norm_a > 1e-6:
-            return a_cmd_ned / norm_a
+            raw_target = a_cmd_ned / norm_a
+            return self._clamp_pitch(raw_target, up, max_pitch_deg=5.0)
         return up
 
     def _terminal_target_nose(
@@ -157,7 +156,8 @@ class AttitudeController:
             return up
 
         if norm_a > 1e-6:
-            return a_cmd_ned / norm_a
+            raw_target = a_cmd_ned / norm_a
+            return self._clamp_pitch(raw_target, up, max_pitch_deg=3.0)
         return up
 
     def _clamp_pitch(
@@ -191,6 +191,7 @@ class AttitudeController:
         state: str,
         target_nose_ned: np.ndarray,
         current_attitude: np.ndarray,
+        angular_velocity: np.ndarray | None = None,
     ) -> None:
         rot_body_to_ned = R.from_quat(current_attitude)
 
@@ -201,22 +202,27 @@ class AttitudeController:
         # cross([0,1,0], target_body) = [tz, 0, -tx]
         tx, _, tz = target_nose_body
 
-        # Pitch: positive tz → target is below the nose → pitch down (positive KSP pitch)
-        pitch_error = tz
-        # Yaw: positive tx → target is starboard → yaw right (positive KSP yaw)
+        # Pitch: negative tz → target is towards Belly → pitch down (positive KSP pitch)
+        # Yaw: positive tx → target is to the right → yaw right (positive KSP yaw)
+        pitch_error = -tz
         yaw_error = tx
-
         error_mag = math.sqrt(pitch_error ** 2 + yaw_error ** 2)
         if error_mag < self.ERROR_DEADBAND:
-            self._smooth_set(director, 0.0, 0.0)
+            self._smooth_set(director, 0.0, 0.0, 0.0)
             logger.debug(
                 f"[ATTITUDE] state={state} err_mag={error_mag:.4f} < deadband → hold"
             )
             return
 
         kp = config.ATTITUDE_KP
+        kd = getattr(config, "ATTITUDE_KD", 0.0)
+        
         raw_pitch = kp * pitch_error
         raw_yaw = kp * yaw_error
+        
+        if angular_velocity is not None:
+            raw_pitch += kd * angular_velocity[0]
+            raw_yaw += kd * angular_velocity[2]
 
         if error_mag > 1.0:
             scale = 1.0 / error_mag
@@ -243,11 +249,11 @@ class AttitudeController:
         )
 
     def _smooth_set(
-        self, director: Any, pitch_cmd: float, yaw_cmd: float
+        self, director: Any, pitch_cmd: float, yaw_cmd: float, roll_cmd: float = 0.0
     ) -> None:
         a = self._cmd_alpha
         self._prev_pitch_cmd = a * pitch_cmd + (1.0 - a) * self._prev_pitch_cmd
         self._prev_yaw_cmd = a * yaw_cmd + (1.0 - a) * self._prev_yaw_cmd
         director.vessel.control.pitch = float(self._prev_pitch_cmd)
         director.vessel.control.yaw = float(self._prev_yaw_cmd)
-        director.vessel.control.roll = 0.0
+        director.vessel.control.roll = float(roll_cmd)

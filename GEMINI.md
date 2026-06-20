@@ -42,4 +42,5 @@ If you need architectural context, read `docs/architecture_design.md`.
   - Run mypy: `wsl -d Arch .venv/bin/mypy`
   - Run pytest: `wsl -d Arch .venv/bin/pytest`
   - **Run AEGIS**: Use the `./run.sh` script to run the main program (it handles dynamic KRPC host IP resolution).
+  - **KRPC Server IP**: The correct KRPC server IP is hardcoded as `172.22.80.1` in `src/config/kRPC.conf` (previously dynamically resolved).
 

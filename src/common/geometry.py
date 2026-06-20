@@ -36,10 +36,10 @@ def ecef_to_ned(
     up_vec = pad_ecef / pad_norm        # points away from body centre
     down = -up_vec                      # NED Down axis in ECEF
 
-    # ── East = normalize(up × north_pole) ──────────────────────────────
+    # ── East = normalize(north_pole × up) ──────────────────────────────
     # Kerbin's rotation axis in ECEF is +Z.
     north_pole_ecef = np.array([0.0, 0.0, 1.0])
-    east_ecef = np.cross(up_vec, north_pole_ecef)
+    east_ecef = np.cross(north_pole_ecef, up_vec)
     east_norm = float(np.linalg.norm(east_ecef))
     if east_norm < 1e-10:
         east_ecef = np.array([0.0, 1.0, 0.0])   # fallback at poles
@@ -53,6 +53,9 @@ def ecef_to_ned(
     # Columns of R_ned→ecef = [north, east, down]_ecef
     # R_ecef→ned = R_ned→ecef^T
     R_ecef_to_ned = np.column_stack([north_ecef, east_ecef, down]).T
-    ned_quat = R.from_matrix(R_ecef_to_ned).as_quat()  # [x,y,z,w] scipy convention
+    # kRPC's create_relative rotation parameter expects a quaternion that
+    # rotates from the NEW frame to the BASE frame (NED -> ECEF).
+    # Therefore, we must use the transpose of R_ecef_to_ned.
+    ned_quat = R.from_matrix(R_ecef_to_ned.T).as_quat()  # [x,y,z,w] scipy convention
 
     return R_ecef_to_ned, ned_quat, north_ecef, east_ecef
