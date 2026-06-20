@@ -61,15 +61,15 @@ What does "fixed" look like? What test or condition proves this is resolved?
 
 ### ISS-001 — FDI noise threshold not yet empirically calibrated
 
-- **Severity:** 🔴 CRITICAL
-- **Status:** OPEN
+- **Severity:** 🟡 MAJOR
+- **Status:** IN PROGRESS
 - **Date opened:** 2026-06-13
 - **Module(s):** FDI
 - **Related ADR:** ADR-004
 - **Related Review:** None
 
 **Description**
-The FDI compares expected vs measured acceleration to detect engine failure. The deviation threshold that triggers a fault flag is currently a placeholder value. It has not been calibrated against actual Kalman filter output variance for this vessel. Too tight a threshold produces false positives during normal burn transients. Too loose a threshold means a dead engine goes undetected until the vessel is already spinning.
+The FDI compares expected vs measured acceleration to detect engine failure. The deviation threshold that triggers a fault flag must be calibrated against actual Kalman filter output variance for this vessel. Too tight a threshold produces false positives during normal burn transients. Too loose a threshold means a dead engine goes undetected until the vessel is already spinning.
 
 **Acceptance Criteria**
 
@@ -79,7 +79,7 @@ The FDI compares expected vs measured acceleration to detect engine failure. The
 
 **Resolution**
 
-<!-- Fill in when resolved -->
+The hardcoded placeholder (9999.0) was replaced with `config.FDI_THRESHOLD = 3.0` (commit 88d8853). The default 3.0 value is within the recommended [1.5, 5.0] range from `config.py`. Empirical calibration against KF output variance is still pending — downgraded from CRITICAL to MAJOR since the hardcoded-bypass bug is fixed.
 
 ---
 
@@ -352,15 +352,18 @@ so the Kalman-estimated velocity is invisible in telemetry.
   target (a few seconds, not the whole descent).
 - `TelemetryFrame.velocity` reflects `state_vector[3:]` so the estimator's
   velocity output is visible for verification.
-- GLIDESLOPE_K_ALT and per-phase max descent rates are documented as tunable
-  parameters requiring empirical calibration against the vessel's actual
-  thrust-to-weight ratio (similar caveat to ISS-001/ISS-003).
+- _Removed:_ GLIDESLOPE_K_ALT empirical calibration — the sqrt suicide-burn
+  profile (`v_target = -sqrt(2 * a_avail * alt_above_floor)`) derives the
+  target directly from the vessel's actual TWR each tick, eliminating the
+  need for open-loop gain tuning against TWR.
 - ARCHITECTURE.md / a new ADR documents the glide-slope target-generation
   algorithm (suggest ADR-022, following the ADR-021 precedent for ISS-010).
 
 **Resolution**
 
 Implemented `_compute_glideslope_target` to dynamically track velocity while zeroing vertical position error, avoiding actuator saturation.
+
+Later upgraded to a suicide-burn sqrt profile: `v_target = -sqrt(2 * a_avail * alt_above_floor)`, where `a_avail` is derived from the vessel's actual TWR each tick. This eliminates the linear `k_alt * alt` profile that saturated at high altitude and required empirical tuning against TWR. The guidance's `a_cmd_world` is also clamped to `ACCEL_CLAMP_FACTOR × a_avail` to prevent attitude target flipping during saturating transients.
 
 ---
 
@@ -442,3 +445,29 @@ Deferred to future Phase 5 (FDI adaptation). Phase 5 is not yet implemented.
 
 **Resolution**
 Docstring fixed to scalar-last `[x, y, z, w]`. Quaternion unit test implemented and passing. The mismatch was a docstring error; code was always correct.
+
+---
+
+### ISS-016 — `max_thrust` queried once at init; stale value affects a_avail and allocator at altitude
+
+- **Severity:** 🔴 CRITICAL
+- **Status:** RESOLVED
+- **Date opened:** 2026-06-15
+- **Module(s):** Mission Director, Control Allocator
+- **Related ADR:** None
+
+**Description**
+`Engine.max_thrust` is queried once during `MissionDirector.__init__` and stored in `e.max_thrust`. In kRPC, `part.engine.max_thrust` changes with atmospheric pressure — engines produce more thrust in thin air. The stale sea-level value causes two problems:
+
+1. **`a_avail` underestimation** — `total_max_thrust = sum(e.max_thrust)` is too low → sqrt profile computes a slower target speed than the vehicle can actually brake to → the vehicle appears "too fast" relative to the profile → commands maximum braking.
+2. **Allocator throttle overestimation** — `throttle = f_mag / engine.max_thrust` divides by the lower stale value → actual physical thrust exceeds commanded → vehicle brakes harder than expected → overshoots target speed → stops and reverses.
+
+**Acceptance Criteria**
+- `e.max_thrust` is refreshed from `part.engine.max_thrust` on every tick before `a_avail` and allocator run.
+- `a_avail` reflects actual atmospheric conditions at current altitude.
+- Allocator throttle correctly represents the fraction of available thrust at current altitude.
+
+**Resolution**
+Added a `max_thrust` refresh loop in `main.py` before the `a_avail` computation (lines 547-552): each tick, `e.max_thrust = engine_obj.max_thrust` is queried fresh from kRPC for all active engines. This ensures both the sqrt profile target speed and the allocator throttle calculation use the altitude-correct thrust.
+
+In tandem, `ACCEL_CLAMP_FACTOR` raised from 1.5 to 2.5 so the clamp satisfies `clamp >= 1 + g / a_avail` for TWR >= 1.5 vehicles, allowing the profile's required `a_avail` net deceleration to be achieved through the clamp.

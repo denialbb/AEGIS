@@ -30,11 +30,15 @@ These define the altitudes (in meters) where the mission director transitions fl
 | `ALT_TERMINAL` | Final slow descent phase threshold. | Sets the height of the final slow-touchdown phase. | **Min:** 10.0<br>**Max:** 200.0 |
 
 ## 3. Sensor Noise & State Estimation
-Used by the Kalman Filter to fuse noisy telemetry.
+Used by the Error-State Extended Kalman Filter (EKF) to fuse IMU (gyroscope and accelerometer), altimeter, and velocimeter telemetry.
 | Parameter | Description | Practical Effect | Min/Max Examples |
 |-----------|-------------|------------------|------------------|
-| `SIGMA_ALT` | Standard deviation of altitude noise (meters). | Higher values make the estimator trust the IMU (accelerometer) more for vertical position. | **Min:** 0.1 (Perfect radar)<br>**Max:** 10.0 (Noisy radar) |
+| `SIGMA_ALT` | Standard deviation of altitude noise (meters). | Higher values make the estimator trust the IMU and velocimeter more for vertical position. | **Min:** 0.1 (Perfect radar)<br>**Max:** 10.0 (Noisy radar) |
 | `SIGMA_ACCEL` | Standard deviation of accelerometer noise (m/s²). | Higher values make the estimator trust the altitude sensor more, slowing down velocity reaction time. | **Min:** 0.05 (High-end IMU)<br>**Max:** 2.0 (Cheap IMU) |
+| `SIGMA_GYRO` | Standard deviation of gyroscope noise (rad/s). | Higher values make the estimator trust the gyroscope less for attitude and bias estimation. | **Min:** 0.001 (High-end gyro)<br>**Max:** 0.1 (Cheap gyro) |
+| `GYRO_BIAS_INSTABILITY` | Gyroscope bias instability (rad/s/sqrt(Hz)). | Higher values increase the allowed random walk of gyroscope bias, making the estimator slower to track bias changes. | **Min:** 1e-6 (Very stable)<br>**Max:** 1e-3 (Unstable) |
+| `ACCEL_BIAS_INSTABILITY` | Accelerometer bias instability (m/s²/sqrt(Hz)). | Higher values increase the allowed random walk of accelerometer bias, making the estimator slower to track bias changes. | **Min:** 1e-5 (Very stable)<br>**Max:** 1e-2 (Unstable) |
+| `PROCESS_NOISE_THRUST_COEF` | Scale factor for adaptive process‑noise in the StateEstimator (see architecture design). | Increases the velocity‑noise block of the EKF proportionally to the squared magnitude of the commanded acceleration. Helps keep altitude/velocity estimates stable during high‑thrust phases. | **Typical:** 0.05 – 0.2 (tuned via Optuna) |
 
 ## 4. Fault Detection & Isolation (FDI)
 | Parameter | Description | Practical Effect | Min/Max Examples |
@@ -45,10 +49,18 @@ Used by the Kalman Filter to fuse noisy telemetry.
 These parameters dictate the target velocities during descent.
 | Parameter | Description | Practical Effect | Min/Max Examples |
 |-----------|-------------|------------------|------------------|
-| `GLIDESLOPE_K_ALT` | Proportional multiplier for descent speed. | Determines how sharply velocity drops as altitude drops. e.g., `0.3` means at 100m, target speed is 30m/s. | **Min:** 0.1 (Slow drop)<br>**Max:** 0.8 (Aggressive) |
-| `GLIDESLOPE_RATE_POWERED_DESCENT` | Max descent speed during initial braking (m/s). | Higher values mean faster falling during the braking phase. | **Min:** 20.0<br>**Max:** 150.0 |
-| `GLIDESLOPE_RATE_HOVER` | Max descent speed while searching for the pad. | Slower speeds give the vessel more time to move laterally to the pad. | **Min:** 5.0<br>**Max:** 30.0 |
+| `GLIDESLOPE_K_ALT` | **DEPRECATED** — no longer used. The sqrt suicide-burn profile replaces the old linear profile. | Kept for backward compat only. | — |
+| `GLIDESLOPE_RATE_POWERED_DESCENT` | Structural/terminal-velocity cap for powered descent (m/s). | With the sqrt profile, this is a hard upper bound, not the guidance profile itself. Set high enough (e.g., 300) so the sqrt formula dominates over the altitude range of interest. | **Min:** 20.0<br>**Max:** 500.0 |
+| `GLIDESLOPE_RATE_HOVER` | Max descent speed while searching for the pad (m/s). | Slower speeds give the vessel more time to move laterally to the pad. | **Min:** 5.0<br>**Max:** 30.0 |
 | `GLIDESLOPE_RATE_TERMINAL` | Touchdown speed (m/s). | **Critical:** Must be lower than the landing leg destruction limit. | **Min:** 0.5<br>**Max:** 5.0 |
+
+The target profile is now `v_target = -sqrt(2 * a_avail * alt_above_floor)`, where
+`a_avail = total_max_thrust / mass - g` is computed each tick from the vessel's
+actual TWR.  This is a proper suicide-burn that matches the target speed to the
+vehicle's braking capability at every altitude, eliminating the PD saturation
+that occurred with the old linear profile at high altitude.  `GLIDESLOPE_RATE_*`
+serve as structural/terminal-velocity caps to protect against the sqrt producing
+unreachably high speeds for a particular vessel design.
 
 ## 6. Proportional-Derivative (PD) Guidance Gains
 These tune the vessel's translation and attitude behavior. If the vessel is sluggish or oscillates, these need tuning.
@@ -56,5 +68,10 @@ These tune the vessel's translation and attitude behavior. If the vessel is slug
 |-----------|-------------|------------------|------------------|
 | `GUIDANCE_KP_POS_LATERAL` / `_VERTICAL` | Positional stiffness. | Higher values make the vessel snap to its target position aggressively. Too high causes overshoot. | **Min:** 0.1 (Sluggish)<br>**Max:** 5.0 (Jittery) |
 | `GUIDANCE_KD_VEL_LATERAL` / `_VERTICAL` | Velocity dampening (Derivative). | Higher values prevent overshoot and strictly enforce speed limits. Vertical is typically higher than lateral to fight gravity aggressively. | **Min:** 2.0<br>**Max:** 100.0 |
-| `GUIDANCE_KP_ATT` | Attitude stiffness (Pitch, Yaw, Roll). | Higher values command more torque to point the nose. Too high causes thrust windup and allocator saturation. | **Min:** 2.0<br>**Max:** 50.0 |
-| `GUIDANCE_KD_ATT` | Attitude dampening (Gimbal oscillation control). | **Critical for Gimbals:** Higher values heavily dampen "wobbling" or "rocking" by resisting rotational speed. | **Min:** 1.0 (Wobbly)<br>**Max:** 40.0 (Stiff) |
+| `GUIDANCE_KP_ATT` | Attitude stiffness (Pitch, Yaw, Roll). — **DEPRECATED** in favor of `GUIDANCE_ATT_NATURAL_FREQ`/`GUIDANCE_ATT_DAMPING_RATIO` | Higher values command more torque to point the nose. Too high causes thrust windup and allocator saturation. | **Min:** 2.0<br>**Max:** 50.0 |
+| `GUIDANCE_KD_ATT` | Attitude dampening (Gimbal oscillation control) — **DEPRECATED** in favor of `GUIDANCE_ATT_NATURAL_FREQ`/`GUIDANCE_ATT_DAMPING_RATIO` | **Critical for Gimbals:** Higher values heavily dampen "wobbling" or "rocking" by resisting rotational speed. | **Min:** 1.0 (Wobbly)<br>**Max:** 40.0 (Stiff) |
+| `GUIDANCE_ATT_NATURAL_FREQ` | Natural frequency (rad/s) for attitude control per axis `[pitch, yaw, roll]`. Replaces direct Kp/Kd gains when inertia-scaled torque is active (ADR-028). Kp = ωₙ², Kd = 2ζωₙ. | Higher = faster attitude response, lower = smoother. | **Min:** 1.0<br>**Max:** 6.0 |
+| `GUIDANCE_ATT_DAMPING_RATIO` | Damping ratio for attitude control per axis `[pitch, yaw, roll]`. ζ < 1 = underdamped, ζ = 1 = critically damped, ζ > 1 = overdamped. | Higher = less oscillation but slower convergence. | **Min:** 0.5<br>**Max:** 2.0 |
+| `ACCEL_CLAMP_FACTOR` | Multiplier on `a_avail` to cap `a_cmd_world` magnitude. | Clamps the commanded acceleration before it is projected into force and attitude target. Must satisfy `clamp >= 1 + g / a_avail` so the profile's required net deceleration can be achieved. For TWR=2 this requires `>= 2.0`. Prevents the attitude target from flipping during saturating transients. | **Min:** 2.0 (Marginal)<br>**Max:** 4.0 (Aggressive) |
+| `PROCESS_NOISE_THRUST_COEF` | Scale factor for adaptive process‑noise in the StateEstimator (see architecture design). | Increases the velocity‑noise block of the Kalman filter proportionally to the squared magnitude of the commanded acceleration. Helps keep altitude/velocity estimates stable during high‑thrust phases. | **Typical:** 0.05 – 0.2 (tuned via Optuna) |
+| `RW_AUGMENT_GAIN` | Maps `torque_body` (N·m) to stock [-1, 1] pitch/yaw/roll range for reaction wheels. | **Currently disabled (commented out in config.py).** Augments gimbal-trim torque with reaction wheels when gimbal authority is low. Tune empirically. See ADR-029. | **Default:** 0.0 (Off)<br>**Max:** 1e-3 |

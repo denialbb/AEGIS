@@ -50,6 +50,7 @@ Leave blank until a review touches this decision.
 ```
 
 ---
+
 ---
 
 ## Decision Log
@@ -224,7 +225,7 @@ None yet.
 ---
 
 ### ADR-007 â€” Discrete-Time Kalman Filter for State Estimation
-- **Status:** ACCEPTED
+- **Status:** SUPERSEDED by ADR-030
 - **Date:** 2026-06-13
 - **Author:** Agent
 - **Module(s):** State Estimator
@@ -236,18 +237,21 @@ KSP provides perfect state information. To simulate a real aerospace environment
 1. Moving Average Filter â€” Too laggy and cannot handle variable noise well.
 2. Particle Filter â€” Computationally expensive.
 3. Discrete-Time Kalman Filter â€” Optimal estimator under linear systems and Gaussian noise.
+4. Error-State EKF with Mahony Attitude Estimation â€” (see ADR-030)
 
 **Decision**
 Wrap kRPC streams in a noise-generating function and use a Discrete-Time Kalman Filter to reconstruct the state vector $[X, Y, Z, V_x, V_y, V_z]$.
 *Option A* is used for accelerometer fusion: The accelerometer reading drives the prediction step as $u = noisy\_accel$, and the altimeter is the sole measurement in the update step ($z = noisy\_alt$).
+*This decision has been superseded by ADR-030 which implements an Error-State EKF with Mahony attitude estimation and dynamic gravity modeling.*
 
 **Consequences**
 - âœ… High fidelity tracking with no lag.
 - âœ… Computationally efficient. Keeps math linear (no EKF needed).
 - âš ï¸ Requires accurate tuning of Q and R covariance matrices.
+- âš ï¸ Superseded by ADR-030 for improved attitude estimation and bias tracking.
 
 **Review Notes**
-None yet.
+Superseded by ADR-030.
 
 ---
 
@@ -412,7 +416,7 @@ None yet.
 ---
 
 ### ADR-014 â€” Fold Small-Angle Attitude Noise into Accelerometer Noise Budget
-- **Status:** ACCEPTED
+- **Status:** SUPERSEDED by ADR-030
 - **Date:** 2026-06-13
 - **Author:** Joint
 - **Module(s):** State Estimator, Cross-cutting
@@ -424,18 +428,21 @@ The State Estimator requires the vessel's attitude to rotate body-frame accelera
 1. Perfect Attitude (No Noise) â€” Unrealistic, breaks project simulation philosophy.
 2. Upgrade to Extended Kalman Filter (EKF) â€” Accurate, but introduces significant mathematical complexity (Jacobians) and testing burden to manage a 13-state filter.
 3. Small-Angle Approximation â€” Assume attitude error is small during controlled flight. Use the un-noised attitude to rotate the acceleration into the world frame, and artificially inflate the accelerometer noise parameter ($\sigma_{accel}$) to absorb the mathematical error introduced by the small rotation error.
+4. Error-State EKF with Mahony Attitude Estimation â€” (see ADR-030) uses a complementary filter for attitude that does not rely on the small-angle approximation.
 
 **Decision**
 Option 3: Small-Angle Approximation. We will standardize the noise wrapper to output **body-frame acceleration**. The Mission Director or Estimator will rotate this vector into the world frame using the raw, un-noised attitude telemetry, and the Kalman Filter will use an inflated accelerometer noise variance to account for the attitude uncertainty.
+*This decision has been superseded by ADR-030 which implements an Error-State EKF with Mahony attitude estimation, removing the need for the small-angle approximation.*
 
 **Consequences**
 - âœ… Maintains the simplicity and speed of the linear Discrete-Time Kalman Filter (ADR-007).
 - âœ… Drastically reduces development and testing time compared to an EKF.
 - âš ï¸ Assumes attitude error remains small ($\le 2-5^\circ$). If the vessel tumbles, the approximation breaks down (though if this occurs during powered descent, the mission is likely already lost).
 - âš ï¸ The reference frame for telemetry is explicitly defined: `noisy_accel` is body-frame.
+- âš ï¸ Superseded by ADR-030 for improved attitude estimation without small-angle approximation.
 
 **Review Notes**
-Resolves the architecture gap exposed by Claude regarding attitude noise in the linear Kalman filter.
+Superseded by ADR-030.
 
 ---
 
@@ -682,11 +689,11 @@ By default, KSP's stock kRPC interface only allows global flight commands (pitch
 
 **Options Considered**
 1. **Rely on stock reaction wheels and RCS** for attitude torque, and only use engines for differential throttling.
-   - *Pros:* Simple, requires no external mods.
-   - *Cons:* Reaction wheels lack authority for larger vessels, RCS fuel is limited, and this doesn't leverage the engines' active gimbal capability.
+    - *Pros:* Simple, requires no external mods.
+    - *Cons:* Reaction wheels lack authority for larger vessels, RCS fuel is limited, and this doesn't leverage the engines' active gimbal capability.
 2. **Use the Gimbal Trim mod (`ModuleGimbalTrim`)** to command individual gimbals.
-   - *Pros:* Exposes independent `Gimbal X` and `Gimbal Y` fields per engine. Allows the Control Allocator to specify precise, independent gimbal deflection angles (in radians, mapped/clipped to \(\pm 5^\circ\) limit) for each engine part.
-   - *Cons:* Requires the Gimbal Trim mod installed in KSP; adds RPC overhead during the control loop.
+    - *Pros:* Exposes independent `Gimbal X` and `Gimbal Y` fields per engine. Allows the Control Allocator to specify precise, independent gimbal deflection angles (in radians, mapped/clipped to \(\pm 5^\circ\) limit) for each engine part.
+    - *Cons:* Requires the Gimbal Trim mod installed in KSP; adds RPC overhead during the control loop.
 
 **Decision**
 Option 2: We use the Gimbal Trim mod (`ModuleGimbalTrim`).
@@ -697,56 +704,35 @@ Option 2: We use the Gimbal Trim mod (`ModuleGimbalTrim`).
 - âœ… Active 6-DOF allocation is achieved using both differential throttling and differential gimbaling.
 - âœ… Substantially improves attitude authority, especially under asymmetric engine failure states.
 - âš ï¸ Adds dependency on the Gimbal Trim KSP mod.
-- âš ï¸ Increases the number of RPC calls per engine per control tick (two field writes per engine).
+- âš ï¸ Increates the number of RPC calls per engine per control tick (two field writes per engine).
 
 **Review Notes**
 None yet.
 
+---
 
- 
- # # #   A D R - 0 2 5      A u t o m a t e d   C o n f i g u r a t i o n   T u n i n g   F r a m e w o r k 
- 
- -   * * S t a t u s : * *   A C C E P T E D 
- 
- -   * * D a t e : * *   2 0 2 6 - 0 6 - 1 4 
- 
- -   * * A u t h o r : * *   A g e n t 
- 
- -   * * M o d u l e ( s ) : * *   s c r i p t s / t u n e _ c o n f i g . p y 
- 
- 
- 
- * * C o n t e x t * * 
- 
- T h e   A E G I S   f l i g h t   s o f t w a r e   r e l i e s   o n   c a r e f u l l y   t u n e d   c o n f i g u r a t i o n   p a r a m e t e r s   ( e . g . ,   P D   g a i n s   f o r   p o s i t i o n   a n d   a t t i t u d e ) .   T u n i n g   t h e s e   m a n u a l l y   t a k e s   t o o   l o n g .   W e   n e e d   a n   a u t o m a t e d   w a y   t o   r e p e a t e d l y   r u n   t e s t   f l i g h t s   u n d e r   v a r y i n g   c o n f i g u r a t i o n s   a n d   e v a l u a t e   t h e i r   p e r f o r m a n c e   ( l a n d i n g   a c c u r a c y ,   f u e l   c o n s u m e d ,   i m p a c t   v e l o c i t y )   t o   e l i m i n a t e   r o c k i n g   a n d   o v e r s h o o t . 
- 
- 
- 
- * * D e c i s i o n * * 
- 
- W e   u s e   a   g r i d - s e a r c h   t u n i n g   s c r i p t   ( ` s c r i p t s / t u n e _ c o n f i g . p y ` )   t h a t   u t i l i z e s   t h e   k R P C   ` s p a c e _ c e n t e r . l o a d ( ) `   A P I .   T h e   s c r i p t   i t e r a t e s   o v e r   p a r a m e t e r   p e r m u t a t i o n s   ( f o c u s i n g   i n i t i a l l y   o n   ` G U I D A N C E _ K P _ A T T `   a n d   ` G U I D A N C E _ K D _ A T T ` ) ,   l o a d s   a   s t a n d a r d i z e d   s t a r t i n g   s t a t e   ( e . g . ,   ` a e g i s _ t u n e _ s t a r t ` ) ,   i n j e c t s   t h e   p a r a m e t e r s   d y n a m i c a l l y ,   t r i g g e r s   t h e   M i s s i o n   D i r e c t o r ,   a n d   l o g s   t h e   l a n d i n g   m e t r i c s   t o   a   C S V . 
- 
- 
- 
- * * C o n s e q u e n c e s * * 
- 
- -   '  A u t o m a t e d   p e r f o r m a n c e   c h a r a c t e r i z a t i o n . 
- 
- -   '  E n a b l e s   f i n d i n g   t h e   o p t i m a l   a t t i t u d e   d a m p e n i n g   t o   p r e v e n t   s i d e - t o - s i d e   r o c k i n g . 
- 
- -    &þ  R e q u i r e s   c r e a t i n g   a n d   m a i n t a i n i n g   a   s t a n d a r d i z e d   " a e g i s _ t u n e _ s t a r t "   s a v e   f i l e . 
- 
- -    &þ  O v e r w r i t e s   P y t h o n   m o d u l e   s t a t e   i n - m e m o r y   d u r i n g   t e s t i n g . 
- 
- 
- 
- * * R e v i e w   N o t e s * * 
- 
- N o n e   y e t . 
- 
- 
- 
- 
+### ADR-025 — Automated Configuration Tuning Framework
+- **Status:** ACCEPTED
+- **Date:** 2026-06-14
+- **Author:** Agent
+- **Module(s):** scripts/tune_config.py
+
+**Context**
+The AEGIS flight software relies on carefully tuned configuration parameters (e.g., PD gains for position and attitude). Tuning these manually takes too long. We need an automated way to repeatedly run test flights under varying configurations and evaluate their performance (landing accuracy, fuel consumed, impact velocity) to eliminate rocking and overshoot.
+
+**Decision**
+We use a grid-search tuning script (`scripts/tune_config.py`) that utilizes the kRPC `space_center.load()` API. The script iterates over parameter permutations, loads a standardized starting state (e.g., `aegis_tune_start`), injects the parameters dynamically, triggers the Mission Director, and logs the landing metrics to a CSV.
+
+**Consequences**
+- ☑️ Automated performance characterization.
+- ☑️ Enables finding the optimal attitude damping to prevent side-to-side rocking.
+- ⚠️ Requires creating and maintaining a standardized "aegis_tune_start" save file.
+- ⚠️ Overwrites Python module state in-memory during testing.
+
+**Review Notes**
+Superseded by ADR-026 (Optuna).
+
+---
 
 ### ADR-026 - Optuna Hyperparameter Tuning
 - **Status:** ACCEPTED
@@ -848,3 +834,35 @@ Deferred until Phase 2. Option A is sufficient for Phase 1.
 
 **Review Notes**
 Recommended by NN_ADRC_DESIGN_ADVISORY.md §3.2.
+
+---
+
+### ADR-030 â€” Error-State EKF with Mahony Attitude Estimation and Dynamic Gravity
+- **Status:** ACCEPTED
+- **Date:** 2026-06-16
+- **Author:** Agent (based on implementation)
+- **Module(s):** State Estimator
+
+**Context**
+The previous State Estimator used a linear Discrete-Time Kalman Filter (ADR-007) with a small-angle approximation for attitude (ADR-014). This approach had limitations: the small-angle approximation breaks down during large maneuors, and the filter did not estimate sensor biases. The system requires accurate attitude estimation for rotating IMU specific force into the world frame, and bias estimation to improve long-term stability. Additionally, gravity should be modeled dynamically rather than using a hardcoded value.
+
+**Options Considered**
+1. Keep Discrete-Time Kalman Filter with small-angle approximation (ADR-007/ADR-014) â€” Simple but inaccurate for large attitude changes and no bias estimation.
+2. Standard Extended Kalman Filter (EKF) estimating attitude as part of the state â€” Would require estimating the attitude quaternion (4 states) leading to nonlinearity and need for Jacobians; increases state dimension and computational complexity.
+3. Error-State EKF with separate attitude filter â€” Estimates position, velocity, and sensor biases in the EKF state, while attitude is estimated by a complementary filter (Mahony) that consumes bias-corrected gyroscope rates from the EKF. This keeps the EKF linear in the error state and avoids estimating attitude in the EKF.
+4. Particle Filter â€” Computationally expensive for real-time operation.
+
+**Decision**
+Implement a 12-state Error-State EKF that estimates position (3), velocity (3), gyroscope bias (3), and accelerometer bias (3). Attitude is estimated externally by a Mahony complementary filter that fuses gyroscope and accelerometer data, consuming bias-corrected gyroscope rates from the EKF. The EKF predicts using gyroscope and accelerometer measurements (corrected for estimated biases) and updates using altimeter and velocimeter measurements. Gravity is modeled dynamically using kRPC's `vessel.flight().g_force` (or computed from `body.gravitational_parameter` and altitude). The EKF is frame-safe: body-frame specific force is rotated to the world frame using the Mahony-attitude quaternion before gravity addition.
+
+**Consequences**
+- âœ… Provides accurate attitude estimation without small-angle approximation, suitable for large maneuors.
+- âœ… Estimates gyroscope and accelerometer biases, improving long-term stability and reducing sensor drift.
+- âœ… Uses dynamic gravity model, improving accuracy over altitude changes.
+- âœ… Maintains linear prediction step in the EKF (error state) due to separation of attitude estimation.
+- âš ï¸ Increases state dimension from 6 to 12, increasing computational load slightly.
+- âš ï¸ Requires tuning of additional process noise parameters for bias random walks.
+- âš ï¸ Relies on the Mahony filter's correctness; if the Mahony filter diverges, the EKF predictions will be degraded.
+
+**Review Notes**
+None yet.

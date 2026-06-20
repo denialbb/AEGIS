@@ -14,6 +14,7 @@ def test_telemetry_frame_flatten():
         velocity=np.array([1.0, 2.0, 3.0]),
         noisy_accel=np.array([0.1, 0.2, 0.3]),
         throttles=np.array([0.5, 0.6]),
+        fuel_state=np.array([1.0, 1.0]),
         gimbals=np.array([[0.1, 0.2], [0.3, 0.4]])
     )
     flat = frame.flatten()
@@ -26,6 +27,8 @@ def test_telemetry_frame_flatten():
     assert flat["accel_x"] == 0.1
     assert flat["throttle_0"] == 0.5
     assert flat["throttle_1"] == 0.6
+    assert flat["has_fuel_0"] == 1
+    assert flat["has_fuel_1"] == 1
     assert flat["gimbal_0_0"] == 0.1
     assert flat["gimbal_0_1"] == 0.2
     assert flat["gimbal_1_0"] == 0.3
@@ -39,6 +42,7 @@ def test_telemetry_frame_flatten_mismatched_arrays():
         velocity=np.array([1.0, 2.0]), # intentionally short 2D velocity vector
         noisy_accel=np.array([0.1, 0.2, 0.3, 0.4]), # intentionally long 4D accel vector
         throttles=np.array([0.5, 0.6]),
+        fuel_state=np.array([1.0, 1.0]),
         gimbals=np.array([[0.1, 0.2]]) # only 1 engine has gimbal
     )
     flat = frame.flatten()
@@ -85,6 +89,7 @@ def test_telemetry_writer_creates_files():
                 velocity=np.array([0., 0., 0.]),
                 noisy_accel=np.array([0., 0., 0.]),
                 throttles=np.array([1.0, 1.0]),
+                fuel_state=np.array([1.0, 1.0]),
                 gimbals=np.array([[0., 0.], [0., 0.]])
             )
             writer.log_tick(frame)

@@ -1,9 +1,12 @@
+import math
 import os
 import time
 import sys
 sys.path.insert(0, os.path.abspath('.'))
 
 import optuna
+from optuna.samplers import CmaEsSampler
+from optuna.pruners import MedianPruner
 import krpc
 import numpy as np
 
@@ -24,25 +27,39 @@ def run_simulation(trial: optuna.Trial) -> float:
     config.ALT_HOVER = trial.suggest_float("ALT_HOVER", 100.0, 1000.0)
     config.ALT_TERMINAL = trial.suggest_float("ALT_TERMINAL", 10.0, 200.0)
     
-    config.GLIDESLOPE_K_ALT = trial.suggest_float("GLIDESLOPE_K_ALT", 0.1, 0.8)
-    config.GLIDESLOPE_RATE_POWERED_DESCENT = trial.suggest_float("GLIDESLOPE_RATE_POWERED_DESCENT", 20.0, 150.0)
+    # GLIDESLOPE_K_ALT removed — sqrt suicide-burn profile self-tunes from TWR.
+    # Rate limits serve as structural caps; POWERED_DESCENT range widened.
+    config.GLIDESLOPE_RATE_POWERED_DESCENT = trial.suggest_float("GLIDESLOPE_RATE_POWERED_DESCENT", 20.0, 500.0)
     config.GLIDESLOPE_RATE_HOVER = trial.suggest_float("GLIDESLOPE_RATE_HOVER", 5.0, 30.0)
     config.GLIDESLOPE_RATE_TERMINAL = trial.suggest_float("GLIDESLOPE_RATE_TERMINAL", 0.5, 5.0)
     
     config.GUIDANCE_KP_POS_LATERAL = trial.suggest_float("GUIDANCE_KP_POS_LATERAL", 0.1, 5.0)
     config.GUIDANCE_KP_POS_VERTICAL = trial.suggest_float("GUIDANCE_KP_POS_VERTICAL", 0.1, 5.0)
-    config.GUIDANCE_KD_VEL_LATERAL = trial.suggest_float("GUIDANCE_KD_VEL_LATERAL", 2.0, 100.0)
-    config.GUIDANCE_KD_VEL_VERTICAL = trial.suggest_float("GUIDANCE_KD_VEL_VERTICAL", 2.0, 100.0)
     
-    kp_att_val = trial.suggest_float("GUIDANCE_KP_ATT_SCALAR", 2.0, 50.0)
-    config.GUIDANCE_KP_ATT = [kp_att_val, kp_att_val, kp_att_val]
+    # Attitude control uses natural-frequency/damping-ratio parameterization
+    # (ADR-028). The MissionDirector derives Kp = ωₙ², Kd = 2ζωₙ internally.
+    # NOTE: the deprecated GUIDANCE_KP_ATT / GUIDANCE_KD_ATT are NOT read by
+    # the controller; tuning them via Optuna was a no-op.
+    nat_freq = trial.suggest_float("GUIDANCE_ATT_NATURAL_FREQ_SCALAR", 1.0, 6.0)
+    config.GUIDANCE_ATT_NATURAL_FREQ = [nat_freq, nat_freq, nat_freq]
+    damping = trial.suggest_float("GUIDANCE_ATT_DAMPING_RATIO_SCALAR", 0.5, 2.0)
+    config.GUIDANCE_ATT_DAMPING_RATIO = [damping, damping, damping]
     
-    kd_att_val = trial.suggest_float("GUIDANCE_KD_ATT_SCALAR", 1.0, 40.0)
-    config.GUIDANCE_KD_ATT = [kd_att_val, kd_att_val, kd_att_val]
+    # Acceleration clamp factor limits a_cmd_world to ACCEL_CLAMP_FACTOR × a_avail.
+    # Prevents attitude target flip during saturating transients.
+    config.ACCEL_CLAMP_FACTOR = trial.suggest_float("ACCEL_CLAMP_FACTOR", 1.0, 3.0)
+
+    # Adaptive process‑noise scaling for the StateEstimator (see docs). Tunable via Optuna.
+    config.PROCESS_NOISE_THRUST_COEF = trial.suggest_float("PROCESS_NOISE_THRUST_COEF", 0.05, 0.2)
     
-    config.SIGMA_ALT = trial.suggest_float("SIGMA_ALT", 0.1, 10.0)
-    config.SIGMA_ACCEL = trial.suggest_float("SIGMA_ACCEL", 0.05, 2.0)
+    # Log-scale for params spanning 1+ order of magnitude
+    config.SIGMA_ALT = trial.suggest_float("SIGMA_ALT", 0.1, 10.0, log=True)
+    config.SIGMA_ACCEL = trial.suggest_float("SIGMA_ACCEL", 0.05, 2.0, log=True)
     config.FDI_THRESHOLD = trial.suggest_float("FDI_THRESHOLD", 1.5, 5.0)
+    
+    # Kd spans 2 orders — log scale helps find the right neighborhood faster
+    config.GUIDANCE_KD_VEL_LATERAL = trial.suggest_float("GUIDANCE_KD_VEL_LATERAL", 2.0, 100.0, log=True)
+    config.GUIDANCE_KD_VEL_VERTICAL = trial.suggest_float("GUIDANCE_KD_VEL_VERTICAL", 2.0, 100.0, log=True)
 
     # 2. Connect to kRPC and load save
     address = os.environ.get("KRPC_ADDRESS", config.KRPC_DEFAULT_ADDRESS)
@@ -90,28 +107,48 @@ def run_simulation(trial: optuna.Trial) -> float:
     
     conn.close()
 
+    # Angular motion penalty (rocking): penalizes attitude oscillation.
+    # Weight 0.01 means 100 rad of total rotation ≡ 1 m of distance error.
+    angular_penalty = 0.01 * director.total_angular_motion
+
     if director.state != "LANDED":
-        # Vessel crashed or aborted
-        return 1e5 + distance_to_pad
+        # Vessel crashed or aborted.  Penalty scales with how much simulation
+        # time was wasted — a trial that survives 200 s and nearly reaches
+        # the pad is punished less than one that falls out of the sky in 10 s.
+        elapsed = min(end_time - start_time, max_duration)
+        time_bonus = elapsed * 10.0  # subtract ~1/s of survival
+        return max(1e4, 1e5 + distance_to_pad - time_bonus + angular_penalty)
 
     # Fitness: Primary minimize distance. Secondary minimize fuel.
     # 1 kg of fuel is penalized equivalent to 0.1 meters of distance error.
-    fitness = distance_to_pad + (fuel_used * 0.1)
+    # Angular penalty discourages gains that produce attitude oscillation.
+    fitness = distance_to_pad + (fuel_used * 0.1) + angular_penalty
+    trial.report(fitness, step=0)
     return fitness
 
 if __name__ == "__main__":
     db_path = "sqlite:///logs/optuna.db"
-    study_name = "aegis_full_tuning"
+    study_name = "aegis_tuning_v2"
     
     os.makedirs("logs", exist_ok=True)
     
     print(f"Starting Optuna hyperparameter optimization. Database: {db_path}")
+    print(f"Sampler: CMA-ES (n_startup_trials=15 random init), Pruner: Median")
     
     study = optuna.create_study(
         study_name=study_name, 
         storage=db_path, 
         load_if_exists=True,
-        direction="minimize"
+        direction="minimize",
+        sampler=CmaEsSampler(
+            seed=config.RANDOM_SEED,
+            n_startup_trials=15,
+            consider_pruned_trials=True,
+        ),
+        pruner=MedianPruner(
+            n_startup_trials=10,
+            n_warmup_steps=0,
+        ),
     )
     
     try:
