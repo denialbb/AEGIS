@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import logging
 from typing import Tuple, Any
@@ -118,9 +119,13 @@ class SensorModels:
         arr = np.array(raw, dtype=float)
         if arr.shape == (4,):
             q = arr / np.linalg.norm(arr)
-            if q[3] < 0:
-                q = -q
-            return q
+            # kRPC flight.rotation returns ref_frame→body quaternion
+            # (NED→body).  The pipeline (Mahony, EKF, guidance) expects
+            # body→NED — invert via conjugate.
+            q_body_to_ned = np.array([-q[0], -q[1], -q[2], q[3]])
+            if q_body_to_ned[3] < 0:
+                q_body_to_ned = -q_body_to_ned
+            return q_body_to_ned
         return np.array([0.0, 0.0, 0.0, 1.0])
 
     def poll(self) -> Tuple[
@@ -208,6 +213,24 @@ class SensorModels:
         self.attitude_estimator.update(
             omega_body, sf_body_noisy, gravity_ned, dt_mahony
         )
+
+        # ── Log attitude divergence: Mahony estimate vs kRPC truth ──
+        try:
+            mahony_q = self.attitude_estimator.get_attitude()
+            dot_q = abs(float(np.dot(mahony_q, np.array(krpc_att))))
+            dot_q = min(max(dot_q, -1.0), 1.0)
+            angle_err_deg = 2.0 * math.degrees(math.acos(dot_q)) if dot_q < 0.9999 else 0.0
+            eul_truth = R.from_quat(krpc_att).as_euler('xyz', degrees=True)
+            eul_mahony = R.from_quat(mahony_q).as_euler('xyz', degrees=True)
+            logger.info(
+                f"[SENSOR] krpc_q=({krpc_att[0]:+.3f},{krpc_att[1]:+.3f},{krpc_att[2]:+.3f},{krpc_att[3]:+.3f}) "
+                f"mahony_q=({mahony_q[0]:+.3f},{mahony_q[1]:+.3f},{mahony_q[2]:+.3f},{mahony_q[3]:+.3f}) "
+                f"angle_err={angle_err_deg:.1f}° "
+                f"truth_RPY=({eul_truth[0]:+.1f},{eul_truth[1]:+.1f},{eul_truth[2]:+.1f}) "
+                f"mahony_RPY=({eul_mahony[0]:+.1f},{eul_mahony[1]:+.1f},{eul_mahony[2]:+.1f})"
+            )
+        except Exception as e:
+            logger.warning(f"[SENSOR] Attitude log failed: {e}")
 
         # ── Aero in body frame ─────────────────────────────────────
         aero_body: np.ndarray = rot_bw.inv().apply(aero_ned)

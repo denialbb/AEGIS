@@ -116,25 +116,36 @@ class MahonyAttitudeEstimator:
         #   Measured gravity direction in body frame (inverted specific force)
         f_norm: float = float(np.linalg.norm(f_body))
         error: np.ndarray = np.zeros(3)
-        # Auto-disable correction when specific force is dominated by engine
-        # thrust rather than gravity.  f_body = a_body - g_body; during powered
-        # flight |a_body| >> |g| so f_body points along the thrust axis, not
-        # gravity.  The Mahoney correction would pull the attitude estimate
-        # toward the thrust direction → rapid drift → 180° flip.
-        # Threshold: |f| within 30% of |g| is assumed "near free-fall".
-        correction_valid: bool = (
-            self._correction_enabled
-            and f_norm > 0.5
-            and abs(f_norm - g_mag) < 0.3 * g_mag
-        )
+        # Correction gate: only trust the accelerometer gravity reference
+        # when |f| is close to |g| (i.e. gravity dominates the specific
+        # force).  This excludes:
+        #   - free fall            (|f| ≈ 0)
+        #   - coast with drag     (|f| ≈ 4-5, drag ≠ gravity)
+        #   - heavy retro burn    (|f| >> |g|, thrust dominates)
+        # but accepts hover, light braking, and cruise where the
+        # accelerometer reading still tells us which way is down.
+        # The dot-product consistency check prevents incorrect correction
+        # when the attitude error is large enough to flip the sign.
+        correction_valid: bool = False
+        near_gravity: bool = abs(f_norm - g_mag) < 0.5 * g_mag
+        if self._correction_enabled and f_norm > 1.0 and near_gravity:
+            f_unit_body = -f_body / f_norm
+            consistency = float(np.dot(g_expected_body, f_unit_body))
+            correction_valid = consistency > 0.5
         if correction_valid:
-            f_unit_body: np.ndarray = -f_body / f_norm
             error = np.cross(g_expected_body, f_unit_body)
 
         # ── 3. PI correction on gyro ────────────────────────────────
         if self.ki > 0.0:
             self.integral_error += error * dt
-            omega_corr = omega_corr + self.kp * error + self.ki * self.integral_error
+            # Anti-windup: clamp integral to ±30°/s equivalent
+            max_int = float(np.deg2rad(30.0))
+            self.integral_error = np.clip(self.integral_error, -max_int, max_int)
+            # Gate integral: only apply when correction is valid —
+            # a frozen integral term injected during powered descent
+            # would act as an untrusted rate bias equal to the bg bug.
+            integral_correction = self.ki * self.integral_error if correction_valid else 0.0
+            omega_corr = omega_corr + self.kp * error + integral_correction
         else:
             omega_corr = omega_corr + self.kp * error
 

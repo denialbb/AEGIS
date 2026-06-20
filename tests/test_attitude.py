@@ -46,20 +46,19 @@ class TestAttitudeMapping:
         torque_body = np.array([10.0, -20.0, 30.0])
         ctrl.update(d, torque_body, "HOVER_TARGETING", "stability")
         
-        # We mapped pitch = torque_body[0]/100.0 = 0.1
-        # yaw = -torque_body[2]/100.0 = -0.3 -> clipped to -0.15
-        # roll = torque_body[1]/100.0 = -0.2 -> clipped to -0.15
-        # plus smoothing alpha = 0.6 -> first tick is 0.6 * cmd
-        
-        expected_pitch = 0.6 * (10.0 / 100.0)
-        expected_yaw = 0.6 * (-30.0 / 100.0)
-        expected_yaw_clipped = 0.6 * -0.15
-        expected_roll = 0.6 * (-20.0 / 100.0)
-        expected_roll_clipped = 0.6 * -0.15
-        
+        # torque_scale=10, max_trim=0.5:
+        # pitch = clip(10.0/10, ±0.5) = 0.5
+        # yaw   = clip(-30.0/10, ±0.5) = -0.5
+        # roll  = clip(-20.0/10, ±0.5) = -0.5
+        # smoothing alpha=0.6 → first tick is 0.6 * cmd
+
+        expected_pitch = 0.6 * 0.5
+        expected_yaw = 0.6 * -0.5
+        expected_roll = 0.6 * -0.5
+
         assert np.isclose(d.vessel.control.pitch, expected_pitch)
-        assert np.isclose(d.vessel.control.yaw, expected_yaw_clipped)
-        assert np.isclose(d.vessel.control.roll, expected_roll_clipped)
+        assert np.isclose(d.vessel.control.yaw, expected_yaw)
+        assert np.isclose(d.vessel.control.roll, expected_roll)
 
     def test_zeroes_controls_when_inactive(self) -> None:
         ctrl = AttitudeController()

@@ -274,6 +274,17 @@ def run_mission_loop(director: Any) -> bool:
             director, state_vector, a_avail
         )
 
+        # 14b. Phase-specific tilt limit for attitude target.
+        # Small angles keep lateral acceleration low (5° → ~0.85 m/s²).
+        if director.state == "POWERED_DESCENT":
+            max_pitch = config.ATT_TILT_POWERED_DESCENT_DEG
+        elif director.state == "HOVER_TARGETING":
+            max_pitch = config.ATT_TILT_HOVER_DEG
+        elif director.state == "TERMINAL_DESCENT":
+            max_pitch = config.ATT_TILT_TERMINAL_DEG
+        else:
+            max_pitch = 25.0
+
         # 15. Terminal states
         if director.state == "LANDED":
             flight_control.handle_landed_shutdown(director, active)
@@ -298,6 +309,7 @@ def run_mission_loop(director: Any) -> bool:
             dt=dt,
             angular_velocity=data["omega_body"],
             max_a_avail=a_avail,
+            max_pitch_deg=max_pitch,
         )
         if director.state in flight_control.UNGUIDED_STATES:
             wrench = np.zeros(6)

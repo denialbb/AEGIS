@@ -10,6 +10,13 @@
 - Do not use system Python or run from Windows directly.
 - The virtual environment is managed by `uv`, the modern Python package manager, ensuring fast, reliable dependency resolution in the Arch Linux WSL2 environment.
 
+## Integration Testing
+
+- **Full flight test**: `scripts/run_and_score.sh` — runs the full mission against a KSP instance (kRPC at `127.0.0.1` or override via `KRPC_ADDRESS`) and scores the landing telemetry.
+- **Post-flight analysis**: After a run, verify trajectory with `scripts/trajectory_analysis.py` and attitude with `scripts/attitude_analysis.py`, both reading from `logs/latest/telemetry.csv`.
+- **Dashboard**: `scripts/trial_dashboard.py` for a browser-based summary of all runs in `logs/runs/`.
+- **Always run a full flight test after any SAS or guidance change.** Static analysis (mypy, pytest) does not catch runtime issues in the kRPC/KSP pipeline.
+
 ## Architecture (4 Strictly Decoupled Modules)
 
 | Module            | Location                      | Responsibility                                     |

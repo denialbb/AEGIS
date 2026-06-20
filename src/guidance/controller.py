@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from scipy.spatial.transform import Rotation as R  # type: ignore
 from src.guidance.adrc import ADRCController, CTMCalculator
@@ -181,33 +182,40 @@ class GuidanceController:
         a_cmd_pos = (self.kp_pos_lateral * pos_err_lat) + (self.kp_pos_vertical * pos_err_vert)
         a_cmd_vel = (self.kd_vel_lateral * vel_err_lat) + (self.kd_vel_vertical * vel_err_vert)
 
-        logger.debug(f"[GUIDANCE] up_vector={up_vector} current_v={current_state[3:]} target_v={target_state[3:]}")
-        logger.debug(f"[GUIDANCE] current_pos={current_state[:3]} target_pos={target_state[:3]} pos_err={pos_err}")
-        logger.debug(f"[GUIDANCE] est_alt={np.dot(current_state[:3], up_vector):.2f}m state_vector={current_state}")
-        logger.debug(f"[GUIDANCE] dot(gravity_ned, up_vector)={np.dot(self.gravity_ned, up_vector):.4f} gravity_ned={self.gravity_ned}")
-        logger.debug(f"[GUIDANCE] a_cmd_pos={a_cmd_pos} a_cmd_vel={a_cmd_vel}")
-        logger.debug(f"[GUIDANCE] pos_err_lat={np.linalg.norm(pos_err_lat):.1f}m pos_err_vert={np.dot(pos_err_vert, up_vector):.1f}m")
-        logger.debug(f"[GUIDANCE] vel_err_lat={np.linalg.norm(vel_err_lat):.1f}m/s vel_err_vert={np.dot(vel_err_vert, up_vector):.1f}m/s")
-
+        logger.info(
+            f"[GUIDANCE] pos_err={pos_err} vel_err={vel_err} "
+            f"pos_err_vert={np.dot(pos_err_vert, up_vector):.2f} "
+            f"vel_err_vert={np.dot(vel_err_vert, up_vector):.2f} "
+            f"a_cmd_pos={a_cmd_pos} a_cmd_vel={a_cmd_vel} "
+            f"gravity_ned={self.gravity_ned} "
+            f"a_cmd_ned_raw={a_cmd_pos + a_cmd_vel - self.gravity_ned}"
+        )
+        
         a_cmd_ned = a_cmd_pos + a_cmd_vel - self.gravity_ned
         
         logger.debug(f"[GUIDANCE] a_cmd_ned={a_cmd_ned} max_a_avail={max_a_avail}")
 
-        # Decompose a_cmd_ned into vertical (braking) and horizontal (steering).
-        # Clamp only the vertical component to the acceleration limit so that
-        # horizontal position/velocity errors do not dilute braking thrust.
         vert = np.dot(a_cmd_ned, up_vector) * up_vector
         horiz = a_cmd_ned - vert
+        
+        logger.info(
+            f"[GUIDANCE] vert={vert} (norm={np.linalg.norm(vert):.2f}) "
+            f"horiz={horiz} (norm={np.linalg.norm(horiz):.2f}) "
+            f"vert_along_up={np.dot(vert, up_vector):.2f}"
+        )
+        
         if max_a_avail is not None and max_a_avail > 0.0:
             v_norm = float(np.linalg.norm(vert))
-            # max_a_avail is NET upward acceleration. The engines must also counter gravity.
-            # So the absolute max engine acceleration is max_a_avail + gravity.
             gross_a_avail = max_a_avail + float(np.linalg.norm(self.gravity_ned))
             limit = self.accel_clamp_factor * gross_a_avail
+            clamped = v_norm > limit
+            logger.info(
+                f"[GUIDANCE] v_norm={v_norm:.2f} limit={limit:.2f} clamped={clamped} "
+                f"max_a_avail={max_a_avail:.2f} gross_a_avail={gross_a_avail:.2f}"
+            )
             if v_norm > limit:
                 vert = (vert / v_norm) * limit
 
-        # Clamp horizontal acceleration to prevent aggressive pitching (flips)
         h_norm = float(np.linalg.norm(horiz))
         max_lateral_accel = 15.0
         if h_norm > max_lateral_accel:
@@ -221,6 +229,26 @@ class GuidanceController:
         # ---------------------------------------------------------
         rot = R.from_quat(current_attitude)
         a_cmd_body = rot.inv().apply(a_cmd_ned)
+        
+        # Log quaternion components and derived Euler angles for live debugging
+        q = current_attitude
+        roll_estimate = math.atan2(2*(q[3]*q[2] + q[0]*q[1]), 1 - 2*(q[1]**2 + q[2]**2))
+        pitch_estimate = math.asin(max(-1.0, min(1.0, 2*(q[3]*q[1] - q[2]*q[0]))))
+        yaw_estimate = math.atan2(2*(q[3]*q[0] + q[1]*q[2]), 1 - 2*(q[0]**2 + q[1]**2))
+        
+        # Log rotation from NED to body: check how the thrust direction [0,1,0] (body Y = engine up)
+        # maps to NED. If it's not pointing upward (negative NED Z), engines can't produce upward NED force.
+        thrust_ned = rot.apply(np.array([0.0, 1.0, 0.0]))  # body Y in NED
+        up_ned = np.array([0.0, 0.0, -1.0])  # NED up direction
+        thrust_ned_component_along_up = float(np.dot(thrust_ned, up_ned))  # positive = thrust pushes UP in NED
+        
+        logger.info(
+            f"[GUIDANCE] quat=({q[0]:+.3f},{q[1]:+.3f},{q[2]:+.3f},{q[3]:+.3f}) "
+            f"RPY=({math.degrees(pitch_estimate):+.1f},{math.degrees(yaw_estimate):+.1f},{math.degrees(roll_estimate):+.1f}) "
+            f"a_cmd_ned={a_cmd_ned} "
+            f"thrust_ned={thrust_ned} (up_component={thrust_ned_component_along_up:+.3f}) "
+            f"a_cmd_body={a_cmd_body}"
+        )
         
         logger.debug(f"[GUIDANCE] attitude_q={current_attitude} a_cmd_ned={a_cmd_ned} a_cmd_body={a_cmd_body}")
 

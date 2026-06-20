@@ -94,6 +94,11 @@ class ControlAllocator:
         # Gimbals should be reserved exclusively for attitude control (torque).
         main_thrust_dir = active_engines[0].thrust_direction if active_engines else np.array([0.0, 1.0, 0.0])
         axial_mag = max(0.0, float(np.dot(desired_wrench[:3], main_thrust_dir)))
+        logger.info(
+            f"[ALLOC] wrench_force={desired_wrench[:3]} main_thrust_dir={main_thrust_dir} "
+            f"dot={float(np.dot(desired_wrench[:3], main_thrust_dir)):.1f} "
+            f"axial_mag={axial_mag:.1f} N_engines={N}"
+        )
         f_per = (axial_mag * main_thrust_dir) / N
         f_pad = np.tile(f_per, (N, 1))
 
@@ -101,59 +106,49 @@ class ControlAllocator:
         throttles, gimbals, forces_out = self._forces_to_controls(f_pad, active_engines)
 
         # Now bias gimbals from the commanded torque.
-        # Each engine at position r produces torque r × F_engine.
-        # For a desired delta_torque, distribute the gimbal correction
-        # across engines proportional to their moment arm.
+        # Build A (3×2N) mapping gimbal angles → torque:
+        #   τ = sum F_i * (gx_i * r_i × gimbal_y_i - gy_i * r_i × gimbal_x_i)
         delta_torque = desired_wrench[3:6]
         torque_mag = float(np.linalg.norm(delta_torque))
-        if torque_mag > 1e-8:
-            # Per-engine moment arm magnitude (distance from CoM in XZ plane for roll,
-            # X-Y plane for pitch). Use full 3D moment arm.
-            moment_arms = np.array([
-                float(np.linalg.norm(e.position)) + 1e-6
-                for e in active_engines
-            ])
-            weights = moment_arms / moment_arms.sum()
-
-            max_gimbal_bias_rad = np.deg2rad(3.0)
+        if torque_mag > 1e-8 and N > 0:
+            max_gimbal_rad = float(np.deg2rad(active_engines[0].max_gimbal_deg))
+            A = np.zeros((3, 2 * N))
+            axial_forces = np.zeros(N)
             for i, engine in enumerate(active_engines):
-                w = weights[i]
-                tau_correction = w * delta_torque
+                axial = throttles[i] * engine.max_thrust
+                axial_forces[i] = axial
                 r_vec = engine.position - com
-                r_mag = float(np.linalg.norm(r_vec)) + 1e-6
+                if axial > 1e-6:
+                    A[:, 2 * i]     = axial * np.cross(r_vec, engine.gimbal_y_axis)
+                    A[:, 2 * i + 1] = -axial * np.cross(r_vec, engine.gimbal_x_axis)
 
-                # Approximate lateral force needed: F_lat = tau / r
-                # This is the force perturbation that creates the desired torque
-                f_lat_vec = tau_correction / r_mag
-                f_lat_mag = float(np.linalg.norm(f_lat_vec))
+            # Solve A * g = delta_torque via pseudo-inverse
+            Ap = np.linalg.pinv(A)
+            gimbal_bias = Ap @ delta_torque  # shape (2N,)
 
-                if f_lat_mag > 1e-6 and engine.max_thrust > 0:
-                    axial = throttles[i] * engine.max_thrust
-                    max_lat = axial * np.tan(np.deg2rad(engine.max_gimbal_deg))
+            for i, engine in enumerate(active_engines):
+                gx_bias = float(gimbal_bias[2 * i])
+                gy_bias = float(gimbal_bias[2 * i + 1])
+                # Clamp to max gimbal
+                max_rad = float(np.deg2rad(engine.max_gimbal_deg))
+                gx_bias = float(np.clip(gx_bias, -max_gimbal_rad, max_gimbal_rad))
+                gy_bias = float(np.clip(gy_bias, -max_gimbal_rad, max_gimbal_rad))
+                gimbals[i, 0] = np.clip(gimbals[i, 0] + gx_bias, -max_rad, max_rad)
+                gimbals[i, 1] = np.clip(gimbals[i, 1] + gy_bias, -max_rad, max_rad)
 
-                    # Limit lateral force to available gimbal authority
-                    f_lat_vec_limited = f_lat_vec
-                    if f_lat_mag > max_lat:
-                        f_lat_vec_limited = (f_lat_vec / f_lat_mag) * max_lat
-
-                    # Project lateral force onto engine gimbal axes.
-                    # Use full 3D vectors — arctan2 gives angle in the plane
-                    # of the gimbal axis and thrust direction.
-                    gx_rad = float(np.arctan2(
-                        np.dot(f_lat_vec_limited, engine.gimbal_y_axis),
-                        axial + 1e-6,
-                    ))
-                    gy_rad = float(-np.arctan2(
-                        np.dot(f_lat_vec_limited, engine.gimbal_x_axis),
-                        axial + 1e-6,
-                    ))
-
-                    max_rad = float(np.deg2rad(engine.max_gimbal_deg))
-                    gx_bias = float(np.clip(gx_rad, -max_gimbal_bias_rad, max_gimbal_bias_rad))
-                    gy_bias = float(np.clip(gy_rad, -max_gimbal_bias_rad, max_gimbal_bias_rad))
-
-                    gimbals[i, 0] = np.clip(gimbals[i, 0] + gx_bias, -max_rad, max_rad)
-                    gimbals[i, 1] = np.clip(gimbals[i, 1] + gy_bias, -max_rad, max_rad)
+        # Recompute forces_out from updated gimbals so telemetry is consistent
+        for i, engine in enumerate(active_engines):
+            if throttles[i] > 0:
+                axial = throttles[i] * engine.max_thrust
+                gx = gimbals[i, 0]
+                gy = gimbals[i, 1]
+                f_dir = (engine.thrust_direction
+                         + gx * engine.gimbal_y_axis
+                         - gy * engine.gimbal_x_axis)
+                f_norm = float(np.linalg.norm(f_dir))
+                if f_norm > 1e-12:
+                    f_dir = f_dir / f_norm
+                forces_out[i] = axial * f_dir
 
         self._saturated_engines.clear()
         return throttles, gimbals, forces_out

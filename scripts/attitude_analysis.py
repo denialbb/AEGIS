@@ -33,8 +33,8 @@ def analyze(telemetry_path: str = "logs/latest/telemetry.csv") -> None:
     for i, (_, r) in enumerate(descent.iterrows()):
         # Commanded tilt from fb (force body)
         fb_x, fb_y, fb_z = r.get("fb_x", 0), r.get("fb_y", 0), r.get("fb_z", 0)
-        fb_horiz = math.sqrt(fb_x**2 + fb_y**2)
-        cmd_tilt_deg = math.degrees(math.atan2(fb_horiz, abs(fb_z))) if abs(fb_z) > 1e-3 else 0.0
+        fb_horiz = math.sqrt(fb_x**2 + fb_z**2)
+        cmd_tilt_deg = math.degrees(math.atan2(fb_horiz, abs(fb_y))) if abs(fb_y) > 1e-3 else 0.0
         
         max_tilt = max(max_tilt, cmd_tilt_deg)
         

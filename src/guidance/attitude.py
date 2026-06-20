@@ -41,23 +41,24 @@ class AttitudeController:
             self._zero_controls(director)
             return
 
-        # Map required torque (N*m) to joystick commands [-1.0, 1.0]
-        # We scale by an estimated RW torque authority. If the required torque is huge, 
-        # the joystick will max out and the gimbals will provide the rest.
-        torque_scale = 100.0  # Assumed reaction wheel authority factor
-        
+        # Map required torque (N*m) to joystick commands [-1.0, 1.0].
+        # With SAS on in stability_assist mode, the trim commands are added
+        # to SAS commands. Keep trims modest to prevent fighting SAS.
+        torque_scale = 200.0  # 50 Nm → trim=0.25; gentle trim commands
+
         # torque_body[0] is X-axis torque (pitch). Positive = pitch down (KSP positive)
         # torque_body[2] is Z-axis torque (yaw). Positive = nose left. KSP positive yaw = nose right.
         # torque_body[1] is Y-axis torque (roll). Positive = roll right (KSP positive)
-        
+
         raw_pitch = float(torque_body[0] / torque_scale)
         raw_yaw = float(-torque_body[2] / torque_scale)
         raw_roll = float(torque_body[1] / torque_scale)
 
-        # We strictly limit the reaction wheels to act as gentle "steering trims"
-        # to prevent fighting SAS and causing massive overshoot.
-        max_trim = 0.15
-        
+        # Limit reaction-wheel trim to prevent fighting SAS.
+        # SAS stability_assist provides the primary attitude hold;
+        # trim commands provide gentle steering corrections.
+        max_trim = 0.15  # ±15% stick deflection max
+
         pitch_cmd = float(np.clip(raw_pitch, -max_trim, max_trim))
         yaw_cmd = float(np.clip(raw_yaw, -max_trim, max_trim))
         roll_cmd = float(np.clip(raw_roll, -max_trim, max_trim))
@@ -80,6 +81,9 @@ class AttitudeController:
         director.vessel.control.pitch = 0.0
         director.vessel.control.yaw = 0.0
         director.vessel.control.roll = 0.0
+        self._prev_pitch_cmd = 0.0
+        self._prev_yaw_cmd = 0.0
+        self._prev_roll_cmd = 0.0
 
     def _smooth_set(
         self, director: Any, pitch_cmd: float, yaw_cmd: float, roll_cmd: float

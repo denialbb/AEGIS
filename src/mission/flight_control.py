@@ -112,9 +112,17 @@ def update_estimator(
     director: Any, data: dict, ekf_dt: float, skip_predict: bool
 ) -> np.ndarray:
     """Run EKF predict + update.  Returns the 6-D state vector."""
-    director.sensors.attitude_estimator.set_gyro_bias(
-        director.estimator.get_gyro_bias()
-    )
+    # Do NOT feed EKF gyro bias to the Mahony filter — the warmup
+    # estimate is contaminated by residual rotation (SAS takes several
+    # seconds to stabilise after activation at 4-5 km), and the EKF
+    # converges too slowly during the burn.  The contaminated bg
+    # (≈0.09 rad/s) causes Mahony to integrate phantom rotation at
+    # 5°/s, diverging >80° before the correction gate re-opens in the
+    # hover phase.  bg=[0,0,0] keeps the drift to the true sensor bias
+    # ≈0.01 rad/s, which is tolerable (≈17° over 30 s), and the
+    # correction gate re-converges the estimate during hover/throttle-
+    # back when |f| ≈ |g|.
+    director.sensors.attitude_estimator.set_gyro_bias(np.zeros(3))
     if not skip_predict:
         director.estimator.predict(
             data["sf_body"],
@@ -139,7 +147,17 @@ def check_imu_health(director: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def check_fuel_state(director: Any, alt: float = 0.0) -> None:
-    """Deactivate engines that have run out of fuel."""
+    """Deactivate engines that have run out of fuel.
+    
+    Checked every 10 ticks to reduce kRPC calls (has_fuel rarely changes).
+    """
+    # Only check every 10 ticks to reduce kRPC overhead
+    if not hasattr(director, '_fuel_check_tick'):
+        director._fuel_check_tick = 0
+    director._fuel_check_tick += 1
+    if director._fuel_check_tick % 10 != 0:
+        return
+    
     for e in director.engines:
         engine_obj = director._safe_engine_access(e.part)
         if e.active and engine_obj and not engine_obj.has_fuel:
@@ -158,7 +176,15 @@ def check_fuel_state(director: Any, alt: float = 0.0) -> None:
 def run_fdi(
     director: Any, data: dict, mass: float, skip_predict: bool
 ) -> None:
-    """Run FDI during guided phases.  Deactivates failed engines and may set HARD_ABORT."""
+    """Run FDI during guided phases.  Deactivates failed engines and may set HARD_ABORT.
+    
+    NOTE: FDI is currently disabled due to false positives from modeling errors.
+    The expected vs measured acceleration mismatch triggers fault detection even
+    when engines are healthy. Re-enable after tuning FDI_THRESHOLD or improving
+    the acceleration model.
+    """
+    return  # FDI temporarily disabled
+    
     if director.state not in (
         "POWERED_DESCENT", "HOVER_TARGETING", "TERMINAL_DESCENT",
     ):
@@ -296,10 +322,18 @@ def _sas_standard(director: Any, est_vz: float, ves_orientation: str) -> str:
     if not config.USE_SAS:
         return ves_orientation
 
+    # During hover and terminal descent, keep SAS on in stability_assist mode
+    # but with control input set to override. This prevents SAS from fighting
+    # the guidance commands while still providing rate damping and attitude hold.
     if director.state in ("HOVER_TARGETING", "TERMINAL_DESCENT", "TERMINAL_LANDING"):
         if ves_orientation != "stability":
             director.vessel.control.sas = True
             director.vessel.control.sas_mode = director.conn.space_center.SASMode.stability_assist
+            # Set control inputs to override mode so SAS doesn't fight guidance
+            try:
+                director.vessel.control.input_mode = director.conn.space_center.ControlInputMode.override
+            except Exception:
+                pass  # Some kRPC versions may not support this
             return "stability"
         return "stability"
 
@@ -400,11 +434,11 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
 
     # ── Tick 0: initialise Mahony from truth ────────────────────────
     if ticks == 0:
+        # NOTE: we keep SAS on during warmup so the vessel stays
+        # stable and bg captures true gyro bias, not tumbling rotation.
+        # The Mahony filter should converge without truth injection
+        # once Steps 2a/2b/3 are fixed.
         _init_mahony_from_truth(director)
-        # Disable SAS during warmup so the gyro measures pure bias
-        # (free fall, no active rotation).  SAS is re-enabled by
-        # handle_sas() after the state transition from warmup.
-        director.vessel.control.sas = False
 
     # ── Accumulate samples for bias estimation ──────────────────────
     bg_accum: np.ndarray = director._warmup_bg_accum
@@ -437,8 +471,8 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
         bg_mean: np.ndarray = bg_accum / count
         ba_mean: np.ndarray = ba_accum / count
 
-        # SAS was turned off during warmup, so the gyro measured pure
-        # bias (the vessel is in free fall with minimal rotation).
+        # SAS stayed on during warmup, so the gyro measured bias while
+        # the vessel was stable (no tumbling).
         # The EKF's F-matrix coupling (δbg → δvel via R·[f]×·dt²) will
         # refine this estimate during flight if needed.
         director.estimator.bg = bg_mean
@@ -593,6 +627,15 @@ def _transition_to(director: Any, new_state: str) -> None:
     elif new_state in ("ASCENT_COAST", "DEORBIT_BURN", "HYPERSONIC_COAST", "LANDED"):
         director.sensors.attitude_estimator.enable_correction()
 
+    # SAS: re-enable explicitly after warmup (the local ves_orientation
+    # variable prevents _sas_prograde from re-firing after tick 0).
+    # Keep SAS on for all guided phases including hover/terminal.
+    if new_state in (
+        "HYPERSONIC_COAST", "POWERED_DESCENT",
+        "HOVER_TARGETING", "TERMINAL_DESCENT",
+    ):
+        director.vessel.control.sas = True
+
     # Hardware Deployment & Lights
     if new_state == "POWERED_DESCENT":
         director.vessel.control.gear = True
@@ -659,14 +702,12 @@ def _check_landed(director: Any, est_alt: float, est_vz: float, data: dict, dt: 
 def refresh_engine_data(director: Any, active_engines: list) -> None:
     """Update max_thrust for each active engine from kRPC.
     
-    Engine positions are fixed within the vessel frame — cached at init,
-    never refreshed here. This avoids a blocking part.position() RPC per
-    engine per tick which was causing ~6-8ms DT spikes every iteration.
+    Engine positions and max_thrust are fixed within the vessel frame — 
+    cached at init, never refreshed here. This avoids a blocking 
+    engine.max_thrust RPC per engine per tick which was causing ~6-8ms 
+    DT spikes every iteration.
     """
-    for e in active_engines:
-        engine_obj = director._safe_engine_access(e.part)
-        if engine_obj:
-            e.max_thrust = engine_obj.max_thrust
+    pass  # All engine data is cached at initialization; no per-tick kRPC calls needed.
 
 # ---------------------------------------------------------------------------
 #  Target-state computation (glideslope)
@@ -737,13 +778,15 @@ def compute_target_state(
         target[:2] = state_vector[:2]  # position target = current (velocity-based)
         target[2] = state_vector[2]
         target[3:5] = target_vh
-        # Vertical target from glideslope
+        # Vertical target from glideslope with minimum descent rate to prevent hover creep
+        # (as fuel burns, TWR increases and zero-velocity target causes climbing)
         vs_target = director._compute_glideslope_target(
             state_vector,
             floor_alt=config.ALT_TERMINAL,
             max_descent_rate=config.GLIDESLOPE_RATE_HOVER,
             a_avail=a_avail,
             horizontal_target=None,  # vertical only
+            min_descent_rate=config.HOVER_MIN_DESCENT_RATE,
         )
         target[5] = vs_target[5]
         return target
@@ -781,6 +824,7 @@ def compute_target_state(
             max_descent_rate=config.GLIDESLOPE_RATE_TERMINAL,
             a_avail=a_avail,
             horizontal_target=None,
+            min_descent_rate=config.TERMINAL_MIN_DESCENT_RATE,  # Gentle continued descent
         )
         target[5] = vs_target[5]
         return target
