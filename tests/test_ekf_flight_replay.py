@@ -99,7 +99,12 @@ def _compute_innovation_stats(replayer: FlightReplayer,
     sf_body_noisy = data["sf_body_noisy"]
     raw_gyro = data["raw_gyro"]
     mahony_att = np.array(data["mahony_attitude"])
-    gravity_world = np.array(data["gravity_world"])
+    if "gravity_world" in data:
+        gravity_world = np.array(data["gravity_world"])
+    elif "gravity_ned" in data:
+        gravity_world = np.array(data["gravity_ned"])
+    else:
+        gravity_world = np.full((len(ut), 3), [0.0, 0.0, -9.81])
     noisy_alt = np.array(data["noisy_alt"])
     noisy_vel = np.array(data["noisy_vel"])
 

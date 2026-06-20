@@ -135,7 +135,8 @@ class GuidanceController:
                        up_vector: np.ndarray,
                        dt: float = 0.02,
                        angular_velocity: np.ndarray | None = None,
-                       max_a_avail: float | None = None) -> np.ndarray:
+                       max_a_avail: float | None = None,
+                       max_pitch_deg: float = 25.0) -> np.ndarray:
         """
         Computes the 6-DOF wrench required to move towards the target state
         and an upright attitude.
@@ -234,6 +235,23 @@ class GuidanceController:
             target_up_ned = a_cmd_ned / a_cmd_norm
         else:
             target_up_ned = up_vector
+
+        # Clamp tilt to max_pitch_deg to avoid aggressive maneuvering
+        dot_up = np.clip(np.dot(target_up_ned, up_vector), -1.0, 1.0)
+        tilt_angle = np.arccos(dot_up)
+        max_tilt_rad = np.deg2rad(max_pitch_deg)
+
+        if tilt_angle > max_tilt_rad:
+            # Rotate target_up_ned towards up_vector so its angle is max_tilt_rad
+            # Find the rotation axis perpendicular to both
+            axis = np.cross(up_vector, target_up_ned)
+            axis_norm = np.linalg.norm(axis)
+            if axis_norm > 1e-6:
+                axis = axis / axis_norm
+                rot_clamp = R.from_rotvec(axis * max_tilt_rad)
+                target_up_ned = rot_clamp.apply(up_vector)
+            else:
+                target_up_ned = up_vector
 
         target_up_body = rot.inv().apply(target_up_ned)
 

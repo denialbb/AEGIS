@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 def _check_paused(
     director: Any, last_met: float, paused_ticks: int, dt: float
 ) -> tuple[float, int, bool]:
-    """Detect game pause via MET stagnation.  Returns (new_last_met, new_paused_ticks, is_paused)."""
+    """Detect game pause via MET stagnation. Returns (new_last_met, new_paused_ticks, is_paused)."""
     try:
-        current_met = float(director.vessel.met)
+        current_met = director._met_stream()
     except Exception:
         current_met = last_met + 1.0
     if abs(current_met - last_met) < 1e-6:
@@ -302,19 +302,21 @@ def run_mission_loop(director: Any) -> bool:
         if director.state in flight_control.UNGUIDED_STATES:
             wrench = np.zeros(6)
 
-        # Torque is zeroed for the equal-force allocator: it only consumes
-        # wrench[:3] (force).  Gimbals steer each engine toward the commanded
-        # body-frame force direction (already encodes attitude correction from
-        # a_cmd_ned → a_cmd_body).  Large attitude corrections are handled by
-        # the AttitudeController via SAS joystick commands, which cooperates
-        # with gimbal steering: gimbals provide fast local correction within
-        # their authority, while the attitude controller slews the whole vessel.
-        wrench[3:6] = 0.0
+        # Guidance computes 6DOF wrench [Fx, Fy, Fz, Tx, Ty, Tz] in body frame.
+        # The allocator uses full 6DOF pseudo-inverse to distribute force AND torque
+        # across engines via differential throttling. Gimbals handle fine steering.
+        # The attitude controller (via SAS/joystick) provides additional authority.
+        director.attitude.update(
+            director,
+            wrench[3:6],
+            director.state,
+            ves_orientation,
+        )
 
         # 18. Control allocation
         if active and director.state not in _ALLOCATION_INHIBITED:
             com = np.zeros(3)
-            for attr in ['center_of_mass', 'CoM', 'com', 'COM']:
+            for attr in ["center_of_mass", "CoM", "com", "COM"]:
                 try:
                     com = np.array(getattr(director.vessel, attr))
                     break
@@ -331,8 +333,14 @@ def run_mission_loop(director: Any) -> bool:
 
         # 19. Telemetry frame
         frame = ui.make_telemetry_frame(
-            director, start_time, data, state_vector, skip_predict,
-            est_alt=est_alt, a_avail=a_avail, wrench_force=wrench[:3],
+            director,
+            start_time,
+            data,
+            state_vector,
+            skip_predict,
+            est_alt=est_alt,
+            a_avail=a_avail,
+            wrench_force=wrench[:3],
         )
         director.writer.log_tick(frame)
 

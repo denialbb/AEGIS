@@ -70,7 +70,12 @@ def _analyze_recording(npz_path: str) -> dict:
     sf_bodies = np.array(raw["sf_body_noisy"])
     raw_gyros = np.array(raw["raw_gyro"])
     mahonys = np.array(raw["mahony_attitude"])
-    gravities = np.array(raw["gravity_world"])
+    if "gravity_world" in raw:
+        gravities = np.array(raw["gravity_world"])
+    elif "gravity_ned" in raw:
+        gravities = np.array(raw["gravity_ned"])
+    else:
+        gravities = np.full((len(raw["ut"]), 3), [0.0, 0.0, -9.81])
     noisy_alts = np.array(raw["noisy_alt"])
     noisy_vels = np.array(raw["noisy_vel"])
 
@@ -266,7 +271,12 @@ def test_ground_truth_error_timeseries():
     sf_bodies = np.array(raw["sf_body_noisy"])
     raw_gyros = np.array(raw["raw_gyro"])
     mahonys = np.array(raw["mahony_attitude"])
-    gravities = np.array(raw["gravity_world"])
+    if "gravity_world" in raw:
+        gravities = np.array(raw["gravity_world"])
+    elif "gravity_ned" in raw:
+        gravities = np.array(raw["gravity_ned"])
+    else:
+        gravities = np.full((N, 3), [0.0, 0.0, -9.81])
     noisy_alts = np.array(raw["noisy_alt"])
     noisy_vels = np.array(raw["noisy_vel"])
     dt_arr = np.array(raw["dt"])
@@ -315,7 +325,12 @@ def test_ground_truth_prediction_error_spikes():
     sf_bodies = np.array(raw["sf_body_noisy"])
     raw_gyros = np.array(raw["raw_gyro"])
     mahonys = np.array(raw["mahony_attitude"])
-    gravities = np.array(raw["gravity_world"])
+    if "gravity_world" in raw:
+        gravities = np.array(raw["gravity_world"])
+    elif "gravity_ned" in raw:
+        gravities = np.array(raw["gravity_ned"])
+    else:
+        gravities = np.full((N, 3), [0.0, 0.0, -9.81])
     noisy_alts = np.array(raw["noisy_alt"])
     noisy_vels = np.array(raw["noisy_vel"])
     dt_arr = np.array(raw["dt"])

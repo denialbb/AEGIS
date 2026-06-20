@@ -7,6 +7,7 @@ estimator integration, throttle control, and abort handling.
 import logging
 from typing import Any
 
+import math
 import numpy as np
 from scipy.spatial.transform import Rotation as R  # type: ignore
 
@@ -296,10 +297,11 @@ def _sas_standard(director: Any, est_vz: float, ves_orientation: str) -> str:
         return ves_orientation
 
     if director.state in ("HOVER_TARGETING", "TERMINAL_DESCENT", "TERMINAL_LANDING"):
-        if ves_orientation != "off":
-            director.vessel.control.sas = False
-            return "off"
-        return "off"
+        if ves_orientation != "stability":
+            director.vessel.control.sas = True
+            director.vessel.control.sas_mode = director.conn.space_center.SASMode.stability_assist
+            return "stability"
+        return "stability"
 
     threshold = 40
     if est_vz > threshold and ves_orientation != "prograde":
@@ -440,7 +442,16 @@ def _run_sensor_warmup(director: Any, data: dict, est_alt: float) -> None:
         # The EKF estimates gyro bias in its 12-state vector (states 7-9)
         # via the measurement update — it converges naturally.
         director.estimator.bg = np.zeros(3)
-        director.estimator.ba = ba_mean
+        
+        # FRAME-005: Do NOT use the warmup accel bias estimate if flying.
+        # When hypersonic, the vessel is decelerating due to aerodynamic drag,
+        # so specific force is NOT zero. Assuming it is zero causes the EKF
+        # to interpret drag as a massive accelerometer bias (e.g. 1.6 m/s²),
+        # completely destroying velocity and position estimates.
+        if data.get("situation") in ("landed", "pre_launch", "splashed"):
+            director.estimator.ba = ba_mean
+        else:
+            director.estimator.ba = np.zeros(3)
         director.estimator.P[6:9, 6:9] = (
             np.eye(3) * config.SENSOR_WARMUP_GYRO_BIAS_SIGMA**2
         )
@@ -550,6 +561,11 @@ def process_state_transitions(
         director.state = "HARD_ABORT"
 
 
+def _set_vessel_lights_color(director: Any, r: float, g: float, b: float) -> None:
+    for part in director.vessel.parts.all:
+        if part.light:
+            part.light.color = (r, g, b)
+
 def _transition_to(director: Any, new_state: str) -> None:
     """Log and perform a state transition."""
     old = director.state
@@ -567,6 +583,20 @@ def _transition_to(director: Any, new_state: str) -> None:
         director._phase_entry_ticks = director._dbg_tick_count
         director._early_translation_checked = False
         director._landed_timer = 0.0
+
+    # Hardware Deployment & Lights
+    if new_state == "POWERED_DESCENT":
+        director.vessel.control.gear = True
+        director.vessel.control.lights = True
+        _set_vessel_lights_color(director, 1.0, 1.0, 0.0)  # Yellow
+    elif new_state == "HOVER_TARGETING":
+        _set_vessel_lights_color(director, 0.0, 0.5, 1.0)  # Blue
+    elif new_state == "TERMINAL_DESCENT":
+        _set_vessel_lights_color(director, 0.0, 1.0, 0.0)  # Green
+    elif new_state == "HARD_ABORT":
+        _set_vessel_lights_color(director, 1.0, 0.0, 0.0)  # Red
+    elif new_state == "LANDED":
+        _set_vessel_lights_color(director, 1.0, 1.0, 1.0)  # White
 
 
 def _check_landed(director: Any, est_alt: float, est_vz: float, data: dict, dt: float) -> None:
@@ -680,10 +710,13 @@ def compute_target_state(
         # Velocity-based horizontal guidance: target_vh = APPROACH_K * to_pad, capped at APPROACH_MAX.
         # This eliminates position-blend lag and directly commands velocity toward the pad.
         to_pad = -state_vector[:2]  # vector from current pos to pad [0, 0]
-        target_vh = config.HOVER_APPROACH_K * to_pad
-        vh_mag = float(np.linalg.norm(target_vh))
-        if vh_mag > config.HOVER_APPROACH_MAX:
-            target_vh = (target_vh / vh_mag) * config.HOVER_APPROACH_MAX
+        dist = float(np.linalg.norm(to_pad))
+        if dist > 0.1:
+            brake_accel = 0.5  # ~3 degrees tilt
+            target_speed = min(math.sqrt(2.0 * brake_accel * dist), config.HOVER_APPROACH_MAX)
+            target_vh = (to_pad / dist) * target_speed
+        else:
+            target_vh = np.zeros(2)
 
         director.guidance.set_phase_gains(
             kp_pos_lateral=config.HOVER_KP_POS_LATERAL,
@@ -709,10 +742,21 @@ def compute_target_state(
     if director.state == "TERMINAL_DESCENT":
         # Velocity-based horizontal guidance with tighter gains
         to_pad = -state_vector[:2]
-        target_vh = config.TERMINAL_APPROACH_K * to_pad
-        vh_mag = float(np.linalg.norm(target_vh))
-        if vh_mag > config.TERMINAL_APPROACH_MAX:
-            target_vh = (target_vh / vh_mag) * config.TERMINAL_APPROACH_MAX
+        dist = float(np.linalg.norm(to_pad))
+        if dist > 0.1:
+            brake_accel = 0.3  # ~2 degrees tilt
+            target_speed = min(math.sqrt(2.0 * brake_accel * dist), config.TERMINAL_APPROACH_MAX)
+            
+            # Linearly decay max horizontal speed as we drop below 15m.
+            # At 5m (ALT_LANDING), we want exactly 0 horizontal speed.
+            est_alt = float(np.dot(state_vector[:3], director.up_vector))
+            if est_alt < 15.0:
+                speed_limit = max(0.0, (est_alt - 5.0) / 10.0 * config.TERMINAL_APPROACH_MAX)
+                target_speed = min(target_speed, speed_limit)
+                
+            target_vh = (to_pad / dist) * target_speed
+        else:
+            target_vh = np.zeros(2)
 
         director.guidance.set_phase_gains(
             kp_pos_lateral=config.TERMINAL_KP_POS_LATERAL,

@@ -5,6 +5,8 @@ from typing import Any
 
 import numpy as np
 
+from scipy.spatial.transform import Rotation as R
+
 from src.telemetry.frame import TelemetryFrame
 from src.mission.helpers import build_fuel_state
 
@@ -25,6 +27,27 @@ def make_telemetry_frame(
     )
     fuel_state = build_fuel_state(director, num)
     axial = getattr(director, "_diagnostic_axial_forces", np.zeros(num))
+    try:
+        true_q = data["attitude"]
+        true_euler = R.from_quat(true_q).inv().as_euler("YXZ", degrees=True)
+        true_att = np.array(true_euler)
+    except Exception:
+        true_att = np.zeros(3)
+
+    try:
+        q_est = director.sensors.attitude_estimator.quaternion
+        # Mahony filter estimates body->NED rotation.
+        # R.from_quat(q_est).inv() is NED->body.
+        # We extract YXZ euler angles to roughly match (pitch, yaw, roll) convention,
+        # but honestly we just want to track the filter's output.
+        # However, KSP's pitch/yaw/roll are native.
+        # We will log the estimated eulers:
+        est_euler = R.from_quat(q_est).inv().as_euler("YXZ", degrees=True)
+        est_att = np.array(est_euler)
+    except Exception as e:
+        logger.error(f"Failed to calculate est_attitude: {e}")
+        est_att = np.zeros(3)
+
     return TelemetryFrame(
         timestamp=timestamp,
         altitude=data["noisy_alt"],
@@ -39,6 +62,8 @@ def make_telemetry_frame(
         force_body=wrench_force,
         axial_forces=axial,
         position=state_vector[:2],
+        true_attitude=true_att,
+        est_attitude=est_att,
     )
 
 

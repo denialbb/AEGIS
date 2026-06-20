@@ -34,6 +34,8 @@ class TelemetryFrame:
     force_body: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
     axial_forces: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(1))
     position: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(2))
+    true_attitude: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
+    est_attitude: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
 
     def flatten(self) -> Dict[str, Any]:
         """
@@ -94,6 +96,13 @@ class TelemetryFrame:
             if i < self.position.size:
                 flat_data[f"pos_{axis}"] = float(self.position[i])
 
+        # Flatten attitude angles (pitch, yaw, roll)
+        for i, axis in enumerate(['pitch', 'yaw', 'roll']):
+            if i < self.true_attitude.size:
+                flat_data[f"true_{axis}"] = float(self.true_attitude[i])
+            if i < self.est_attitude.size:
+                flat_data[f"est_{axis}"] = float(self.est_attitude[i])
+
         return flat_data
     
     @classmethod
@@ -112,9 +121,12 @@ class TelemetryFrame:
         for i in range(num_engines):
             headers.append(f"gimbal_{i}_0")
             headers.append(f"gimbal_{i}_1")
-        for i in range(3):
-            headers.append(f"fb_{['x','y','z'][i]}")
+        headers.extend([
+            "fb_x", "fb_y", "fb_z",
+        ])
         for i in range(num_engines):
             headers.append(f"axial_{i}")
         headers.extend(["pos_n", "pos_e"])
+        headers.extend(["true_pitch", "true_yaw", "true_roll"])
+        headers.extend(["est_pitch", "est_yaw", "est_roll"])
         return headers

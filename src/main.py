@@ -47,7 +47,9 @@ class MissionDirector:
         self._init_misc_state()
 
         # Ensure the activation action group is toggled OFF when starting
-        self.vessel.control.set_action_group(config.ACTIVATION_ACTION_GROUP, False)
+        self.vessel.control.set_action_group(
+            config.ACTIVATION_ACTION_GROUP, False
+        )
 
     # ------------------------------------------------------------------
     # Reference frame  (ADR-017)
@@ -99,12 +101,16 @@ class MissionDirector:
 
         gx_v = np.array(
             self.conn.space_center.transform_direction(
-                (1.0, 0.0, 0.0), part.reference_frame, self.vessel.reference_frame,
+                (1.0, 0.0, 0.0),
+                part.reference_frame,
+                self.vessel.reference_frame,
             )
         )
         gy_v = np.array(
             self.conn.space_center.transform_direction(
-                (0.0, 1.0, 0.0), part.reference_frame, self.vessel.reference_frame,
+                (0.0, 0.0, 1.0),
+                part.reference_frame,
+                self.vessel.reference_frame,
             )
         )
 
@@ -121,32 +127,49 @@ class MissionDirector:
         )
         e.krpc_engine = krpc_engine
         for module in part.modules:
-            if module.name == "ModuleGimbalTrim" and "Gimbal X" in module.fields:
+            if (
+                module.name == "ModuleGimbalTrim"
+                and "Gimbal X" in module.fields
+            ):
                 e.gimbal_module = module
                 break
-        logger.info("E%d %s max_gimbal=%s", e.index, e.position, e.max_gimbal_deg)
+        logger.info(
+            "E%d %s max_gimbal=%s", e.index, e.position, e.max_gimbal_deg
+        )
         return e
 
-    def _resolve_thrust_direction(self, part: Any, krpc_engine: Any) -> np.ndarray:
+    def _resolve_thrust_direction(
+        self, part: Any, krpc_engine: Any
+    ) -> np.ndarray:
         """Determine the thrust direction vector of an engine in the vessel frame."""
         thruster = krpc_engine.thrusters[0]
         try:
-            return np.array(thruster.initial_thrust_direction(self.vessel.reference_frame))
+            return np.array(
+                thruster.initial_thrust_direction(self.vessel.reference_frame)
+            )
         except Exception:
             pass
         try:
-            return np.array(thruster.thrust_direction(self.vessel.reference_frame))
+            return np.array(
+                thruster.thrust_direction(self.vessel.reference_frame)
+            )
         except Exception:
             pass
-        fallback = config.PART_THRUST_AXIS.get(part.name, config.DEFAULT_THRUST_AXIS)
+        fallback = config.PART_THRUST_AXIS.get(
+            part.name, config.DEFAULT_THRUST_AXIS
+        )
         direction = np.array(
             self.conn.space_center.transform_direction(
-                fallback, part.reference_frame, self.vessel.reference_frame,
+                fallback,
+                part.reference_frame,
+                self.vessel.reference_frame,
             )
         )
         logger.warning(
             "Thruster API unavailable for %s, using configured axis %s \u2192 %s",
-            part.name, fallback, direction,
+            part.name,
+            fallback,
+            direction,
         )
         return direction
 
@@ -166,7 +189,9 @@ class MissionDirector:
 
     def _init_sensors(self) -> None:
         """Create the sensor stack."""
-        self.sensors = SensorModels(self.conn, self.vessel, self.ned_frame, self.up_vector)
+        self.sensors = SensorModels(
+            self.conn, self.vessel, self.ned_frame, self.up_vector
+        )
 
     # ------------------------------------------------------------------
     # Estimator + FDI
@@ -174,11 +199,15 @@ class MissionDirector:
 
     def _init_estimator(self) -> None:
         """Initialise the Error-State EKF and FDI module."""
-        initial_pos, initial_vel, _alt = get_vessel_state_ned(self.vessel, self.ned_frame)
+        initial_pos, initial_vel, _alt = get_vessel_state_ned(
+            self.vessel, self.ned_frame
+        )
 
         covariance = self._build_initial_covariance()
 
-        self.estimator = ErrorStateEKF(initial_pos, initial_vel, covariance, self.up_vector)
+        self.estimator = ErrorStateEKF(
+            initial_pos, initial_vel, covariance, self.up_vector
+        )
 
         self.fdi = FaultDetectionIsolation(
             threshold=config.FDI_THRESHOLD,
@@ -227,10 +256,12 @@ class MissionDirector:
 
     def _init_telemetry(self) -> None:
         """Create the telemetry CSV / event-log writer."""
-        self.writer = TelemetryWriter({
-            "num_engines": max(len(self.engines), 1),
-            "seed": config.RANDOM_SEED,
-        })
+        self.writer = TelemetryWriter(
+            {
+                "num_engines": max(len(self.engines), 1),
+                "seed": config.RANDOM_SEED,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Miscellaneous state
@@ -243,7 +274,9 @@ class MissionDirector:
         # FDI persistence
         self.expected_throttles: np.ndarray = np.array([])
         self.expected_accel: np.ndarray = np.zeros(3)
-        self._expected_forces: np.ndarray = np.zeros((max(len(self.engines), 1), 3))
+        self._expected_forces: np.ndarray = np.zeros(
+            (max(len(self.engines), 1), 3)
+        )
 
         # Optuna-tuning metric
         self.total_angular_motion: float = 0.0
@@ -254,7 +287,7 @@ class MissionDirector:
         self._saturated_engines_set: set[int] = set()
         self._diagnostic_axial_forces: np.ndarray = np.zeros(len(self.engines))
 
-        # Debug attributes  (used by scripts/debug_telemetry_detail.py)
+        # Debug attributes (used by scripts/debug_telemetry_detail.py)
         self._dbg_actual_dt: float = 1.0 / config.TARGET_HZ
         self._dbg_sleep_time: float = 0.0
         self._dbg_skip_predict: bool = False
@@ -270,6 +303,15 @@ class MissionDirector:
         self._phase_entry_ticks: int = 0
         self._phase_entry_horizontal: np.ndarray | None = None
         self._early_translation: bool = False
+
+        # Add streams for performance-critical values
+        self._met_stream = self.conn.add_stream(getattr, self.vessel, "met")
+        flight_ned = self.vessel.flight(self.ned_frame)
+        self._pitch_stream = self.conn.add_stream(getattr, flight_ned, "pitch")
+        self._roll_stream = self.conn.add_stream(getattr, flight_ned, "roll")
+        self._yaw_stream = self.conn.add_stream(getattr, flight_ned, "heading")
+        self._cached_com = np.zeros(3)
+        self._com_update_tick = 0
 
     # ------------------------------------------------------------------
     # Glideslope guidance
@@ -332,7 +374,12 @@ class MissionDirector:
         # A lower ratio means the velocity error (target - current) is larger,
         # producing stronger braking from the PD controller.
         # min_descent_rate ensures the vehicle descends even when hovering slowly.
-        desired_speed = min(desired_speed, max(current_speed * config.GLIDESLOPE_TARGET_RATIO, min_descent_rate))
+        desired_speed = min(
+            desired_speed,
+            max(
+                current_speed * config.GLIDESLOPE_TARGET_RATIO, min_descent_rate
+            ),
+        )
         target[3:] = -self.up_vector * desired_speed
         return target
 
@@ -343,6 +390,7 @@ class MissionDirector:
     def run_loop(self) -> bool:
         """Thin wrapper delegating to the modular loop implementation."""
         from src.mission.loop import run_mission_loop
+
         return run_mission_loop(self)
 
 
@@ -350,11 +398,20 @@ class MissionDirector:
 # CLI entry-point
 # ======================================================================
 
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AEGIS Mission Director")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--log-to-file", action="store_true", help="Log to file")
-    parser.add_argument("--hud", action="store_true", help="Enable HUD display (suppresses terminal logging)")
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug logging"
+    )
+    parser.add_argument(
+        "--log-to-file", action="store_true", help="Log to file"
+    )
+    parser.add_argument(
+        "--hud",
+        action="store_true",
+        help="Enable HUD display (suppresses terminal logging)",
+    )
     return parser.parse_args()
 
 
@@ -385,7 +442,9 @@ def _run_mission() -> bool:
     try:
         return director.run_loop()
     except krpc.error.RPCError as e:
-        logger.error("kRPC Error: %s. Vessel may have been destroyed. Exiting.", str(e))
+        logger.error(
+            "kRPC Error: %s. Vessel may have been destroyed. Exiting.", str(e)
+        )
     except Exception as e:
         logger.error("Unexpected error: %s. Exiting.", str(e))
     return False

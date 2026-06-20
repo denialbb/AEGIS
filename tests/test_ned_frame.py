@@ -176,7 +176,8 @@ class TestQuaternion:
     def test_quaternion_matches_rotation_matrix(self, pad_ecef: np.ndarray) -> None:
         R_mat, quat, _, _ = ecef_to_ned(pad_ecef)
         recovered = R.from_quat(quat).as_matrix()
-        np.testing.assert_allclose(recovered, R_mat, atol=1e-12)
+        # quat is NED -> ECEF, but R_mat is ECEF -> NED. So recovered == R_mat.T
+        np.testing.assert_allclose(recovered, R_mat.T, atol=1e-12)
 
     def test_quaternion_is_unit_norm(self, pad_ecef: np.ndarray) -> None:
         _, quat, _, _ = ecef_to_ned(pad_ecef)
