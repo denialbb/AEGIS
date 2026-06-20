@@ -64,6 +64,19 @@ ALT_HOVER = 200.0
 ALT_TERMINAL = 20.0
 
 # ---------------------------------------------------------
+# Landed Timer Parameters
+# ---------------------------------------------------------
+# Vertical velocity threshold (m/s) below which the vessel counts as "landed"
+# The timer only accumulates when |vertical_velocity| < LANDED_VEL_THRESHOLD.
+# Min: 0.01, Max: 5.0
+LANDED_VEL_THRESHOLD = 0.5  # m/s
+
+# Altitude above ground threshold (m) within which the vessel counts as "at land level"
+# The timer only accumulates when altitude < LANDED_ALT_THRESHOLD.
+# Min: 0.01, Max: 10.0
+LANDED_ALT_THRESHOLD = 1.0  # m
+
+# ---------------------------------------------------------
 # Sensor Noise Modeling (Standard Deviations)
 # ---------------------------------------------------------
 # Standard deviation of altitude noise (meters).
@@ -75,6 +88,11 @@ SIGMA_ALT = 2.0  # meters
 # Higher values make the estimator trust the altitude sensor more, slowing velocity reaction time.
 # Min: 0.05 (High-end IMU), Max: 2.0 (Cheap IMU)
 SIGMA_ACCEL = 0.5  # m/s^2
+
+# Standard deviation of velocity noise (m/s).
+# Higher values make the estimator trust the altitude sensor more for velocity.
+# Min: 0.1 (High-end GPS), Max: 5.0 (Noisy GPS)
+SIGMA_VEL = 1.0  # m/s
 
 # ---------------------------------------------------------
 # Fault Detection & Isolation
@@ -89,6 +107,55 @@ FDI_THRESHOLD = 3.0
 # Simulation Determinism
 # ---------------------------------------------------------
 RANDOM_SEED = 42
+
+# ---------------------------------------------------------
+# IMU & Inertial Navigation Parameters
+# ---------------------------------------------------------
+# Standard deviation of gyroscope noise (rad/s).
+# Higher values make the attitude estimate more reliant on accelerometer (slower but less drift).
+# Min: 0.001 (High-end gyro), Max: 0.1 (Low-end gyro)
+SIGMA_GYRO = 0.01  # rad/s
+
+# Gyroscope bias instability (rad/s/sqrt(Hz)).
+# Models random walk of gyroscope bias over time.
+# Min: 1e-6 (Very stable), Max: 0.01 (Unstable)
+GYRO_BIAS_INSTABILITY = 0.0001  # rad/s/sqrt(Hz)
+
+# Standard deviation of accelerometer noise (m/s^2).
+# Already defined above as SIGMA_ACCEL, keeping for clarity
+# ACCEL_BIAS_INSTABILITY models random walk of accelerometer bias
+ACCEL_BIAS_INSTABILITY = 0.001  # m/s^2/sqrt(Hz)
+
+# Mahony filter proportional gain.
+# Higher values increase correction from accelerometer (reduces drift but increases noise sensitivity).
+# Min: 0.1 (Sluggish correction), Max: 10.0 (Aggressive correction)
+MAHONY_KP = 2.0
+
+# Mahony filter integral gain (for gyroscope bias estimation).
+# Higher values better estimate and remove gyroscope bias but can cause overshoot.
+# Min: 0.0 (No integral action), Max: 0.1 (Aggressive bias estimation)
+MAHONY_KI = 0.0
+
+# ---------------------------------------------------------
+# Error-State EKF Parameters
+# ---------------------------------------------------------
+# Initial attitude uncertainty (rad, 1-σ).
+# Controls how quickly the EKF trusts accelerometer-based attitude correction.
+# Min: 0.01 (Well-known attitude), Max: 1.0 (Large initial error)
+EKF_INITIAL_ATT_UNCERTAINTY = 0.1  # rad
+
+# Initial gyroscope bias uncertainty (rad/s, 1-σ).
+# Min: 1e-5 (Factory-calibrated), Max: 0.1 (Uncalibrated)
+EKF_INITIAL_GYRO_BIAS_UNCERTAINTY = 0.01  # rad/s
+
+# Initial accelerometer bias uncertainty (m/s², 1-σ).
+# Min: 1e-4, Max: 1.0
+EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY = 0.1  # m/s²
+
+# Innovation magnitude threshold for IMU health monitoring.
+# When the normalised innovation exceeds this, an sensor anomaly is flagged.
+# Min: 3.0 (Sensitive), Max: 10.0 (Tolerant)
+EKF_INNOVATION_FAULT_THRESHOLD = 5.0
 
 # ---------------------------------------------------------
 # Glide-Slope Guidance
@@ -175,7 +242,13 @@ GUIDANCE_ATT_DAMPING_RATIO = [1.0, 1.0, 1.0]
 # Higher = more aggressive (risks attitude flip during saturating transients);
 # lower = more conservative (risks the vehicle always lagging the profile).
 # Min: 2.0, Max: 4.0
-ACCEL_CLAMP_FACTOR = 2.5
+ACCEL_CLAMP_FACTOR = 2.5  # multiplier on max_a_avail, see GuidanceController
+
+# Scale factor for adaptive process noise in the StateEstimator.
+# Larger value makes the filter increase velocity‑noise covariance when the
+# commanded acceleration magnitude grows (helps during high‑thrust phases).
+# Recommended range: 0.05 – 0.2 (tune experimentally).
+PROCESS_NOISE_THRUST_COEF = 0.1  # (1/(m/s)^2) scaling of Q based on |a|^2
 
 GRAVITY = [0.0, 0.0, -9.81]
 
@@ -194,3 +267,13 @@ GRAVITY = [0.0, 0.0, -9.81]
 DEBUG_LOGGING = False
 LOG_TO_FILE = False
 LOG_FILE_PATH = "logs/aegis.log"
+
+# ---------------------------------------------------------
+# HUD Display
+# ---------------------------------------------------------
+# Enable the in-terminal heads-up display that updates in-place
+# without scrolling. Automatically disabled if stdout is not a TTY.
+HUD_ENABLED = True
+# HUD refresh rate in Hz. Decoupled from the control loop to reduce
+# terminal overhead. 10 Hz is smooth enough for monitoring.
+HUD_REFRESH_HZ = 10.0

@@ -36,13 +36,14 @@ Note: Mass is treated as an external clean telemetry parameter, not estimated in
 ### Interface
 ```python
 class StateEstimator:
-    def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise: np.ndarray):
+    def __init__(self, initial_state: np.ndarray, initial_covariance: np.ndarray, process_noise: np.ndarray, measurement_noise: np.ndarray, up_vector: np.ndarray = np.array([0.0, 0.0, 1.0])):
         """
         Initializes the Discrete-Time Kalman Filter.
         initial_state: shape (6,)
         initial_covariance: shape (6, 6)
         process_noise: shape (6, 6)
         measurement_noise: shape (1, 1) (altitude measurement variance)
+        up_vector: vector pointing directly up from the planet surface
         """
         pass
 
@@ -139,11 +140,14 @@ class ControlAllocator:
 State machine that manages nominal mission phases and handles contingencies.
 
 ### States
+- `STANDBY`
+- `ASCENT_COAST`
 - `DEORBIT_BURN`
 - `HYPERSONIC_COAST`
 - `POWERED_DESCENT`
 - `HOVER_TARGETING`
 - `TERMINAL_DESCENT`
+- `LANDED`
 - `HARD_ABORT`
 
 ### Contingencies
@@ -165,19 +169,22 @@ class MissionDirector:
         conn: kRPC connection object
         """
         self.conn = conn
-        self.state: str = "DEORBIT_BURN"
+        self.state: str = "STANDBY"
         self.estimator: StateEstimator = ...
         self.fdi: FaultDetectionIsolation = ...
         self.allocator: ControlAllocator = ...
         self.writer: TelemetryWriter = ...  # Owns the logging infrastructure
 
-    def run_loop(self):
+    def run_loop(self) -> bool:
         """
         Executes the main loop at 10Hz to 50Hz, polling telemetry,
         updating the estimator, running the FDI, computing control wrench,
         allocating thrust, and transitioning states.
+
+        Returns:
+            True if the mission landed successfully, False on HARD_ABORT or failure.
         """
-        pass
+        return True
 ```
 
 ---

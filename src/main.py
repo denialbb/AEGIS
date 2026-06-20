@@ -6,6 +6,7 @@ import krpc
 import logging
 import numpy as np
 import argparse
+import sys
 from typing import Any, List
 
 import src.config as config
@@ -25,13 +26,14 @@ def _safe_engine_access(part: Any) -> Any:
         return None
 
 
-from src.estimation.estimator import StateEstimator
+from src.estimation.ekf import ErrorStateEKF
 from src.fdi.fdi import FaultDetectionIsolation
 from src.guidance.allocator import ControlAllocator, AllocationDegenerateError
 from src.guidance.controller import GuidanceController
 from src.telemetry.frame import TelemetryFrame
 from src.telemetry.writer import TelemetryWriter
 from src.telemetry.sensors import SensorModels
+from src.common.hud import HudDisplay
 
 
 class MissionDirector:
@@ -92,6 +94,7 @@ class MissionDirector:
                     position=pos,
                     thrust_direction=thrust_dir,
                     max_thrust=part.engine.max_thrust,
+                    max_gimbal_deg=part.engine.gimbal_range,
                     part=part,
                 )
                 part.engine.thrust_limit = 1.0  # Reset thrust limit to 100% in case a previous run set it to 0
@@ -105,21 +108,25 @@ class MissionDirector:
             self.conn, vessel, self.ref_frame, self.up_vector
         )
 
-        # Initialize submodules
-        initial_state = np.zeros(6)
-        initial_covariance = np.eye(6)
-        process_noise = np.eye(6)
-        measurement_noise = np.eye(1)
+        # Initialize submodules — Error-State EKF (12-dim error state: pos, vel, gyro_bias, accel_bias)
+        initial_pos: np.ndarray = np.zeros(3)
+        initial_vel: np.ndarray = np.array(
+            vessel.flight(self.ref_frame).velocity
+        )
+        initial_covariance: np.ndarray = np.eye(12)
+        initial_covariance[0:3, 0:3] *= 1.0   # position uncertainty
+        initial_covariance[3:6, 3:6] *= 1.0   # velocity uncertainty
+        initial_covariance[6:9, 6:9] *= config.EKF_INITIAL_GYRO_BIAS_UNCERTAINTY**2   # gyro bias uncertainty
+        initial_covariance[9:12, 9:12] *= config.EKF_INITIAL_ACCEL_BIAS_UNCERTAINTY**2   # accel bias uncertainty
 
-        self.estimator: StateEstimator = StateEstimator(
-            initial_state,
+        self.estimator: ErrorStateEKF = ErrorStateEKF(
+            initial_pos,
+            initial_vel,
             initial_covariance,
-            process_noise,
-            measurement_noise,
             self.up_vector,
         )
         self.fdi: FaultDetectionIsolation = FaultDetectionIsolation(
-            threshold=config.FDI_THRESHOLD
+            threshold=config.FDI_THRESHOLD, ekf=self.estimator
         )
 
         # Query inertia tensor from kRPC (ADR-028), reshape from row-major list to 3x3
@@ -134,7 +141,8 @@ class MissionDirector:
         kp_att = omega_n**2
         kd_att = 2.0 * zeta * omega_n
 
-        # Initialize Guidance Controller with gains from config and proper gravity vector
+        # Initialize Guidance Controller with gains from config and placeholder gravity
+        # Gravity will be updated each loop with dynamic gravity from kRPC
         self.guidance: GuidanceController = GuidanceController(
             kp_pos_lateral=config.GUIDANCE_KP_POS_LATERAL,
             kp_pos_vertical=config.GUIDANCE_KP_POS_VERTICAL,
@@ -142,7 +150,7 @@ class MissionDirector:
             kd_vel_vertical=config.GUIDANCE_KD_VEL_VERTICAL,
             kp_att=kp_att,
             kd_att=kd_att,
-            gravity=-self.up_vector * 9.81,
+            gravity=np.zeros(3),
             inertia_tensor=self.inertia_tensor,
             accel_clamp_factor=config.ACCEL_CLAMP_FACTOR,
         )
@@ -168,6 +176,12 @@ class MissionDirector:
         )
 
         self._exit_requested: bool = False
+
+        self._dt_spike_count: int = 0
+        self._alloc_cond: float = 0.0
+        self._saturated_engines_set: set[int] = set()
+
+        self.hud: HudDisplay = HudDisplay(max(len(self.engines), 1))
 
     def _compute_glideslope_target(
         self,
@@ -215,19 +229,33 @@ class MissionDirector:
 
         return target_state
 
-    def run_loop(self) -> None:
+    def run_loop(self) -> bool:
         """
         Executes the main loop at 10Hz to 50Hz, polling telemetry,
         updating the estimator, running the FDI, computing control wrench,
         allocating thrust, controlling SAS and transitioning states.
+
+        Returns:
+            True if the mission landed successfully, False on HARD_ABORT or failure.
         """
         target_hz = config.TARGET_HZ
+        success = False
         dt = 1.0 / target_hz
         ves_orientation = "stability"
 
         signal.signal(
-            signal.SIGINT, lambda sig, frame: setattr(self, "_exit_requested", True)
+            signal.SIGINT,
+            lambda sig, frame: setattr(self, "_exit_requested", True),
         )
+        signal.signal(
+            signal.SIGTERM,
+            lambda sig, frame: setattr(self, "_exit_requested", True),
+        )
+
+        self.hud.start()
+
+        # Landing timer: accumulates while vessel is low and slow, decays when not
+        self._landed_timer = 0.0
 
         while self.state not in ["HARD_ABORT", "LANDED"]:
             start_time = time.time()
@@ -255,6 +283,7 @@ class MissionDirector:
                     )
                     skip_predict = True
                     self.guidance.reset()
+                    self._dt_spike_count += 1
                 else:
                     skip_predict = False
             else:
@@ -264,13 +293,35 @@ class MissionDirector:
             # 1. Poll Telemetry
             (
                 noisy_alt,
-                noisy_accel_body,
-                attitude,
+                sf_body,  # body-frame specific force
+                attitude,  # Mahony quaternion
                 mass,
                 aero_body,
                 situation,
-                angular_velocity,
+                omega_body,  # body-frame angular velocity
+                noisy_vel,
+                gravity_world,
             ) = self.sensors.poll()
+            # Update guidance controller with dynamic gravity
+            self.guidance.gravity = gravity_world
+            # Debug raw telemetry for diagnosis
+            # TODO
+            logger.debug(
+                f"Poll: raw_alt={noisy_alt:.2f}, raw_ang_vel={np.linalg.norm(omega_body):.3f}"
+            )
+
+            # Universal vessel-destroyed check — must be handled for ALL states, not just TERMINAL_DESCENT
+            if situation == "destroyed":
+                logger.error("Vessel destroyed. Transitioning to HARD_ABORT.")
+                self.writer.log_event(
+                    {
+                        "type": "STATE_TRANSITION",
+                        "from": self.state,
+                        "to": "HARD_ABORT",
+                        "reason": "VESSEL_DESTROYED",
+                    }
+                )
+                self.state = "HARD_ABORT"
 
             # NOTE: I think player throttle has priority
             # Ensure vessel main throttle is at 100% so our individual engine limits work
@@ -284,8 +335,22 @@ class MissionDirector:
 
             # 2. Update Estimator
             if not skip_predict:
-                self.estimator.predict(noisy_accel_body, attitude, dt)
-            state_vector = self.estimator.update(noisy_alt)
+                self.estimator.predict(
+                    sf_body,  # body-frame specific force
+                    omega_body,  # body-frame angular velocity
+                    attitude,  # mahony_attitude: from complementary filter
+                    gravity_world,
+                    dt,
+                )
+            state_vector = self.estimator.update(noisy_alt, noisy_vel)
+
+            # 2.6 Check IMU health via FDI
+            imu_fault_detected = self.fdi.detect_imu_fault()
+            if imu_fault_detected:
+                logger.warning(
+                    "IMU fault detected via EKF innovation monitoring"
+                )
+                # Optional: could increase filter noise or take other corrective action here
 
             # 2.5 Check fuel state
             for e in self.engines:
@@ -318,57 +383,84 @@ class MissionDirector:
                 # looks like multiple engine failures). Hold last known good expected_accel.
                 # Also skip FDI when commanded throttles are zero - expected_accel=[0,0,0] but gravity
                 # is ~9.8 m/s² which would always trip the fault threshold during coasting.
+                # Also skip if expected_accel is zero despite non-zero throttles (stale/initialization).
                 # Finally, skip FDI if the vessel is touching the ground (normal force triggers false positive).
                 throttles_zero = (len(self.expected_throttles) == 0) or (
                     np.abs(self.expected_throttles).max() < 1e-6
                 )
+                expected_accel_zero = np.linalg.norm(self.expected_accel) < 1e-6
                 landed = situation in ("landed", "pre_launch", "splashed")
 
-                if not skip_predict and not throttles_zero and not landed:
+                if (
+                    not skip_predict
+                    and not throttles_zero
+                    and not expected_accel_zero
+                    and not landed
+                ):
                     fault_detected = self.fdi.detect_fault(
-                        self.expected_accel, noisy_accel_body
+                        self.expected_accel, sf_body
                     )
                     if fault_detected and len(active_engines) > 0:
                         failed_indices = self.fdi.isolate_fault(
                             active_engines,
                             self.expected_throttles,
-                            noisy_accel_body,
+                            sf_body,
                             mass,
                         )
 
-                        # ISS-004: Handle multiple simultaneous failures
-                        if len(failed_indices) >= 2:
-                            logger.error(
-                                f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered."
-                            )
-                            self.writer.log_event(
-                                {
-                                    "type": "STATE_TRANSITION",
-                                    "from": self.state,
-                                    "to": "HARD_ABORT",
-                                    "reason": "MULTIPLE_FAILURES",
-                                }
-                            )
-                            self.state = "HARD_ABORT"
+                    # ISS-004: Handle multiple simultaneous failures
+                    if len(failed_indices) >= 2:
+                        logger.error(
+                            f"CRITICAL: {len(failed_indices)} engines failed simultaneously. HARD ABORT triggered."
+                        )
+                        self.writer.log_event(
+                            {
+                                "type": "STATE_TRANSITION",
+                                "from": self.state,
+                                "to": "HARD_ABORT",
+                                "reason": "MULTIPLE_FAILURES",
+                            }
+                        )
+                        self.state = "HARD_ABORT"
 
-                        for e in self.engines:
-                            if e.index in failed_indices:
-                                if e.active:
-                                    self.writer.log_event(
-                                        {
-                                            "type": "FAULT_DETECTED",
-                                            "engine_index": e.index,
-                                        }
-                                    )
-                                    e.active = False
+                    for e in self.engines:
+                        if e.index in failed_indices:
+                            if e.active:
+                                self.writer.log_event(
+                                    {
+                                        "type": "FAULT_DETECTED",
+                                        "engine_index": e.index,
+                                    }
+                                )
+                                e.active = False
 
-                        # Re-evaluate active engines
-                        active_engines = [e for e in self.engines if e.active]
+                    # Re-evaluate active engines
+                    active_engines = [e for e in self.engines if e.active]
 
                 else:
                     logger.debug(
                         f"[FDI] Skipping detection during dt spike, holding stale expected_accel"
                     )
+
+                # Check if remaining engines can provide full 6-DOF control
+                sufficient, rank = self.allocator.is_rank_sufficient(
+                    active_engines
+                )
+                if not sufficient:
+                    logger.error(
+                        f"B matrix rank {rank} < 6 with {len(active_engines)} active engines. "
+                        "Insufficient control authority. HARD ABORT triggered."
+                    )
+                    self.writer.log_event(
+                        {
+                            "type": "STATE_TRANSITION",
+                            "from": self.state,
+                            "to": "HARD_ABORT",
+                            "reason": "INSUFFICIENT_ENGINES",
+                        }
+                    )
+                    self.state = "HARD_ABORT"
+                    break
 
                 if not active_engines and len(self.engines) > 0:
                     # If we had engines and they all failed, trigger abort
@@ -391,7 +483,11 @@ class MissionDirector:
             # Altitude is the projection of the state vector onto the up_vector
             est_alt = float(np.dot(state_vector[:3], self.up_vector))
             est_vz = float(np.dot(state_vector[3:], self.up_vector))
-
+            # Debug KF estimates and up vector sanity
+            logger.debug(
+                f"KF: est_alt={est_alt:.2f}, est_vz={est_vz:.2f}, "
+                f"pos_norm={np.linalg.norm(state_vector[:3]):.2f}, up_norm={np.linalg.norm(self.up_vector):.3f}"
+            )
             if config.SAS_PROGRADE_ASCENT:
                 if est_vz > 45 and ves_orientation != "prograde":
                     self.vessel.control.sas = True
@@ -433,7 +529,9 @@ class MissionDirector:
                         self.conn.space_center.SASMode.stability_assist
                     )
                     ves_orientation = "stability"
-                elif est_vz < -sas_threshold and ves_orientation != "retrograde":
+                elif (
+                    est_vz < -sas_threshold and ves_orientation != "retrograde"
+                ):
                     self.vessel.control.sas_mode = (
                         self.conn.space_center.SASMode.retrograde
                     )
@@ -449,6 +547,8 @@ class MissionDirector:
                     self.writer.log_event({"type": "ACTIVATION"})
                     if config.USE_SAS:
                         self.vessel.control.sas = True
+                    elif config.SAS_PROGRADE_ASCENT:
+                        pass  # SAS_PROGRADE_ASCENT block independently manages SAS
                     else:
                         self.vessel.control.sas = False
 
@@ -551,8 +651,20 @@ class MissionDirector:
                 )
                 self.state = "TERMINAL_DESCENT"
             elif self.state == "TERMINAL_DESCENT":
-                if situation in ("landed", "splashed"):
-                    logger.info("Touchdown detected. Transitioning to LANDED")
+                # Determine if the vessel is low and slow enough to count toward landing
+                vel_landed = abs(est_vz) < config.LANDED_VEL_THRESHOLD
+                alt_landed = abs(noisy_alt) < config.LANDED_ALT_THRESHOLD
+                if vel_landed and alt_landed:
+                    self._landed_timer += dt
+                    # Log the timer progress for HUD visibility
+                    logger.debug(
+                        f"Landed timer advancing: {self._landed_timer:.3f}s"
+                    )
+                else:
+                    # Decay the timer when conditions are not met
+                    self._landed_timer = max(0.0, self._landed_timer - dt)
+                # Check if the vessel has been low and slow for the required duration
+                if self._landed_timer >= 5.0:
                     self.writer.log_event(
                         {
                             "type": "STATE_TRANSITION",
@@ -560,20 +672,11 @@ class MissionDirector:
                             "to": "LANDED",
                         }
                     )
+                    logger.info(
+                        f"Transitioning from {self.state} to LANDED. "
+                        f"Touchdown confirmed (timer={self._landed_timer:.3f}s)."
+                    )
                     self.state = "LANDED"
-                elif situation == "destroyed":
-                    logger.error(
-                        "Vessel destroyed during terminal descent. Transitioning to HARD_ABORT"
-                    )
-                    self.writer.log_event(
-                        {
-                            "type": "STATE_TRANSITION",
-                            "from": self.state,
-                            "to": "HARD_ABORT",
-                            "reason": "VESSEL_DESTROYED",
-                        }
-                    )
-                    self.state = "HARD_ABORT"
             elif self.state not in [
                 "STANDBY",
                 "ASCENT_COAST",
@@ -597,7 +700,7 @@ class MissionDirector:
             # Used by both the suicide-burn glideslope and the wrench clamp.
             if active_engines and mass > 0.0:
                 total_max_thrust = sum(e.max_thrust for e in active_engines)
-                g_mag = float(np.linalg.norm(config.GRAVITY))
+                g_mag = float(np.linalg.norm(gravity_world))
                 a_avail = max(total_max_thrust / mass - g_mag, 1.0)
             else:
                 a_avail = 1.0
@@ -627,7 +730,13 @@ class MissionDirector:
                     a_avail=a_avail,
                 )
             elif self.state == "TERMINAL_DESCENT":
-                if situation in ("landed", "splashed"):
+                vel_landed = abs(est_vz) < config.LANDED_VEL_THRESHOLD
+                alt_landed = abs(noisy_alt) < config.LANDED_ALT_THRESHOLD
+                if vel_landed and alt_landed:
+                    self._landed_timer += dt
+                else:
+                    self._landed_timer = max(0.0, self._landed_timer - dt)
+                if self._landed_timer >= 5.0:
                     self.writer.log_event(
                         {
                             "type": "STATE_TRANSITION",
@@ -636,7 +745,8 @@ class MissionDirector:
                         }
                     )
                     logger.info(
-                        f"Transitioning from {self.state} to LANDED. Touchdown confirmed."
+                        f"Transitioning from {self.state} to LANDED. "
+                        f"Touchdown confirmed (timer={self._landed_timer:.3f}s)."
                     )
                     self.state = "LANDED"
                 else:
@@ -655,6 +765,7 @@ class MissionDirector:
                     if engine_obj:
                         engine_obj.thrust_limit = 0.0
                         engine_obj.independent_throttle = False
+                success = True
                 break  # Exit the control loop gracefully
 
             if self.state == "HARD_ABORT":
@@ -697,21 +808,21 @@ class MissionDirector:
                                 ):
                                     module.trigger_event("Toggle Trim")
 
-                # Accumulate angular motion for Optuna rocking penalty
-                self.total_angular_motion += float(np.linalg.norm(angular_velocity)) * dt
+            # Accumulate angular motion for Optuna rocking penalty
+            self.total_angular_motion += float(np.linalg.norm(omega_body)) * dt
 
-                desired_wrench = self.guidance.compute_wrench(
-                    current_state=state_vector,
-                    current_attitude=attitude,
-                    mass=mass,
-                    target_state=target_state,
-                    up_vector=self.up_vector,
-                    dt=dt,
-                    angular_velocity=angular_velocity,
-                    max_a_avail=a_avail,
-                )
-            else:
-                desired_wrench = np.zeros(6)
+            desired_wrench = self.guidance.compute_wrench(
+                current_state=state_vector,
+                current_attitude=attitude,
+                mass=mass,
+                target_state=target_state,
+                up_vector=self.up_vector,
+                dt=dt,
+                angular_velocity=omega_body,
+                max_a_avail=a_avail,
+            )
+        else:
+            desired_wrench = np.zeros(6)
 
             # 5. Allocate Thrust
             if active_engines and self.state not in [
@@ -791,13 +902,22 @@ class MissionDirector:
                     self.current_gimbals = current_gimbals
                     self.expected_throttles = np.array(new_expected_throttles)
 
+                    self._alloc_cond = float(
+                        np.linalg.cond(self.allocator._build_B(active_engines))
+                    )
+                    self._saturated_engines_set = set(
+                        self.allocator._saturated_engines
+                    )
+
                     # Expected acceleration is total force (thrust + aerodynamic) divided by mass
+                    # Guard: if mass is invalid (0 or NaN), keep the last valid expected_accel.
+                    # A stale-nonzero value is safer than zero — zero produces FDI false positives.
                     if mass > 0.0:
-                        self.expected_accel = (expected_force + aero_body) / mass
-                    else:
-                        self.expected_accel = np.zeros(3)
+                        self.expected_accel = (
+                            expected_force + aero_body
+                        ) / mass
                 except AllocationDegenerateError as e:
-                    print(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
+                    logger.error(f"CRITICAL: {str(e)}. HARD ABORT triggered.")
                     self.writer.log_event(
                         {
                             "type": "STATE_TRANSITION",
@@ -840,6 +960,58 @@ class MissionDirector:
             )
             self.writer.log_tick(frame)
 
+            # 5.6. Update HUD
+            if self.hud.is_active:
+                gimbals_deg = (
+                    np.degrees(gimbals)
+                    if gimbals.ndim == 2
+                    else np.zeros((max(len(self.engines), 1), 2))
+                )
+                self.hud.update(
+                    {
+                        "state": self.state,
+                        "altitude": noisy_alt,
+                        "est_alt": est_alt,
+                        "vertical_vel": est_vz,
+                        "lateral_vel": state_vector[3:]
+                        - self.up_vector * est_vz,
+                        "position": state_vector[:3],
+                        "throttles": throttles,
+                        "gimbals_deg": gimbals_deg,
+                        "fuel_state": fuel_state,
+                        "fdi_deviation": (
+                            float(
+                                np.linalg.norm(
+                                    self.expected_accel - noisy_accel_body
+                                )
+                            )
+                            if np.linalg.norm(self.expected_accel) > 1e-6
+                            else 0.0
+                        ),
+                        "alloc_cond": self._alloc_cond,
+                        "saturated": self._saturated_engines_set,
+                        "kf_cov_pos": (
+                            float(self.estimator.P[2, 2])
+                            if self.estimator.P.shape[0] > 2
+                            else 0.0
+                        ),
+                        "kf_cov_vel": (
+                            float(self.estimator.kf.P[5, 5])
+                            if self.estimator.kf.P.shape[0] > 5
+                            else 0.0
+                        ),
+                        "dt_spike_count": self._dt_spike_count,
+                        "skip_predict": skip_predict,
+                        "active_engine_count": len(active_engines),
+                        "total_engine_count": len(self.engines),
+                        "mass": mass,
+                        "a_avail": a_avail,
+                        "angular_velocity_mag": float(
+                            np.linalg.norm(angular_velocity)
+                        ),
+                    }
+                )
+
             # 6. Timing Enforcement
             elapsed = time.time() - start_time
             sleep_time = dt - elapsed
@@ -847,7 +1019,9 @@ class MissionDirector:
                 time.sleep(sleep_time)
 
         # Cleanup when loop ends
+        self.hud.stop()
         self.writer.close()
+        return success
 
 
 if __name__ == "__main__":
@@ -876,8 +1050,9 @@ if __name__ == "__main__":
         conn = krpc.connect(name=config.KRPC_CLIENT_NAME, address=address)
         logger.info("Connected. Starting Mission Director...")
         director = MissionDirector(conn)
+        success = False
         try:
-            director.run_loop()
+            success = director.run_loop()
         except krpc.error.RPCError as e:
             logger.error(
                 f"kRPC Error: {str(e)}. Vessel may have been destroyed. Exiting gracefully."
@@ -887,7 +1062,10 @@ if __name__ == "__main__":
         finally:
             logger.info("Mission Director shutdown. Closing telemetry streams.")
             director.writer.close()
+        if not success:
+            sys.exit(1)
     except ConnectionError:
         logger.error(
             f"Failed to connect to KSP at {address}. Ensure the server is running and KRPC_ADDRESS is set."
         )
+        sys.exit(1)

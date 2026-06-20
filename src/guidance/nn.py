@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ class NNFeedforward:
               X: np.ndarray,
               y: np.ndarray,
               max_nfev: int = 2000,
-              verbose: int = 0) -> dict[str, Any]:
+              verbose: Literal[0, 1, 2] = 0) -> dict[str, Any]:
         from scipy.optimize import least_squares
 
         if X.ndim != 2 or X.shape[1] != _N_INPUT:

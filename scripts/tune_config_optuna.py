@@ -48,6 +48,9 @@ def run_simulation(trial: optuna.Trial) -> float:
     # Acceleration clamp factor limits a_cmd_world to ACCEL_CLAMP_FACTOR × a_avail.
     # Prevents attitude target flip during saturating transients.
     config.ACCEL_CLAMP_FACTOR = trial.suggest_float("ACCEL_CLAMP_FACTOR", 1.0, 3.0)
+
+    # Adaptive process‑noise scaling for the StateEstimator (see docs). Tunable via Optuna.
+    config.PROCESS_NOISE_THRUST_COEF = trial.suggest_float("PROCESS_NOISE_THRUST_COEF", 0.05, 0.2)
     
     # Log-scale for params spanning 1+ order of magnitude
     config.SIGMA_ALT = trial.suggest_float("SIGMA_ALT", 0.1, 10.0, log=True)
