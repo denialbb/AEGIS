@@ -1,4 +1,4 @@
-﻿# DECISIONS.md â€” Architecture Decision Record Log
+# DECISIONS.md â€” Architecture Decision Record Log
 > One entry per non-obvious design decision. Written at the time the decision is made.
 > The goal: when Claude flags something in a review, this file answers "yes, we know â€” here's why."
 > Entries are never deleted. Superseded decisions are marked as such and linked to their replacement.
@@ -1010,3 +1010,27 @@ Option 3: A dedicated `src/common/reference_frame.py` module that exports:
 
 **Review Notes**
 Callers updated: `main.py`, `flight_recorder.py`, `validate_ned_invariants.py`, `accelerometer_sensor.py`. The module is importable by any script without creating circular dependencies — it depends only on `geometry.py` (pure math).
+
+---
+
+## ADR-031: Digital Twin Physics Simulation (`physics.py`)
+
+**Date:** 2026-06-28
+**Status:** Accepted
+**Context**
+To safely and efficiently train the NN-ADRC (Active Disturbance Rejection Controller) without running thousands of real-time flights in KSP, AEGIS requires a headless Python physics simulation (Digital Twin). The simulation must run incredibly fast while accurately capturing the actuator dynamics and mass changes that disturb the controller.
+
+**Decision**
+We have established the following domain model and physics rules for the `src/simulation/physics.py` module:
+
+1. **Coordinate Frame:** Local NED (North-East-Down) assuming a flat, non-rotating Kerbin. Orbital mechanics and Coriolis forces are negligible for a 2-minute terminal descent and add unnecessary overhead.
+2. **Aerodynamics:** Simple quadratic translational drag applied at the Center of Mass. Resolving full 6-DOF aerodynamic torques (Center of Pressure vs Center of Mass) is unnecessary since engine gimbal/RCS torques dominate at low descent speeds.
+3. **Mass Model:** Dynamic mass depletion. Mass is a state variable integrated via `dm/dt = -sum(T_i / (g0 * Isp))`. The ADRC must train against a changing inertia tensor.
+4. **Actuator Model:** First-order exponential lag for spooling. `actual_throttle` is a state variable. Instantaneous thrust would hide a major source of phase lag, causing the NN-ADRC to overfit to an overly stable system.
+5. **Integration Method:** Fixed-step RK4 (Runge-Kutta 4th Order). Required for deterministic execution within a fixed-Hz control loop. Avoids the dynamic-step overhead of `scipy.integrate.solve_ivp`.
+6. **Fault Injection:** Binary kill switches. A failed engine's `actual_throttle` spools to 0, completely ignoring commands. This aligns with the current boolean design of the AEGIS FDI module.
+
+**Consequences**
+- ✅ Blazing fast headless execution suitable for NN training.
+- ✅ Captures the two most critical disturbances for the ADRC: mass dropping and engine lag.
+- ⚠️ Fails to simulate high-altitude orbital dynamics or supersonic aerodynamic flips (acceptable trade-off).

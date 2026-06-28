@@ -137,10 +137,18 @@ class DigitalTwin:
         )
         
         # Check for ground interaction (Altitude is -Z in NED)
-        altitude = -self.state.pos[2]
+        current_com = self.vessel.get_com_position(self.state.fuel_mass)
+        
+        # The geometric origin (0,0,0) is the bottom of the vessel. 
+        # Vector from CoM to bottom is -current_com.
+        from scipy.spatial.transform import Rotation as R
+        bottom_offset = R.from_quat(self.state.q).apply(-current_com)
+        bottom_z = self.state.pos[2] + bottom_offset[2]
+        altitude = -bottom_z
+        
         if altitude <= 0.0:
             self.landed = True
-            self.state.pos[2] = 0.0  # Snap to pad
+            self.state.pos[2] = -bottom_offset[2]  # Snap bottom to pad
             self.state.vel = np.zeros(3)  # Halt movement upon touchdown
             self.state.omega = np.zeros(3)
             logger.info(f"[SIM] Touchdown/Terminal state reached at t={self.state.time:.2f}s")
@@ -170,6 +178,8 @@ class DigitalTwin:
         f_thrust_body = np.zeros(3)
         torque_total_body = np.zeros(3)
         
+        current_com = self.vessel.get_com_position(state.fuel_mass)
+        
         if state.fuel_mass > 0.0:
             for i, engine in enumerate(self.vessel.engines):
                 # Clamp gimbals to physical limits
@@ -188,7 +198,8 @@ class DigitalTwin:
                 f_body_i = axial_thrust * f_dir
                 
                 f_thrust_body += f_body_i
-                torque_total_body += np.cross(engine.position, f_body_i)
+                lever_arm = engine.position - current_com
+                torque_total_body += np.cross(lever_arm, f_body_i)
                 
         # 4. Translational acceleration in NED
         vessel_mass = self.vessel.total_mass(state.fuel_mass)

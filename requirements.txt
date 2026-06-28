@@ -11,3 +11,4 @@ scipy-stubs
 types-Pygments
 types-pexpect
 types-protobuf
+raylib
