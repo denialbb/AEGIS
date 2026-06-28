@@ -1,0 +1,13 @@
+numpy
+scipy
+krpc
+filterpy
+rich
+pandas
+optuna
+pytest
+mypy
+scipy-stubs
+types-Pygments
+types-pexpect
+types-protobuf

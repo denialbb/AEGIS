@@ -31,7 +31,7 @@ ALL_RECORDINGS = sorted(
     os.path.join(RECORDING_DIR, f)
     for f in os.listdir(RECORDING_DIR)
     if f.endswith(".npz")
-)
+) if os.path.exists(RECORDING_DIR) else []
 
 NO_RECORDINGS_REASON = (
     "No recordings found in recordings/. "

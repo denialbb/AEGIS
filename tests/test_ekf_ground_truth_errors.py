@@ -28,7 +28,7 @@ POST_FIX_CANDIDATES = sorted(
     for f in os.listdir(RECORDING_DIR)
     if f.endswith(".npz")
     and not f.endswith("074654.npz")  # 0-sample
-)
+) if os.path.exists(RECORDING_DIR) else []
 
 
 def _build_ekf_at_ground_truth(
