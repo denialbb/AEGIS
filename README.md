@@ -22,7 +22,7 @@ AEGIS is an autonomous landing system utilizing a 50 Hz real-time control loop f
 
 - **Sensor Noise**: Telemetry (position, velocity, IMU, altimeter) is corrupted by Gaussian noise prior to estimation.
 - **Asymmetric Engine Failures**: The Fault Detection & Isolation (FDI) module identifies engine failures from acceleration residuals and remaps control allocation.
-- **Attitude Control**: Executed entirely via differential throttling and independent per-engine gimbal trim. Reaction wheels are not used.
+- **Attitude Control**: Utilizes reaction wheels with manual attitude control to stabilize the descent and steer to the landing zone.
 - **Guidance**: Operates via a real-time sqrt glideslope profile computed from available thrust-to-weight ratio (TWR) and remaining altitude.
 
 ---
@@ -104,7 +104,7 @@ graph TD
 | **Mission Director** | `src/main.py` | Hierarchical state machine orchestrating flight phases and contingency branching (engine failures, degenerate allocation). |
 | **State Estimator** | `src/estimation/ekf.py`, `src/estimation/mahony_estimator.py` | 12-state Error-State EKF fusing IMU, altimeter, and velocimeter. Mahony filter for attitude. Dynamic gravity model via kRPC body parameters. |
 | **Fault Detection & Isolation** | `src/fdi/fdi.py` | Compares expected vs measured acceleration. Isolates engine failures. Triggers `HARD_ABORT` on multi-engine failures. |
-| **Guidance & Control** | `src/guidance/controller.py`, `src/guidance/allocator.py` | Quaternion PD attitude control with inertia-scaled torque. Suicide-burn sqrt glideslope. 6-DOF pseudo-inverse control allocator with condition number verification. |
+| **Guidance & Control** | `src/guidance/controller.py`, `src/guidance/allocator.py` | Suicide-burn sqrt glideslope. 6-DOF pseudo-inverse control allocator with condition number verification. |
 | **Telemetry & Logging** | `src/telemetry/` | Dual-file logging (CSV/JSONL). Buffered I/O to maintain 50Hz loop frequency. |
 
 ### State Machine
