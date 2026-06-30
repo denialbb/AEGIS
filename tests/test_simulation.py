@@ -327,3 +327,49 @@ def test_digital_twin_reset():
     dt_keep.kill_engine(0)
     dt_keep.reset(initial_state, keep_failures=True)
     assert dt_keep.failed_engines == {0}
+
+def test_digital_twin_seed_determinism():
+    env = VacuumEnvironment(g=9.80665)
+    vessel = SimpleTestVessel()
+
+    initial_state = PhysicsState(
+        time=0.0,
+        pos=np.array([0.0, 0.0, -100.0]),
+        vel=np.zeros(3),
+        q=np.array([0.0, 0.0, 0.0, 1.0]),
+        omega=np.zeros(3),
+        fuel_mass=10.0,
+        throttles=np.array([0.0])
+    )
+
+    cmds = (np.array([0.5]), np.zeros((1, 2)))
+
+    # Same seed + same commands + same kill_engine calls => bit-identical state.
+    dt1 = DigitalTwin(env, vessel, initial_state, seed=42)
+    dt2 = DigitalTwin(env, vessel, initial_state, seed=42)
+
+    dt1.kill_engine(0)
+    dt2.kill_engine(0)
+
+    for _ in range(10):
+        s1 = dt1.step(*cmds, dt=0.01)
+        s2 = dt2.step(*cmds, dt=0.01)
+        np.testing.assert_equal(s1.time, s2.time)
+        np.testing.assert_equal(s1.pos, s2.pos)
+        np.testing.assert_equal(s1.vel, s2.vel)
+        np.testing.assert_equal(s1.q, s2.q)
+        np.testing.assert_equal(s1.omega, s2.omega)
+        np.testing.assert_equal(s1.fuel_mass, s2.fuel_mass)
+        np.testing.assert_equal(s1.throttles, s2.throttles)
+
+    # The seed backs a private rng; same seed => same draws.
+    np.testing.assert_equal(dt1.rng.random(), dt2.rng.random())
+    np.testing.assert_equal(dt1.rng.random(), dt2.rng.random())
+
+    # Different seeds => different rng sequences (proves the seed is wired
+    # through). The integrator itself is deterministic, so the simulation
+    # state is unaffected; we only assert on the rng outputs.
+    dt3 = DigitalTwin(env, vessel, initial_state, seed=1)
+    dt4 = DigitalTwin(env, vessel, initial_state, seed=2)
+    for _ in range(5):
+        assert dt3.rng.random() != dt4.rng.random()

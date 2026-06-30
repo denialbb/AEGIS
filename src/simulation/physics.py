@@ -96,12 +96,30 @@ class PhysicsState:
             )
 
 class DigitalTwin:
-    def __init__(self, env: EnvironmentModel, vessel: VesselModel, initial_state: PhysicsState):
+    """Fixed-step RK4 physics integrator for the Digital Twin.
+
+    Determinism contract: when constructed with the same seed, identical
+    commands, and identical `kill_engine` calls produce bit-identical state
+    sequences. The seed backs a private `np.random.Generator` (exposed as
+    `self.rng`) so stochastic subsystems (FDI noise injection, Gremlin,
+    NN-ADRC exploration) can be made reproducible. The integrator itself
+    is deterministic; the seed governs anything the caller wires through
+    `self.rng`.
+    """
+
+    def __init__(
+        self,
+        env: EnvironmentModel,
+        vessel: VesselModel,
+        initial_state: PhysicsState,
+        seed: int | None = None,
+    ) -> None:
         self.env = env
         self.vessel = vessel
         self.state = initial_state
         self.failed_engines: set[int] = set()
         self.landed: bool = False
+        self.rng: np.random.Generator = np.random.default_rng(seed)
 
     def reset(self, initial_state: PhysicsState, keep_failures: bool = False) -> None:
         """Restore the twin to a freshly-constructed state.
