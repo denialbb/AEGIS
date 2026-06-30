@@ -93,7 +93,7 @@ def main():
         q=np.array([0.0, 0.0, 0.0, 1.0]),
         omega=np.zeros(3),
         fuel_mass=40.0,
-        throttles=np.array([(80.0 * 9.80665) / 2000.0] * 4) # pre-spooled to hover thrust
+        throttles=np.full(len(vessel.engines), (80.0 * 9.80665) / 2000.0) # pre-spooled to hover thrust
     )
     
     twin = DigitalTwin(env, vessel, initial_state)
@@ -126,7 +126,7 @@ def main():
             # If we need to go down (positive error), reduce throttle.
             throttle_adj = -0.02 * vel_error 
             
-            cmd_throttles = np.array([hover_throttle + throttle_adj] * 4)
+            cmd_throttles = np.full(len(vessel.engines), hover_throttle + throttle_adj)
             
             twin.step(cmd_throttles, cmd_gimbals, physics_dt)
             accumulator -= physics_dt
