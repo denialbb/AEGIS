@@ -12,3 +12,4 @@ types-Pygments
 types-pexpect
 types-protobuf
 raylib
+pyray>=5.0.0,<6.0
