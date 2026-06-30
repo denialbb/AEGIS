@@ -12,4 +12,4 @@ types-Pygments
 types-pexpect
 types-protobuf
 raylib
-pyray>=5.0.0,<6.0
+pyray==0.1.0  # pre-release of the raylib Python binding

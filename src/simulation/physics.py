@@ -95,6 +95,115 @@ class PhysicsState:
                 f"PhysicsState.fuel_mass must be finite and >= 0, got {self.fuel_mass!r}"
             )
 
+
+def _euler_advance(
+    base: PhysicsState,
+    deriv: PhysicsDerivatives,
+    dt_substep: float,
+) -> PhysicsState:
+    """Forward-Euler advance of `base` by `deriv * dt_substep` for an RK4 stage.
+
+    Re-normalizes the quaternion (RK4 / Euler do not preserve unit norm
+    exactly) and clips `fuel_mass` to `>= 0` and `throttles` to `[0, 1]`
+    (RK4 may produce small over/undershoots). Position, velocity, and
+    body rates are unbounded by the integrator.
+
+    Args:
+        base: The state at the start of the substep.
+        deriv: The derivative evaluated at `base` (or a propagated stage).
+        dt_substep: Time to advance. Used both for state propagation and
+            as the timestamp of the returned state.
+
+    Returns:
+        A new `PhysicsState` at `base.time + dt_substep` with the
+        quaternion normalized and the fuel/throttles clipped.
+    """
+    new_pos = base.pos + dt_substep * deriv["pos"]
+    new_vel = base.vel + dt_substep * deriv["vel"]
+    new_q = base.q + dt_substep * deriv["q"]
+    new_omega = base.omega + dt_substep * deriv["omega"]
+    new_fuel = max(0.0, base.fuel_mass + dt_substep * deriv["fuel_mass"])
+    new_throttles = np.clip(
+        base.throttles + dt_substep * deriv["throttles"], 0.0, 1.0
+    )
+    q_norm = np.linalg.norm(new_q)
+    if q_norm > 1e-12:
+        new_q /= q_norm
+    return PhysicsState(
+        time=base.time + dt_substep,
+        pos=new_pos,
+        vel=new_vel,
+        q=new_q,
+        omega=new_omega,
+        fuel_mass=new_fuel,
+        throttles=new_throttles,
+    )
+
+
+def _rk4_combine(
+    base: PhysicsState,
+    d1: PhysicsDerivatives,
+    d2: PhysicsDerivatives,
+    d3: PhysicsDerivatives,
+    d4: PhysicsDerivatives,
+    dt: float,
+) -> PhysicsState:
+    """Weighted 4th-order Runge-Kutta combination of four derivative evaluations.
+
+    The returned state is at `base.time + dt` with the same physical
+    clipping as `_euler_advance` (quaternion normalized, fuel >= 0,
+    throttles in [0, 1]).
+    """
+    sixth = dt / 6.0
+    new_pos = base.pos + sixth * (
+        d1["pos"] + 2.0 * d2["pos"] + 2.0 * d3["pos"] + d4["pos"]
+    )
+    new_vel = base.vel + sixth * (
+        d1["vel"] + 2.0 * d2["vel"] + 2.0 * d3["vel"] + d4["vel"]
+    )
+    new_q = base.q + sixth * (
+        d1["q"] + 2.0 * d2["q"] + 2.0 * d3["q"] + d4["q"]
+    )
+    new_omega = base.omega + sixth * (
+        d1["omega"] + 2.0 * d2["omega"] + 2.0 * d3["omega"] + d4["omega"]
+    )
+    new_fuel = max(
+        0.0,
+        base.fuel_mass
+        + sixth
+        * (
+            d1["fuel_mass"]
+            + 2.0 * d2["fuel_mass"]
+            + 2.0 * d3["fuel_mass"]
+            + d4["fuel_mass"]
+        ),
+    )
+    new_throttles = np.clip(
+        base.throttles
+        + sixth
+        * (
+            d1["throttles"]
+            + 2.0 * d2["throttles"]
+            + 2.0 * d3["throttles"]
+            + d4["throttles"]
+        ),
+        0.0,
+        1.0,
+    )
+    q_norm = np.linalg.norm(new_q)
+    if q_norm > 1e-12:
+        new_q /= q_norm
+    return PhysicsState(
+        time=base.time + dt,
+        pos=new_pos,
+        vel=new_vel,
+        q=new_q,
+        omega=new_omega,
+        fuel_mass=new_fuel,
+        throttles=new_throttles,
+    )
+
+
 class DigitalTwin:
     """Fixed-step RK4 physics integrator for the Digital Twin.
 
@@ -142,8 +251,17 @@ class DigitalTwin:
             logger.info(f"[SIM] Engine {engine_index} catastrophically failed!")
         
     def step(self, commanded_throttles: np.ndarray, commanded_gimbals: np.ndarray, dt: float) -> PhysicsState:
-        """
-        Advances the simulation by dt using fixed-step RK4.
+        """Advance the simulation by `dt` using fixed-step RK4.
+
+        The integrator evaluates derivatives at four stages
+        (k1 at the current state, k2/k3 at half-step Euler advances from
+        the current state, k4 at a full-step Euler advance) and combines
+        them with the standard `[1, 2, 2, 1] / 6` weights. Stage state
+        construction is delegated to `_euler_advance`; final combination to
+        `_rk4_combine`. See ADR-031.
+
+        No-op if `self.landed` is already set (subsequent calls return the
+        frozen terminal state with no time advance).
         """
         if self.landed:
             return self.state
@@ -152,93 +270,49 @@ class DigitalTwin:
         clamped_throttles = np.clip(commanded_throttles, 0.0, 1.0)
         if not np.allclose(commanded_throttles, clamped_throttles):
             logger.warning("[SIM] Commanded throttles out of physical bounds! Clamping applied.")
-            
-        # RK4 Integration
+
+        # RK4 stages
+        half_dt = 0.5 * dt
         deriv1 = self._compute_derivatives(self.state, clamped_throttles, commanded_gimbals)
-        
-        # State k2
-        pos_k2 = self.state.pos + 0.5 * dt * deriv1["pos"]
-        vel_k2 = self.state.vel + 0.5 * dt * deriv1["vel"]
-        q_k2 = self.state.q + 0.5 * dt * deriv1["q"]
-        omega_k2 = self.state.omega + 0.5 * dt * deriv1["omega"]
-        fuel_k2 = max(0.0, self.state.fuel_mass + 0.5 * dt * deriv1["fuel_mass"])
-        throttles_k2 = np.clip(self.state.throttles + 0.5 * dt * deriv1["throttles"], 0.0, 1.0)
-        q_norm2 = np.linalg.norm(q_k2)
-        if q_norm2 > 1e-12:
-            q_k2 /= q_norm2
-        state_k2 = PhysicsState(self.state.time + 0.5 * dt, pos_k2, vel_k2, q_k2, omega_k2, fuel_k2, throttles_k2)
-        
+        state_k2 = _euler_advance(self.state, deriv1, half_dt)
         deriv2 = self._compute_derivatives(state_k2, clamped_throttles, commanded_gimbals)
-        
-        # State k3
-        pos_k3 = self.state.pos + 0.5 * dt * deriv2["pos"]
-        vel_k3 = self.state.vel + 0.5 * dt * deriv2["vel"]
-        q_k3 = self.state.q + 0.5 * dt * deriv2["q"]
-        omega_k3 = self.state.omega + 0.5 * dt * deriv2["omega"]
-        fuel_k3 = max(0.0, self.state.fuel_mass + 0.5 * dt * deriv2["fuel_mass"])
-        throttles_k3 = np.clip(self.state.throttles + 0.5 * dt * deriv2["throttles"], 0.0, 1.0)
-        q_norm3 = np.linalg.norm(q_k3)
-        if q_norm3 > 1e-12:
-            q_k3 /= q_norm3
-        state_k3 = PhysicsState(self.state.time + 0.5 * dt, pos_k3, vel_k3, q_k3, omega_k3, fuel_k3, throttles_k3)
-        
+        state_k3 = _euler_advance(self.state, deriv2, half_dt)
         deriv3 = self._compute_derivatives(state_k3, clamped_throttles, commanded_gimbals)
-        
-        # State k4
-        pos_k4 = self.state.pos + dt * deriv3["pos"]
-        vel_k4 = self.state.vel + dt * deriv3["vel"]
-        q_k4 = self.state.q + dt * deriv3["q"]
-        omega_k4 = self.state.omega + dt * deriv3["omega"]
-        fuel_k4 = max(0.0, self.state.fuel_mass + dt * deriv3["fuel_mass"])
-        throttles_k4 = np.clip(self.state.throttles + dt * deriv3["throttles"], 0.0, 1.0)
-        q_norm4 = np.linalg.norm(q_k4)
-        if q_norm4 > 1e-12:
-            q_k4 /= q_norm4
-        state_k4 = PhysicsState(self.state.time + dt, pos_k4, vel_k4, q_k4, omega_k4, fuel_k4, throttles_k4)
-        
+        state_k4 = _euler_advance(self.state, deriv3, dt)
         deriv4 = self._compute_derivatives(state_k4, clamped_throttles, commanded_gimbals)
-        
-        # Update state
-        new_time = self.state.time + dt
-        new_pos = self.state.pos + (dt / 6.0) * (deriv1["pos"] + 2.0 * deriv2["pos"] + 2.0 * deriv3["pos"] + deriv4["pos"])
-        new_vel = self.state.vel + (dt / 6.0) * (deriv1["vel"] + 2.0 * deriv2["vel"] + 2.0 * deriv3["vel"] + deriv4["vel"])
-        new_q = self.state.q + (dt / 6.0) * (deriv1["q"] + 2.0 * deriv2["q"] + 2.0 * deriv3["q"] + deriv4["q"])
-        new_omega = self.state.omega + (dt / 6.0) * (deriv1["omega"] + 2.0 * deriv2["omega"] + 2.0 * deriv3["omega"] + deriv4["omega"])
-        new_fuel_mass = max(0.0, self.state.fuel_mass + (dt / 6.0) * (deriv1["fuel_mass"] + 2.0 * deriv2["fuel_mass"] + 2.0 * deriv3["fuel_mass"] + deriv4["fuel_mass"]))
-        new_throttles = np.clip(self.state.throttles + (dt / 6.0) * (deriv1["throttles"] + 2.0 * deriv2["throttles"] + 2.0 * deriv3["throttles"] + deriv4["throttles"]), 0.0, 1.0)
-        
-        # Normalize attitude
-        q_norm = np.linalg.norm(new_q)
-        if q_norm > 1e-12:
-            new_q /= q_norm
-            
-        self.state = PhysicsState(
-            time=new_time,
-            pos=new_pos,
-            vel=new_vel,
-            q=new_q,
-            omega=new_omega,
-            fuel_mass=new_fuel_mass,
-            throttles=new_throttles
-        )
-        
-        # Check for ground interaction (Altitude is -Z in NED)
-        current_com = self.vessel.get_com_position(self.state.fuel_mass)
-        
-        # The geometric origin (0,0,0) is the bottom of the vessel.
-        # Vector from CoM to bottom is -current_com.
-        bottom_offset = R.from_quat(self.state.q).apply(-current_com)
-        bottom_z = self.state.pos[2] + bottom_offset[2]
-        altitude = -bottom_z
-        
-        if altitude <= 0.0:
-            self.landed = True
-            self.state.pos[2] = -bottom_offset[2]  # Snap bottom to pad
-            self.state.vel = np.zeros(3)  # Halt movement upon touchdown
-            self.state.omega = np.zeros(3)
-            logger.info(f"[SIM] Touchdown/Terminal state reached at t={self.state.time:.2f}s")
-            
+
+        self.state = _rk4_combine(self.state, deriv1, deriv2, deriv3, deriv4, dt)
+
+        # Terminal ground contact
+        self._apply_ground_contact()
+
         return self.state
+
+    def _apply_ground_contact(self) -> None:
+        """Snap the vessel to the pad if its bottom is at or below the ground.
+
+        In NED coordinates, altitude is `-pos[2]`. The vessel's geometric
+        origin is the bottom of the hull, so the bottom-of-vessel offset
+        from the CoM is `-current_com`. We rotate this offset into the
+        world frame to find the world-space altitude of the bottom.
+
+        On contact: sets `self.landed = True`, snaps the CoM upward so the
+        bottom rests on the pad (`pos[2] = -bottom_offset[2]`), zeros
+        translational and rotational velocity. Subsequent `step()` calls
+        are no-ops.
+        """
+        current_com = self.vessel.get_com_position(self.state.fuel_mass)
+        bottom_offset = R.from_quat(self.state.q).apply(-current_com)
+        altitude = -(self.state.pos[2] + bottom_offset[2])
+
+        if altitude > 0.0:
+            return
+
+        self.landed = True
+        self.state.pos[2] = -bottom_offset[2]
+        self.state.vel = np.zeros(3)
+        self.state.omega = np.zeros(3)
+        logger.info(f"[SIM] Touchdown/Terminal state reached at t={self.state.time:.2f}s")
         
     def _compute_derivatives(self, state: PhysicsState, cmd_throttles: np.ndarray, cmd_gimbals: np.ndarray) -> PhysicsDerivatives:
         """
