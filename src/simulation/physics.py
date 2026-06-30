@@ -283,8 +283,7 @@ class DigitalTwin:
         
         # 5. Rotational acceleration in body frame (Euler's equations)
         I = self.vessel.inertia_tensor(state.fuel_mass)
-        I_inv = np.linalg.inv(I)
-        d_omega = I_inv @ (torque_total_body - np.cross(state.omega, I @ state.omega))
+        d_omega = np.linalg.solve(I, torque_total_body - np.cross(state.omega, I @ state.omega))
         
         # 6. Quaternion derivative
         omega_quat = np.array([0.5 * state.omega[0], 0.5 * state.omega[1], 0.5 * state.omega[2], 0.0])
