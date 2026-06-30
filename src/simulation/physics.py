@@ -139,9 +139,8 @@ class DigitalTwin:
         # Check for ground interaction (Altitude is -Z in NED)
         current_com = self.vessel.get_com_position(self.state.fuel_mass)
         
-        # The geometric origin (0,0,0) is the bottom of the vessel. 
+        # The geometric origin (0,0,0) is the bottom of the vessel.
         # Vector from CoM to bottom is -current_com.
-        from scipy.spatial.transform import Rotation as R
         bottom_offset = R.from_quat(self.state.q).apply(-current_com)
         bottom_z = self.state.pos[2] + bottom_offset[2]
         altitude = -bottom_z
