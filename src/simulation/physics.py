@@ -41,6 +41,60 @@ class PhysicsState:
     fuel_mass: float                # Current fuel mass [kg]
     throttles: np.ndarray           # Shape (N,) Actual engine throttles [0.0, 1.0]
 
+    def __post_init__(self) -> None:
+        """Validate PhysicsState invariants. Raises ValueError on bad inputs.
+
+        Note: this is a structural / invariant check only. It does not verify
+        physical reasonableness of altitude (pos[2] may be any finite value —
+        NED altitude is unbounded above the pad) or energy conservation.
+        """
+        if not np.isfinite(self.time):
+            raise ValueError(f"PhysicsState.time must be finite, got {self.time!r}")
+
+        pos = np.asarray(self.pos)
+        if pos.ndim != 1 or pos.shape[0] != 3 or not np.all(np.isfinite(pos)):
+            raise ValueError(
+                f"PhysicsState.pos must be a finite 1D array of length 3, got shape {pos.shape!r}"
+            )
+
+        vel = np.asarray(self.vel)
+        if vel.ndim != 1 or vel.shape[0] != 3 or not np.all(np.isfinite(vel)):
+            raise ValueError(
+                f"PhysicsState.vel must be a finite 1D array of length 3, got shape {vel.shape!r}"
+            )
+
+        omega = np.asarray(self.omega)
+        if omega.ndim != 1 or omega.shape[0] != 3 or not np.all(np.isfinite(omega)):
+            raise ValueError(
+                f"PhysicsState.omega must be a finite 1D array of length 3, got shape {omega.shape!r}"
+            )
+
+        q = np.asarray(self.q)
+        if q.ndim != 1 or q.shape[0] != 4 or not np.all(np.isfinite(q)):
+            raise ValueError(
+                f"PhysicsState.q must be a finite 1D array of length 4, got shape {q.shape!r}"
+            )
+        q_norm = float(np.linalg.norm(q))
+        if q_norm <= 1e-9:
+            raise ValueError(
+                f"PhysicsState.q must have norm > 1e-9, got {q_norm!r}"
+            )
+
+        throttles = np.asarray(self.throttles)
+        if throttles.ndim != 1 or not np.all(np.isfinite(throttles)):
+            raise ValueError(
+                f"PhysicsState.throttles must be a finite 1D array, got shape {throttles.shape!r}"
+            )
+        if not np.all((throttles >= 0.0) & (throttles <= 1.0)):
+            raise ValueError(
+                f"PhysicsState.throttles values must lie in [0.0, 1.0], got {self.throttles!r}"
+            )
+
+        if not np.isfinite(self.fuel_mass) or self.fuel_mass < 0.0:
+            raise ValueError(
+                f"PhysicsState.fuel_mass must be finite and >= 0, got {self.fuel_mass!r}"
+            )
+
 class DigitalTwin:
     def __init__(self, env: EnvironmentModel, vessel: VesselModel, initial_state: PhysicsState):
         self.env = env
