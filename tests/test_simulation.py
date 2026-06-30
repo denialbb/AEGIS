@@ -280,3 +280,50 @@ def test_determinism_and_equilibrium():
     np.testing.assert_equal(state1.vel, state2.vel)
     np.testing.assert_equal(state1.q, state2.q)
     np.testing.assert_equal(state1.omega, state2.omega)
+
+def test_digital_twin_reset():
+    env = VacuumEnvironment(g=9.80665)
+    vessel = SimpleTestVessel()
+
+    initial_state = PhysicsState(
+        time=0.0,
+        pos=np.array([0.0, 0.0, -100.0]),
+        vel=np.zeros(3),
+        q=np.array([0.0, 0.0, 0.0, 1.0]),
+        omega=np.zeros(3),
+        fuel_mass=10.0,
+        throttles=np.array([0.0])
+    )
+
+    cmds = (np.array([0.5]), np.zeros((1, 2)))
+
+    dt = DigitalTwin(env, vessel, initial_state)
+    dt.kill_engine(0)
+    for _ in range(3):
+        dt.step(*cmds, dt=0.05)
+    assert dt.failed_engines == {0}
+
+    dt.reset(initial_state)
+
+    assert dt.failed_engines == set()
+    assert dt.landed is False
+    np.testing.assert_equal(dt.state.time, initial_state.time)
+    np.testing.assert_equal(dt.state.pos, initial_state.pos)
+
+    state_reset = dt.step(*cmds, dt=0.05)
+
+    dt_fresh = DigitalTwin(env, vessel, initial_state)
+    state_fresh = dt_fresh.step(*cmds, dt=0.05)
+
+    np.testing.assert_equal(state_reset.time, state_fresh.time)
+    np.testing.assert_equal(state_reset.pos, state_fresh.pos)
+    np.testing.assert_equal(state_reset.vel, state_fresh.vel)
+    np.testing.assert_equal(state_reset.q, state_fresh.q)
+    np.testing.assert_equal(state_reset.omega, state_fresh.omega)
+    np.testing.assert_equal(state_reset.fuel_mass, state_fresh.fuel_mass)
+    np.testing.assert_equal(state_reset.throttles, state_fresh.throttles)
+
+    dt_keep = DigitalTwin(env, vessel, initial_state)
+    dt_keep.kill_engine(0)
+    dt_keep.reset(initial_state, keep_failures=True)
+    assert dt_keep.failed_engines == {0}

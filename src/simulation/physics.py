@@ -102,7 +102,21 @@ class DigitalTwin:
         self.state = initial_state
         self.failed_engines: set[int] = set()
         self.landed: bool = False
-        
+
+    def reset(self, initial_state: PhysicsState, keep_failures: bool = False) -> None:
+        """Restore the twin to a freshly-constructed state.
+
+        Args:
+            initial_state: The state to install as the current self.state.
+            keep_failures: If True, retain any previously-failed engines
+                (useful for testing recovery from a partial failure). If
+                False (default), the failed_engines set is cleared.
+        """
+        self.state = initial_state
+        if not keep_failures:
+            self.failed_engines = set()
+        self.landed = False
+
     def kill_engine(self, engine_index: int) -> None:
         """Simulates a catastrophic discrete failure."""
         if 0 <= engine_index < len(self.vessel.engines):
