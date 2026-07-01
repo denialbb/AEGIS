@@ -353,6 +353,8 @@ def run_mission_loop(director: Any) -> bool:
             est_alt=est_alt,
             a_avail=a_avail,
             wrench_force=wrench[:3],
+            target_state=target,
+            wrench=wrench,
         )
         director.writer.log_tick(frame)
 

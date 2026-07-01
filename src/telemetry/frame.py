@@ -6,7 +6,7 @@ import numpy as np
 class TelemetryFrame:
     """
     Telemetry frame containing vehicle state and actuator commands at a single tick.
-    
+
     Attributes:
         timestamp: Simulation or system timestamp.
         altitude: Current vehicle noisy altitude (kRPC measurement).
@@ -20,6 +20,15 @@ class TelemetryFrame:
         force_body: Guidance force command body frame (3,).
         axial_forces: Per-engine axial forces (N,).
         position: EKF position (2,) for (north, east) distance-from-pad scoring.
+        target_pos: NED target position (3,). For HOVER_TARGETING/TERMINAL_DESCENT
+            this is set to current position (velocity-based guidance); for
+            POWERED_DESCENT it is the position-blend target.
+        target_vel: NED target velocity (3,). The guidance's desired velocity.
+            Logging this exposes the velocity-target sign-flip pattern that
+            drives the close-vicinity oscillation.
+        torque_cmd: Body-frame torque command (3,). wrench[3:6]. Logging
+            this exposes RW saturation, attitude command rate, and SAS
+            interaction.
     """
     timestamp: float
     altitude: float
@@ -36,6 +45,9 @@ class TelemetryFrame:
     position: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(2))
     true_attitude: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
     est_attitude: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
+    target_pos: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
+    target_vel: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
+    torque_cmd: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
 
     def flatten(self) -> Dict[str, Any]:
         """
@@ -103,6 +115,21 @@ class TelemetryFrame:
             if i < self.est_attitude.size:
                 flat_data[f"est_{axis}"] = float(self.est_attitude[i])
 
+        # Flatten target position (3,) — NED target position from guidance
+        for i, axis in enumerate(['x', 'y', 'z']):
+            if i < self.target_pos.size:
+                flat_data[f"target_pos_{axis}"] = float(self.target_pos[i])
+
+        # Flatten target velocity (3,) — NED target velocity from guidance
+        for i, axis in enumerate(['x', 'y', 'z']):
+            if i < self.target_vel.size:
+                flat_data[f"target_vel_{axis}"] = float(self.target_vel[i])
+
+        # Flatten torque command (3,) — body-frame torque from guidance
+        for i, axis in enumerate(['x', 'y', 'z']):
+            if i < self.torque_cmd.size:
+                flat_data[f"torque_{axis}"] = float(self.torque_cmd[i])
+
         return flat_data
     
     @classmethod
@@ -129,4 +156,7 @@ class TelemetryFrame:
         headers.extend(["pos_n", "pos_e"])
         headers.extend(["true_pitch", "true_yaw", "true_roll"])
         headers.extend(["est_pitch", "est_yaw", "est_roll"])
+        headers.extend(["target_pos_x", "target_pos_y", "target_pos_z"])
+        headers.extend(["target_vel_x", "target_vel_y", "target_vel_z"])
+        headers.extend(["torque_x", "torque_y", "torque_z"])
         return headers

@@ -510,3 +510,357 @@ Unknown parts fall back to `config.DEFAULT_THRUST_AXIS = (0, 0, -1)` (KSP stack-
 Added a `max_thrust` refresh loop in `main.py` before the `a_avail` computation (lines 547-552): each tick, `e.max_thrust = engine_obj.max_thrust` is queried fresh from kRPC for all active engines. This ensures both the sqrt profile target speed and the allocator throttle calculation use the altitude-correct thrust.
 
 In tandem, `ACCEL_CLAMP_FACTOR` raised from 1.5 to 2.5 so the clamp satisfies `clamp >= 1 + g / a_avail` for TWR >= 1.5 vehicles, allowing the profile's required `a_avail` net deceleration to be achieved through the clamp.
+
+---
+
+### ISS-018 — Duplicate `scipy.spatial.transform` import in `physics.py:step()`
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`src/simulation/physics.py` already imports `from scipy.spatial.transform import Rotation as R` at module level (line 8). The `step()` method re-imports the same name locally at line 144. This is dead code — the local import shadows the module-level one with no effect, and signals a refactor that was never finished.
+
+**Acceptance Criteria**
+- Single import of `Rotation as R` remains, at module level.
+- `step()` no longer contains `from scipy.spatial.transform import Rotation as R`.
+- mypy / pytest still pass.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-019 — `pyray` missing from `requirements.txt`
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Visualizer
+- **Related ADR:** None
+- **Related Review:** None
+
+**Description**
+`scripts/visualize_physics.py` imports `pyray as pr` (line 7) but the dependency is not listed in `requirements.txt` (which currently contains only `krpc`). Anyone following the README's "sandbox execution" instructions will hit `ModuleNotFoundError: No module named 'pyray'` on first run.
+
+**Acceptance Criteria**
+- `pyray` (or the canonical Python Raylib binding) appears in `requirements.txt` with a pinned version compatible with the rest of the stack.
+- A fresh `pip install -r requirements.txt` followed by `python scripts/visualize_physics.py` works on a clean environment.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-020 — `PhysicsState` has no input validation; invalid `q` / `throttles` / `fuel_mass` are accepted silently
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`PhysicsState` is a `@dataclass` with no `__post_init__`. A quaternion `[0,0,0,0]` is accepted: the `1e-12` norm guard at `physics.py:81` prevents division by zero but leaves the state un-normalized for that stage. Throttles outside `[0, 1]` propagate. Negative `fuel_mass` propagates. This makes bugs in callers hard to localize.
+
+**Acceptance Criteria**
+- `__post_init__` validates: `q` has finite values and `np.linalg.norm(q) > 1e-9`; `pos`, `vel`, `omega` are 1D arrays of length 3; `throttles` is 1D and all values in `[0, 1]`; `fuel_mass >= 0`.
+- Invalid inputs raise `ValueError` with a clear message identifying the offending field.
+- Existing tests still pass.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-021 — `DigitalTwin` lacks a `reset()` method; trials require rebuilding the twin
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+The only way to re-run a trial today is to construct a new `DigitalTwin` and re-pass the initial `PhysicsState`. For training loops, parameter sweeps, and the Gremlin script, a `reset(initial_state)` method that clears `failed_engines`, restores `state` from the argument, and resets `landed` would be a clean primitive.
+
+**Acceptance Criteria**
+- `DigitalTwin.reset(initial_state: PhysicsState) -> None` exists and restores the twin to the same observable state as a fresh `__init__` with the given initial state.
+- `failed_engines` is cleared (or accept a `keep_failures: bool = False` flag).
+- `landed` is reset to `False`.
+- Unit test asserts that `reset()` followed by identical commands produces a state equal to a freshly-constructed twin.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-022 — `MockVessel` mass constants are duplicated and `MockVessel` / `SimpleTestVessel` are not unit-tested
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`MockVessel.get_com_position` hardcodes `dry_mass = 40.0` (line 67) duplicating the `40.0` in `total_mass` (line 55). The visualizer is the only consumer; if the visualizer ever breaks because the constants drift, no test will catch it. Additionally, neither mock vessel has a dedicated unit test (they are exercised incidentally through `DigitalTwin` tests with hand-built engines).
+
+**Acceptance Criteria**
+- `MockVessel` and `SimpleTestVessel` store their constants (`dry_mass`, `dry_com`, `fuel_com`, `max_thrust`, `engine_tau`, etc.) in `__init__` and reference them everywhere.
+- `inertia_tensor` and `get_com_position` reflect the stored values, not magic numbers.
+- New tests in `tests/test_simulation.py` (or `tests/test_mock_vessel.py`) cover: `total_mass` linearity, `get_fuel_burn_rate` linearity, `get_com_position` linear interpolation between dry and fuel CoM, `get_drag_force` sign and magnitude.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-023 — `np.linalg.inv(I)` recomputed 4× per RK4 step; should use `np.linalg.solve`
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`physics.py:219` calls `np.linalg.inv(I)` on every derivative evaluation. For RK4 with 4 stages that's 4 inversions per step. `np.linalg.solve(I, b)` is both faster and numerically more stable (avoids the explicit inverse).
+
+**Acceptance Criteria**
+- `np.linalg.inv(I)` replaced with `np.linalg.solve(I, ...)`.
+- `I` is cached once per `step()` call (valid because `I` depends only on `fuel_mass`, which is already propagated through the stage states — but for an immediate win, just swap the call).
+- Existing physics tests still pass with the same numerical tolerance.
+- A simple micro-benchmark shows ≥10% speedup on a 60 s simulated descent.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-024 — `DigitalTwin` has no determinism seed hook
+
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation, Testbed
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+ADR-031 claims the simulation is "deterministic". That's true today only because there are no random number sources. The moment any caller (FDI injection, NN-ADRC exploration, Gremlin) introduces a stochastic call, determinism is lost. A `seed: int | None = None` parameter on `__init__` (or a `set_seed(seed)` method) that initializes a private `numpy.random.Generator` makes the contract explicit and reproducible.
+
+**Acceptance Criteria**
+- `DigitalTwin.__init__` accepts `seed: int | None = None`.
+- The seed backs a private `np.random.Generator` exposed as `self.rng` (or via a `self.random() -> float` method).
+- Two runs with the same seed, same commands, same `kill_engine` calls, produce bit-identical `PhysicsState` outputs.
+- Document the contract in the `DigitalTwin` docstring and in ADR-031.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-025 — Visualizer overlay and command construction are hardcoded to 4 engines
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Visualizer
+- **Related ADR:** None
+- **Related Review:** None
+
+**Description**
+`scripts/visualize_physics.py` hardcodes 4 engines: the overlay loop at line 77 iterates over `state.throttles` (which is fine), but the `cmd_throttles = np.array([hover_throttle + throttle_adj] * 4)` at line 129 and the per-engine markers in `draw_vessel` are sized for 4. Swapping in `SimpleTestVessel` (1 engine) crashes. The visualizer should derive the engine count from `vessel.engines`.
+
+**Acceptance Criteria**
+- `cmd_throttles` length matches `len(vessel.engines)`.
+- `draw_vessel` iterates over `vessel.engines` (already does, but verify the indexing into `state.throttles` is consistent for any N).
+- Overlay renders correctly for 1, 2, and 4 engine vessels.
+- Visualizer runs against `SimpleTestVessel` and `MockVessel` without code changes.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-026 — `sys.path.append` hack in `visualize_physics.py`; the script isn't installed as a package
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Visualizer
+- **Related ADR:** None
+- **Related Review:** None
+
+**Description**
+`scripts/visualize_physics.py:3` mutates `sys.path` to import `src.simulation.*`. This works but is fragile (depends on CWD, breaks if the script is moved, no static analysis coverage). Adding a `pyproject.toml` with `[tool.setuptools]` `packages = ["src"]` (or using `python -m scripts.visualize_physics` after making `scripts/` a package) removes the hack.
+
+**Acceptance Criteria**
+- The `sys.path.append` line is removed.
+- `python scripts/visualize_physics.py` (or the `python -m` equivalent) works from the repo root without manual PYTHONPATH manipulation.
+- A `pyproject.toml` exists with minimal `setuptools` config so the package is installable (`pip install -e .`).
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-027 — `Engine` class couples simulation to kRPC; simulation should consume a pure `EngineSpec`
+
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation, KSP Adapter
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`src/simulation/vessel.py` declares the abstract interface as `engines -> list[Engine]`, but `Engine` is `src/common/engine.py`, which carries kRPC fields (`part: Any`, `gimbal_module: Any`, `krpc_engine: Any`). This makes `src/simulation/` dependent on the kRPC adapter in spirit if not in import path. The clean separation promised by ADR-031 ("`VesselModel` defines engines, mass properties, and drag properties") is undermined.
+
+**Acceptance Criteria**
+- New dataclass `src/simulation/engine_spec.py::EngineSpec` with only physics fields: `index`, `position`, `thrust_direction`, `max_thrust`, `max_gimbal_deg`, `gimbal_x_axis`, `gimbal_y_axis`.
+- `VesselModel.engines -> list[EngineSpec]`.
+- `MockVessel` and `SimpleTestVessel` return `EngineSpec` instances.
+- KSP adapter (`main.py` or a new `src/ksp/engine_adapter.py`) converts `Engine` → `EngineSpec` before constructing the `DigitalTwin` (or the `DigitalTwin` is fed `VesselModel` instances directly, depending on the cleanest boundary).
+- No new imports of `src.common.engine` from `src/simulation/`.
+- Existing tests still pass.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-028 — Tests reach into private API (`_compute_derivatives`); refactor to a public `derivatives()` method or `Dynamics` object
+
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`tests/test_simulation.py` calls `dt._compute_derivatives(...)` (lines 107, 139, 158, 189) to assert pure dynamics. The leading underscore signals "private" — a public contract is preferable. Two clean options:
+1. Promote `_compute_derivatives` to a public `derivatives(...)` method.
+2. Extract the dynamics into a `Dynamics` class that both `DigitalTwin.step()` and tests consume; `DigitalTwin` becomes a thin orchestrator.
+
+Option 2 is the deeper seam and aligns with the "deep module" architecture goal: tests then exercise the same primitive the integrator does, with no privileged access.
+
+**Acceptance Criteria**
+- `Dynamics` class (or equivalent) holds a `VesselModel` and `EnvironmentModel`, exposes a `compute(state, cmd_throttles, cmd_gimbals) -> PhysicsDerivatives` method.
+- `DigitalTwin.step()` uses `Dynamics.compute` for all 4 RK4 stages.
+- Tests call `dynamics.compute(state, ...)` (or `dt.derivatives(state, ...)`); no `_compute_derivatives` access.
+- All existing tests still pass with no semantic change.
+- New `tests/test_dynamics.py` (or extension of `test_simulation.py`) covers the previously-internal cases as black-box tests.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-029 — Gimbal sign convention is implicit and untested for torque direction
+
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`physics.py:190-195` linearizes the gimbal displacement as `f_dir = thrust_direction + gx * gimbal_y_axis - gy * gimbal_x_axis`. The sign in the `gy` term is opaque: the `Engine` constructor builds `gimbal_x_axis = thrust × arbitrary` and `gimbal_y_axis = thrust × gimbal_x_axis` (line 41-53 of `engine.py`), so both are displacement directions, not rotation axes. The minus sign is an arbitrary choice, and the existing gimbal test (`test_rotational_physics`) only verifies the *clamp* — both clamped and unclamped use the same (potentially wrong) direction, so a sign error is silent.
+
+**Acceptance Criteria**
+- A new test specifies the sign convention explicitly: e.g. "for an engine at `position = [1, 0, 0]`, a positive `gy` (gimbal x) tilts thrust in the `-y` body direction, producing a positive body-y torque". The test then asserts the actual torque matches.
+- A `GIMBAL_SIGN_CONVENTION` docstring is added to `Engine` documenting which `gx`/`gy` produces which physical direction.
+- A round-trip test: build a known rotation matrix R that rotates thrust by 5° about body x, convert to `(gx, gy)` by `R^{-1} @ thrust_direction`, assert the simulation's torque matches the analytical one within 1% (small-angle regime).
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-030 — Quaternion integration may drift; consider `exp(0.5*ω*dt)` formulation
+
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Simulation
+- **Related ADR:** ADR-031
+- **Related Review:** None
+
+**Description**
+`physics.py:119` propagates the quaternion via `q_new = q + (h/6) * Σ dq_i` then re-normalizes once at line 125-127. Re-normalization only at the end of the step is OK for small step sizes and short horizons but is the most common source of long-term drift in rigid-body simulators. A more stable formulation is `q_new = exp(0.5 * ω_avg * dt) ⊗ q` (with re-normalization at every stage).
+
+The current `test_rotational_physics` only runs 10 ticks (0.2 s) — long enough for RK4 to be stable, but not long enough to expose drift.
+
+**Acceptance Criteria**
+- Document the current tolerance: run a 10-minute simulated constant-rate spin and assert `|‖q‖ - 1| < 1e-9` at every tick.
+- Decide between (a) accepting the current formulation with documented tolerance, (b) switching to the `exp(0.5*ω*dt)` formulation per stage.
+- If switching: assert `|‖q‖ - 1| < 1e-15` at every stage, no observable difference in the existing 10 s test, and identical outputs modulo float rounding.
+- Update ADR-031 with the decision and rationale.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-031 — Visualizer is a closed-loop demo; missing interactive controls and state history
+
+- **Severity:** 🟡 MAJOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Visualizer
+- **Related ADR:** None
+- **Related Review:** None
+
+**Description**
+`scripts/visualize_physics.py` runs a fixed closed-loop descent with hardcoded initial state and hardcoded controller. There are no interactive controls (no key bindings to command gimbals, kill an engine, pause, change the descent target, or reset). The overlay shows only the current state — no trajectory trace, no time-series strip. For a "physics visualizer" the missing features are the main value proposition.
+
+**Acceptance Criteria**
+- Key bindings (at minimum):
+  - `Space` — pause / resume the simulation
+  - `R` — reset to the initial state
+  - `1..4` — kill the corresponding engine
+  - `WASD` — command gimbals on all engines (collective pitch/yaw)
+  - `[` / `]` — reduce / increase target descent rate
+  - `Esc` — close the window
+- A trajectory trace: a fading line in 3D showing the CoM path over the last N seconds.
+- A time-series strip in the HUD: altitude vs time, vertical speed vs time, both scrollable.
+- Document the controls in the `main()` docstring and a `print` on startup.
+
+**Resolution**
+<!-- Fill in when resolved -->
+
+---
+
+### ISS-032 — `np.ndarray` type hints are deprecated in numpy 2.0; add a mypy config to enforce
+
+- **Severity:** 🔵 MINOR
+- **Status:** OPEN
+- **Date opened:** 2026-06-30
+- **Module(s):** Cross-cutting (simulation, kRPC adapter)
+- **Related ADR:** None
+- **Related Review:** None
+
+**Description**
+`AGENTS.md` mandates mypy. `requirements.txt` does not pin numpy, so a numpy 2.0 install will trigger deprecation warnings for bare `np.ndarray` annotations. There is no `pyproject.toml` or `mypy.ini` in the repo, so the "mypy is enforced" claim cannot be verified.
+
+**Acceptance Criteria**
+- `pyproject.toml` (or `mypy.ini`) exists with `mypy` configuration: `python_version = "3.12"`, `strict = true` (or a documented relaxation), `numpy.typing.NDArray[np.float64]` allowed.
+- `requirements-dev.txt` (or `[project.optional-dependencies] dev` in `pyproject.toml`) pins `mypy` and `numpy` versions.
+- `mypy src/simulation/` reports 0 errors.
+- A follow-up issue can then sweep the rest of `src/` (out of scope for this issue).
+
+**Resolution**
+<!-- Fill in when resolved -->
+

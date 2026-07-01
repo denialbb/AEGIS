@@ -16,8 +16,30 @@ logger = logging.getLogger(__name__)
 def make_telemetry_frame(
     director: Any, timestamp: float, data: dict, state_vector: np.ndarray, skip_predict: bool,
     est_alt: float = 0.0, a_avail: float = 0.0, wrench_force: np.ndarray = np.zeros(3),
+    target_state: np.ndarray | None = None,
+    wrench: np.ndarray | None = None,
 ) -> TelemetryFrame:
-    """Build a TelemetryFrame from the current loop state."""
+    """Build a TelemetryFrame from the current loop state.
+
+    Args:
+        director: MissionDirector instance.
+        timestamp: Wall-clock timestamp.
+        data: Sensor poll dict.
+        state_vector: (6,) EKF state [pos(3), vel(3)].
+        skip_predict: EKF skip_predict flag.
+        est_alt: EKF altitude (dot of pos with up_vector).
+        a_avail: Available vertical acceleration [m/s²].
+        wrench_force: (3,) guidance force body command. Accepts (3,) or
+            (6,) — only the force component is used.
+        target_state: (6,) full guidance target [target_pos(3), target_vel(3)].
+            When provided, logged as ``target_pos`` and ``target_vel`` so the
+            diagnostic CSV exposes the velocity-target sign-flip pattern
+            that drives the close-vicinity oscillation.
+        wrench: (6,) full guidance wrench [force(3), torque(3)]. When
+            provided, ``wrench[3:6]`` is logged as ``torque_cmd`` so the
+            diagnostic CSV exposes RW saturation, attitude command rate,
+            and SAS interaction.
+    """
     num = max(len(director.engines), 1)
     throttles = director.expected_throttles if len(director.expected_throttles) > 0 else np.zeros(num)
     gimbals = (
@@ -48,6 +70,16 @@ def make_telemetry_frame(
         logger.error(f"Failed to calculate est_attitude: {e}")
         est_att = np.zeros(3)
 
+    target_pos = (
+        target_state[:3].copy() if target_state is not None else np.zeros(3)
+    )
+    target_vel = (
+        target_state[3:6].copy() if target_state is not None else np.zeros(3)
+    )
+    torque_cmd = (
+        wrench[3:6].copy() if wrench is not None and wrench.size >= 6 else np.zeros(3)
+    )
+
     return TelemetryFrame(
         timestamp=timestamp,
         altitude=data["noisy_alt"],
@@ -64,6 +96,9 @@ def make_telemetry_frame(
         position=state_vector[:2],
         true_attitude=true_att,
         est_attitude=est_att,
+        target_pos=target_pos,
+        target_vel=target_vel,
+        torque_cmd=torque_cmd,
     )
 
 
